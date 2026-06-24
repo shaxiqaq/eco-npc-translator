@@ -1,0 +1,9 @@
+# 本机私有配置 (含 API Key) - 不要分发/提交
+translate_config.json
+# 译文缓存 - 本机运行时生成
+npc_cache.json
+# 逆向提取的 AES 密钥 / 运行日志 - 不发布
+keys.jsonl
+logs/
+__pycache__/
+*.pyc

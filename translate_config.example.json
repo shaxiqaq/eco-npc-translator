@@ -1,0 +1,7 @@
+{
+  "_说明": "这是配置模板。请勿在此填 key。运行 配置翻译.cmd 用图形界面生成真正的 translate_config.json。也可手动复制本文件为 translate_config.json 并填写下列字段。",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "base_url": "https://api.deepseek.com",
+  "api_key": ""
+}
