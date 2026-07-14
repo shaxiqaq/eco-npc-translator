@@ -9,6 +9,28 @@
 
 ## 快速使用
 
+### 图形界面安装版（推荐）
+
+运行安装包：
+
+```text
+electron/release/ECO-Toolbox-Setup-0.2.0.exe
+```
+
+安装后的主界面使用左侧菜单组织全部功能：
+
+- `总览`：启动或停止伤害采集、NPC 翻译和透明悬浮窗。
+- `伤害统计`：分别查看技能造成、普通攻击造成、宠物造成和受到伤害流水。
+- `NPC 翻译`：查看翻译运行状态和实时日志。
+- `运行日志`：集中查看两个后端的输出。
+- `设置`：配置翻译服务、Overlay 样式、位置和自动启动行为。
+
+Overlay 已改为 Electron 透明窗口。平时保持置顶和鼠标穿透；在主界面点击`调整悬浮窗`后可以拖动，点击`完成调整`会保存位置。
+
+安装版已经内置 Python 运行环境和 Frida 后端，使用者不需要另外安装 Python 或 Node.js。翻译 API Key 和运行配置保存在当前 Windows 用户的应用数据目录，不会写入安装目录。
+
+### 旧版脚本
+
 先启动游戏并登录角色，再根据用途双击对应脚本。
 
 | 脚本 | 用途 |
@@ -142,6 +164,23 @@ python eco_damage_overlay.py
 python eco_damage_capture.py
 ```
 
+Electron 开发版：
+
+```powershell
+cd electron
+npm.cmd install
+npm.cmd start
+```
+
+生成 Windows 安装包：
+
+```powershell
+cd electron
+npm.cmd run dist
+```
+
+构建完成后，安装包位于 `electron/release/`。构建脚本会先用 PyInstaller 打包伤害采集和 NPC 翻译后端，再生成 NSIS 安装程序。
+
 ## 已知限制
 
 - 客户端更新后，如果封包结构或 AES key 偏移变化，相关功能可能需要重新定位。
@@ -152,4 +191,3 @@ python eco_damage_capture.py
 ## 仓库简介建议
 
 `ECO 本地工具箱：NPC 原生对话框实时翻译、共享词库、战斗伤害 Overlay、技能/普攻/受到/宠物伤害统计。`
-

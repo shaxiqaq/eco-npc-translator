@@ -71,7 +71,16 @@ function processFrame(buf, off){
   }
   for(let i=0;i<subs.length;i++){
     const op=be16(subs[i],0);
+    // 采集(只读): 事件边界/NPC id/执行中eventid, 供 Python 维护 eventid 上下文
+    if(op===1500||op===1501||op===1511||op===1512){
+      const ch=subs[i].map(x=>('0'+x.toString(16)).slice(-2)).join('');
+      send({t:'ctx',op:op,sub:ch});
+      continue;
+    }
     if(op===1017||op===1526){
+      // 采集(只读): 先把英文原文上报(缓存命中也照采), 不受翻译改包影响
+      const oh=subs[i].map(x=>('0'+x.toString(16)).slice(-2)).join('');
+      send({t:'harvest',op:op,sub:oh});
       const h=fnv1a(subs[i])>>>0;
       if(CACHE[h]){ subs[i]=CACHE[h]; modified=true; send({t:'hit',h:h}); }
       else {

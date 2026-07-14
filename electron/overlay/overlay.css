@@ -1,0 +1,34 @@
+:root {
+  font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  color: #f8f8f5;
+}
+
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; user-select: none; }
+.overlay { width: 100%; height: 100%; padding: 10px 12px; background: transparent; position: relative; }
+.overlay.editing { background: rgba(13, 16, 18, .82); border: 1px dashed rgba(242, 184, 75, .9); -webkit-app-region: drag; }
+header { height: 27px; display: flex; align-items: flex-start; justify-content: space-between; text-shadow: 0 2px 2px #000, 1px 0 1px #000; }
+header span { font-size: 13px; font-weight: 800; color: #fff; }
+header b { font-size: 11px; color: #cbd2d4; font-variant-numeric: tabular-nums; }
+.totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+.totals div { min-width: 0; text-align: right; text-shadow: 0 2px 2px #000, 1px 0 1px #000, -1px 0 1px #000; }
+.totals span, .totals strong, .totals small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.totals span { font-size: 10px; font-weight: 700; }
+.totals strong { margin: 2px 0 1px; font-size: 23px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.totals small { color: #d3d7d7; font-size: 9px; }
+.skill span, .skill strong { color: #ffd76c; }
+.normal span, .normal strong { color: #f3f5f3; }
+.pet span, .pet strong { color: #8ee3a8; }
+.taken span, .taken strong { color: #ff8b82; }
+.details { margin-top: 10px; display: grid; gap: 4px; }
+.hit { height: 26px; padding: 0 7px; display: grid; grid-template-columns: 49px minmax(0, 1fr) auto; align-items: center; gap: 7px; background: rgba(8, 10, 11, .42); border-left: 2px solid #ffd76c; font-size: 10px; text-shadow: 0 1px 2px #000; }
+.hit.pet { border-left-color: #8ee3a8; }
+.hit.taken { border-left-color: #ff8b82; }
+.hit span { color: #c7cccd; }
+.hit b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+.hit strong { color: #ffd76c; font-size: 13px; font-variant-numeric: tabular-nums; }
+.hit.pet strong { color: #8ee3a8; }
+.hit.taken strong { color: #ff8b82; }
+.empty { color: rgba(230, 234, 233, .65); text-align: right; font-size: 10px; text-shadow: 0 1px 2px #000; padding-top: 14px; }
+.edit-state { display: none; position: absolute; left: 0; right: 0; bottom: 0; height: 25px; background: #f2b84b; color: #17130c; font-size: 10px; font-weight: 800; place-items: center; }
+.overlay.editing .edit-state { display: grid; }

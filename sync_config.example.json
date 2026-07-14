@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "url": "https://eco-npc-dict.你的子域.workers.dev",
+  "token": "你在 wrangler secret put TOKEN 设的那串口令",
+  "pull_interval": 300,
+  "flush_interval": 20,
+  "pull_on_start": true,
+  "_说明": "把本文件复制为 sync_config.json 并填好 url/token 即可启用共享词库。删掉或 enabled=false 则完全离线、不联网同步。"
+}

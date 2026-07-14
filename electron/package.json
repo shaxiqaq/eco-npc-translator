@@ -1,0 +1,66 @@
+{
+  "name": "eco-toolbox",
+  "version": "0.2.0",
+  "description": "ECO NPC 翻译与伤害统计工具箱",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "set ECO_UI_DEMO=1&& electron .",
+    "build:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-backend.ps1",
+    "build:prepackaged": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-prepackaged.ps1",
+    "dist": "npm run build:backend && npm run dist:ui",
+    "dist:ui": "npm run build:prepackaged && set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/&& electron-builder --prepackaged release/win-unpacked --win nsis"
+  },
+  "dependencies": {
+    "lucide": "^0.468.0"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.eco.toolbox",
+    "productName": "ECO 工具箱",
+    "executableName": "ECO Toolbox",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "overlay/**/*",
+      "node_modules/lucide/dist/umd/lucide.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist-python/damage",
+        "to": "backend/damage"
+      },
+      {
+        "from": "dist-python/translator",
+        "to": "backend/translator"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "ECO-Toolbox-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ECO 工具箱",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}
