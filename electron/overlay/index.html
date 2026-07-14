@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ECO 伤害悬浮窗</title>
+  <link rel="stylesheet" href="overlay.css">
+</head>
+<body>
+  <main class="overlay" id="overlay">
+    <header><span>伤害统计</span><b id="battle-time">00:00</b></header>
+    <section class="totals">
+      <div class="skill"><span>技能</span><strong id="skill-total">0</strong><small id="skill-dps">0.00 秒伤</small></div>
+      <div class="normal"><span>普攻</span><strong id="normal-total">0</strong><small id="normal-dps">0.00 秒伤</small></div>
+      <div class="pet"><span>宠物</span><strong id="pet-total">0</strong><small id="pet-dps">0.00 秒伤</small></div>
+      <div class="taken"><span>受到</span><strong id="taken-total">0</strong><small id="taken-dps">0.00 秒均</small></div>
+    </section>
+    <section class="details" id="details"></section>
+    <div class="edit-state">拖动悬浮窗调整位置</div>
+  </main>
+  <script src="overlay.js"></script>
+</body>
+</html>

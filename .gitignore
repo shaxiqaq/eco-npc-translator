@@ -7,3 +7,18 @@ keys.jsonl
 logs/
 __pycache__/
 *.pyc
+# PyInstaller 打包构建产物 (体积大, 不入库; 发布走 GitHub Release)
+build/
+dist/
+*.spec
+eco-npc-translator-免驱动版/
+_smoke/
+
+# Electron dependencies and installers
+electron/node_modules/
+electron/release/
+electron/dist-python/
+electron/build-python/
+electron/build-manual/
+electron/*-preview.png
+electron/_runtime-test/

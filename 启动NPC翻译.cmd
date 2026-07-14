@@ -1,33 +1,25 @@
 @echo off
-chcp 65001 >nul
-title ECO NPC 翻译 (F9 切换中文/英文)
-set PYTHONIOENCODING=utf-8
-
+title ECO NPC Translator (F9 = ZH/EN)
 echo ============================================
-echo   ECO NPC 实时翻译
-echo   - 确保 eco.exe 已经在运行
-echo   - 启动后去和 NPC 对话即可看中文
-echo   - 按 F9 在 中文 / 英文原文 之间切换
-echo   - 关闭本窗口即停止翻译
+echo   ECO NPC In-game Translator
+echo   - Make sure eco.exe is running
+echo   - Press F9 to toggle Chinese / English
+echo   - Close this window to stop
 echo ============================================
 echo.
-
-REM 首次使用未配置时, 先打开配置工具
-if not exist "%~dp0translate_config.json" (
-  echo [首次使用] 还没有配置翻译服务，正在打开配置工具...
-  echo            请选择服务商、填入 API Key 后点“保存”，然后重新运行本程序。
-  pythonw "%~dp0eco_settings.py"
-  echo.
-  echo 配置完成后，请重新双击运行本程序。按任意键关闭...
-  pause >nul
-  exit /b
-)
-
-REM 杀掉可能残留的旧进程, 避免重复 hook
-powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -match 'eco_npc_mitm' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
-
+if not exist "%~dp0translate_config.json" goto noconfig
 python "%~dp0eco_npc_mitm.py"
-
 echo.
-echo [翻译已停止] 按任意键关闭窗口...
+echo [Stopped] Press any key to close...
 pause >nul
+goto end
+
+:noconfig
+echo [First run] No config found. Opening the settings window...
+echo Pick a provider, enter your API Key, click Save, then run this again.
+start "" pythonw "%~dp0eco_settings.py"
+echo.
+echo Press any key to close...
+pause >nul
+
+:end
