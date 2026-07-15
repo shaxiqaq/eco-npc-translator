@@ -6,14 +6,14 @@ $Target = [IO.Path]::GetFullPath((Join-Path $Release "win-unpacked"))
 $Stage = [IO.Path]::GetFullPath((Join-Path $Electron "build-manual\app"))
 
 if (-not $Target.StartsWith($Release, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "无效构建目录: $Target"
+    throw "Invalid build directory: $Target"
 }
 
 $ElectronZip = Get-ChildItem "$env:LOCALAPPDATA\electron\Cache" -Recurse `
     -Filter "electron-v35.7.5-win32-x64.zip" -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $ElectronZip) {
-    throw "没有找到 Electron 35.7.5 运行时缓存，请先运行 npm.cmd start"
+    throw "Electron 35.7.5 runtime cache was not found. Run npm.cmd start first."
 }
 
 foreach ($Path in @($Target, $Stage)) {
@@ -34,13 +34,13 @@ Copy-Item -LiteralPath (Join-Path $Electron "renderer") -Destination $Stage -Rec
 Copy-Item -LiteralPath (Join-Path $Electron "overlay") -Destination $Stage -Recurse
 
 & npm.cmd ci --prefix $Stage --omit=dev --ignore-scripts --no-audit --no-fund
-if ($LASTEXITCODE -ne 0) { throw "生产依赖安装失败" }
+if ($LASTEXITCODE -ne 0) { throw "Failed to install production dependencies" }
 Remove-Item -LiteralPath (Join-Path $Stage "package-lock.json") -Force
 
 $Resources = Join-Path $Target "resources"
 Remove-Item -LiteralPath (Join-Path $Resources "default_app.asar") -Force -ErrorAction SilentlyContinue
 & (Join-Path $Electron "node_modules\.bin\asar.cmd") pack $Stage (Join-Path $Resources "app.asar")
-if ($LASTEXITCODE -ne 0) { throw "应用 ASAR 打包失败" }
+if ($LASTEXITCODE -ne 0) { throw "Failed to package the application ASAR" }
 
 $UpdateConfig = @"
 provider: github
@@ -62,4 +62,4 @@ Copy-Item -LiteralPath (Join-Path $Electron "dist-python\translator\eco_npc_mitm
     -Destination (Join-Path $Backend "translator") -Recurse
 
 Move-Item -LiteralPath (Join-Path $Target "electron.exe") -Destination (Join-Path $Target "ECO Toolbox.exe") -Force
-Write-Host "预封装程序已生成: $Target"
+Write-Host "Prepackaged application created: $Target"
