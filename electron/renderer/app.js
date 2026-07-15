@@ -22,6 +22,9 @@ let state = { services: {}, settings: {}, translation: {}, update: {}, logs: [] 
 let snapshot = null;
 let historyFilter = 'all';
 let logFilter = 'all';
+let activePage = 'overview';
+let overviewHistoryVersion = null;
+let damageHistoryRenderKey = null;
 let overlayEditing = false;
 let toastTimer = null;
 let dismissedUpdateVersion = null;
@@ -67,10 +70,13 @@ function showToast(message) {
 }
 
 function navigate(page) {
+  activePage = page;
   $$('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.page === page));
   $$('.page').forEach((section) => section.classList.toggle('active', section.id === `page-${page}`));
   $('#page-title').textContent = pageMeta[page][0];
   $('#page-subtitle').textContent = pageMeta[page][1];
+  if (page === 'overview') renderOverviewHistory();
+  if (page === 'damage') renderDamageTable();
 }
 
 function serviceText(service) {
@@ -176,12 +182,14 @@ function renderSnapshot() {
   $('#damage-skill-hits').textContent = `${formatNumber(snap.hits_skill_dealt)} 次技能`;
   $('#damage-normal-hits').textContent = `${formatNumber(snap.hits_normal_dealt)} 次普攻`;
 
-  renderOverviewHistory();
-  renderDamageTable();
-  renderServices();
+  if (activePage === 'overview') renderOverviewHistory();
+  if (activePage === 'damage') renderDamageTable();
 }
 
 function renderOverviewHistory() {
+  const version = Number(snapshot?.history_version || 0);
+  if (overviewHistoryVersion === version) return;
+  overviewHistoryVersion = version;
   const items = [...(snapshot?.damage_history || [])].reverse().slice(0, 5);
   const root = $('#overview-history');
   if (!items.length) {
@@ -195,6 +203,9 @@ function renderOverviewHistory() {
 }
 
 function renderDamageTable() {
+  const renderKey = `${historyFilter}:${Number(snapshot?.history_version || 0)}`;
+  if (damageHistoryRenderKey === renderKey) return;
+  damageHistoryRenderKey = renderKey;
   const items = filteredHistory();
   const labels = { all: '全部伤害流水', skill: '技能造成流水', normal: '普通攻击造成流水', pet: '宠物造成流水', taken: '受到伤害流水' };
   $('#history-title').textContent = labels[historyFilter];

@@ -1,5 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 let settings = { overlay: { showDetails: true } };
+let detailsVersion = null;
 
 function number(value, digits = 0) {
   return Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -28,8 +29,12 @@ function render(snapshot = {}) {
   const root = $('#details');
   if (settings.overlay?.showDetails === false) {
     root.innerHTML = '';
+    detailsVersion = null;
     return;
   }
+  const version = Number(snapshot.history_version || 0);
+  if (detailsVersion === version) return;
+  detailsVersion = version;
   const items = [...(snapshot.damage_history || [])].reverse().slice(0, 4);
   root.innerHTML = items.length ? items.map((item) => {
     const type = item.side === 'pet_dealt' ? 'pet' : item.side === 'taken' ? 'taken' : '';

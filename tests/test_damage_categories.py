@@ -170,6 +170,24 @@ class DamageMeterCaptureSwitchTest(unittest.TestCase):
         self.assertEqual(meter.damage_history, [])
         self.assertEqual(emitted, [])
 
+    def test_snapshot_limits_history_before_copying_it(self):
+        meter, _ = self.make_meter()
+        self.normal_attack(meter, ts=1.0, damage=10)
+        self.normal_attack(meter, ts=2.0, damage=20)
+        self.normal_attack(meter, ts=3.0, damage=30)
+
+        limited = meter.snapshot(history_limit=2)
+        full = meter.snapshot()
+
+        self.assertEqual([item["damage"] for item in limited["damage_history"]], [20, 30])
+        self.assertEqual([item["damage"] for item in full["damage_history"]], [10, 20, 30])
+        self.assertEqual(limited["history_version"], 3)
+
+        meter.reset()
+        reset = meter.snapshot(history_limit=2)
+        self.assertEqual(reset["damage_history"], [])
+        self.assertEqual(reset["history_version"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -208,6 +208,7 @@ class DamageMeter:
             self.events.clear()
             self.damage_details.clear()
             self.damage_history.clear()
+            self.history_version = 0
             self.hp_by_actor.clear()
             self.actor_names.clear()
             self.actor_mobs.clear()
@@ -520,6 +521,7 @@ class DamageMeter:
         }
         self.damage_details.appendleft(rec)
         self.damage_history.append(rec)
+        self.history_version += 1
         self.events.appendleft((rec["time"], text))
         return rec
 
@@ -914,7 +916,7 @@ class DamageMeter:
             self.handle_parsed(parsed, time.time())
             self._current_op = None
 
-    def snapshot(self):
+    def snapshot(self, history_limit=None):
         with self.lock:
             elapsed = time.time() - self.started
             active = 0.0
@@ -926,6 +928,11 @@ class DamageMeter:
             normal_dps = self.normal_dealt / active if active > 0 else 0.0
             pet_dps = self.pet_dealt / active if active > 0 else 0.0
             candidates = ", ".join(f"{a}:{s}" for a, s in self.self_candidates.most_common(3))
+            if history_limit is None:
+                damage_history = list(self.damage_history)
+            else:
+                limit = max(0, int(history_limit))
+                damage_history = list(self.damage_history[-limit:]) if limit else []
             return {
                 "elapsed": elapsed,
                 "active": active,
@@ -973,7 +980,8 @@ class DamageMeter:
                 "capture_categories": dict(self.capture_categories),
                 "recent_actions": list(self.recent_actions)[:10],
                 "damage_details": list(self.damage_details),
-                "damage_history": list(self.damage_history),
+                "damage_history": damage_history,
+                "history_version": self.history_version,
                 "unknown_actors": list(self.unknown_combat_actors.most_common(8)),
                 "mob_template_guess": self.guess_mob_template(),
                 "events": list(self.events),

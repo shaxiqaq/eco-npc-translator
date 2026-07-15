@@ -61,7 +61,7 @@ def main():
     parser = argparse.ArgumentParser(description="ECO damage data bridge")
     parser.add_argument("--pid", type=int, help="要连接的 eco.exe 进程编号")
     parser.add_argument("--self-id", type=lambda value: int(value, 0))
-    parser.add_argument("--interval", type=float, default=0.25)
+    parser.add_argument("--interval", type=float, default=0.5)
     args = parser.parse_args()
 
     os.makedirs(LOGDIR, exist_ok=True)
@@ -89,8 +89,6 @@ def main():
     else:
         pid = max(games, key=lambda process: process.pid).pid
     meter = DamageMeter(out_path=log_path, self_id=args.self_id, game_chat=False)
-    meter.event_sink = lambda event: emit("damage-event", event=event)
-
     source = open(os.path.join(HERE, "_damage_capture.js"), encoding="utf-8").read()
     source = source.replace("__MAP_PORT__", str(MAP_PORT))
     source = source.replace("__WATCH_ALL__", "false")
@@ -116,8 +114,7 @@ def main():
         reader = threading.Thread(target=command_loop, args=(meter, stop_event), daemon=True)
         reader.start()
         while not stop_event.wait(max(0.1, args.interval)):
-            snapshot = meter.snapshot()
-            snapshot["damage_history"] = snapshot.get("damage_history", [])[-500:]
+            snapshot = meter.snapshot(history_limit=500)
             emit("snapshot", data=snapshot)
     except KeyboardInterrupt:
         pass

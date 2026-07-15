@@ -29,6 +29,14 @@ function mul(a, b) {
   return r & 0xff;
 }
 
+const MUL9 = [], MUL11 = [], MUL13 = [], MUL14 = [];
+for (let i = 0; i < 256; i++) {
+  MUL9[i] = mul(i, 9);
+  MUL11[i] = mul(i, 11);
+  MUL13[i] = mul(i, 13);
+  MUL14[i] = mul(i, 14);
+}
+
 const RCON = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
 function xtime(a) {
   a <<= 1;
@@ -85,10 +93,10 @@ function decB(rk, inp) {
     const o = [];
     for (let c = 0; c < 4; c++) {
       const a = s.slice(c * 4, c * 4 + 4);
-      o[c * 4 + 0] = mul(a[0], 14) ^ mul(a[1], 11) ^ mul(a[2], 13) ^ mul(a[3], 9);
-      o[c * 4 + 1] = mul(a[0], 9) ^ mul(a[1], 14) ^ mul(a[2], 11) ^ mul(a[3], 13);
-      o[c * 4 + 2] = mul(a[0], 13) ^ mul(a[1], 9) ^ mul(a[2], 14) ^ mul(a[3], 11);
-      o[c * 4 + 3] = mul(a[0], 11) ^ mul(a[1], 13) ^ mul(a[2], 9) ^ mul(a[3], 14);
+      o[c * 4 + 0] = MUL14[a[0]] ^ MUL11[a[1]] ^ MUL13[a[2]] ^ MUL9[a[3]];
+      o[c * 4 + 1] = MUL9[a[0]] ^ MUL14[a[1]] ^ MUL11[a[2]] ^ MUL13[a[3]];
+      o[c * 4 + 2] = MUL13[a[0]] ^ MUL9[a[1]] ^ MUL14[a[2]] ^ MUL11[a[3]];
+      o[c * 4 + 3] = MUL11[a[0]] ^ MUL13[a[1]] ^ MUL9[a[2]] ^ MUL14[a[3]];
     }
     s = o;
   }
@@ -157,14 +165,19 @@ Interceptor.attach(m.base.add(0x18cc4), {
   }
 });
 
+const PORT_CACHE = new Map();
 function getPort(s) {
+  const socket = s >>> 0;
+  if (PORT_CACHE.has(socket)) return PORT_CACHE.get(socket);
   const gpn = getPort._f || (getPort._f = new NativeFunction(exp('ws2_32.dll', 'getpeername'), 'int', ['uint', 'pointer', 'pointer']));
   try {
     const sa = Memory.alloc(32), ln = Memory.alloc(4);
     ln.writeInt(32);
     if (gpn(s, sa, ln) === 0) {
       const b = new Uint8Array(sa.readByteArray(4));
-      return (b[2] << 8) | b[3];
+      const port = (b[2] << 8) | b[3];
+      PORT_CACHE.set(socket, port);
+      return port;
     }
   } catch (e) {}
   return 0;
@@ -185,7 +198,8 @@ function validPlain(pt, num1) {
 
 function processPackets(dir, sock, raw, canInject) {
   let off = 0;
-  let out = [];
+  const wantsInjection = canInject && INJECT_QUEUE.length > 0;
+  let out = wantsInjection ? [] : null;
   let changed = false;
   while (off + 8 <= raw.length) {
     const lp = be32(raw, off), num1 = be32(raw, off + 4);
@@ -210,25 +224,29 @@ function processPackets(dir, sock, raw, canInject) {
       }
     }
     if (!pt) {
-      out = out.concat(raw.slice(off, off + 8 + lp));
+      if (out) out = out.concat(raw.slice(off, off + 8 + lp));
       off += 8 + lp;
       continue;
     }
 
     let pos = 0;
-    const subs = [];
+    const subs = wantsInjection ? [] : null;
     while (pos < num1) {
       const sl = be16(pt, pos);
       if (sl < 2 || pos + 2 + sl > pt.length) break;
-      const sub = pt.slice(pos + 2, pos + 2 + sl);
-      subs.push(sub);
-      pos += 2 + sl;
-      const op = be16(sub, 0);
-      if (WATCH_ALL || WATCH_OPS.has(op)) {
-        send({ t: 'pkt', dir: dir, op: op, len: sub.length, sub: hex(sub) });
+      const subStart = pos + 2;
+      const op = be16(pt, subStart);
+      const watched = WATCH_ALL || WATCH_OPS.has(op);
+      if (wantsInjection || watched) {
+        const sub = pt.slice(subStart, subStart + sl);
+        if (subs) subs.push(sub);
+        if (watched) {
+          send({ t: 'pkt', dir: dir, op: op, len: sub.length, sub: hex(sub) });
+        }
       }
+      pos += 2 + sl;
     }
-    if (canInject && INJECT_QUEUE.length > 0) {
+    if (wantsInjection && INJECT_QUEUE.length > 0) {
       while (INJECT_QUEUE.length > 0) subs.push(INJECT_QUEUE.shift());
       let payload = [];
       for (const sub of subs) {
@@ -240,13 +258,21 @@ function processPackets(dir, sock, raw, canInject) {
       const newCt = ecbEnc(rk, payload);
       out = out.concat(wbe32(payload.length), wbe32(newNum1), newCt);
       changed = true;
-    } else {
+    } else if (out) {
       out = out.concat(raw.slice(off, off + 8 + lp));
     }
     off += 8 + lp;
   }
-  if (off < raw.length) out = out.concat(raw.slice(off));
+  if (out && off < raw.length) out = out.concat(raw.slice(off));
   return changed ? out : null;
+}
+
+function hookCloseSocket() {
+  const p = exp('ws2_32.dll', 'closesocket');
+  if (!p) return;
+  Interceptor.attach(p, {
+    onEnter(a) { PORT_CACHE.delete(a[0].toUInt32()); }
+  });
 }
 
 function hookSend(name) {
@@ -287,4 +313,5 @@ hookSend('send');
 hookSend('sendto');
 hookRecv('recv');
 hookRecv('recvfrom');
+hookCloseSocket();
 send('READY');

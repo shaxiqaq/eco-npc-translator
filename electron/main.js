@@ -199,10 +199,6 @@ function handleDamageMessage(message) {
     broadcast('damage:snapshot', latestSnapshot);
     return;
   }
-  if (message.type === 'damage-event') {
-    broadcast('damage:event', message.event);
-    return;
-  }
   if (message.type === 'status') {
     setServiceState('damage', message.state, message.message || '', { pid: message.pid, log: message.log });
     addLog('damage', message.state === 'error' ? 'error' : 'info', message.message || message.state);
