@@ -3,6 +3,8 @@ const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
+const { listGameProcesses } = require('./lib/game-processes');
+const { mergeDeep, readJson, writeJson } = require('./lib/json-store');
 
 const isDemo = process.env.ECO_UI_DEMO === '1';
 const services = { damage: null, translator: null };
@@ -16,8 +18,19 @@ let overlayWindow = null;
 let latestSnapshot = null;
 let overlayEditing = false;
 let demoTimer = null;
+let gameProcesses = [];
+let selectedGamePid = null;
 
 const defaultAppSettings = {
+  game: {
+    pid: null
+  },
+  capture: {
+    skill: true,
+    normal: true,
+    pet: true,
+    taken: true
+  },
   overlay: {
     visible: true,
     x: null,
@@ -41,31 +54,6 @@ function dataDir() {
 
 function backendDir() {
   return app.isPackaged ? process.resourcesPath : path.resolve(__dirname, '..');
-}
-
-function readJson(file, fallback = {}) {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJson(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(value, null, 2), 'utf8');
-}
-
-function mergeDeep(base, incoming) {
-  const output = { ...base };
-  for (const [key, value] of Object.entries(incoming || {})) {
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      output[key] = mergeDeep(base[key] || {}, value);
-    } else {
-      output[key] = value;
-    }
-  }
-  return output;
 }
 
 function appSettings() {
@@ -92,14 +80,71 @@ function translationSettings() {
   };
 }
 
+function processSelectionLocked() {
+  return Object.values(services).some(Boolean)
+    || Object.values(serviceState).some((service) => ['starting', 'running', 'stopping'].includes(service.state));
+}
+
 function publicState() {
   return {
     services: serviceState,
+    gameProcesses,
+    selectedGamePid,
+    processSelectionLocked: processSelectionLocked(),
     snapshot: latestSnapshot,
     settings: appSettings(),
     translation: translationSettings(),
     logs: logs.slice(-300)
   };
+}
+
+function persistSelectedGamePid(pid) {
+  const settings = appSettings();
+  settings.game.pid = pid;
+  writeJson(path.join(dataDir(), 'app_settings.json'), settings);
+}
+
+async function refreshGameProcesses() {
+  try {
+    const found = isDemo
+      ? [
+          { pid: 1699, title: 'ECO - 角色一', started: '21:08:12' },
+          { pid: 2840, title: 'ECO - 角色二', started: '21:16:45' }
+        ]
+      : await listGameProcesses();
+    const previousPid = selectedGamePid;
+    const configuredPid = Number(appSettings().game?.pid) || null;
+    gameProcesses = found;
+    selectedGamePid = [previousPid, configuredPid]
+      .find((pid) => gameProcesses.some((process) => process.pid === pid))
+      || gameProcesses.at(-1)?.pid
+      || null;
+
+    if (!isDemo && selectedGamePid !== configuredPid) persistSelectedGamePid(selectedGamePid);
+    if (previousPid && selectedGamePid !== previousPid) latestSnapshot = null;
+    broadcastState();
+    return { ok: true, processes: gameProcesses, selectedPid: selectedGamePid };
+  } catch (error) {
+    gameProcesses = [];
+    selectedGamePid = null;
+    broadcastState();
+    return { ok: false, error: `读取游戏进程失败：${error.message}`, processes: [] };
+  }
+}
+
+function selectGameProcess(pid) {
+  if (processSelectionLocked()) {
+    return { ok: false, error: '请先停止伤害采集和 NPC 翻译，再切换游戏进程' };
+  }
+  const normalized = Number(pid);
+  if (!gameProcesses.some((process) => process.pid === normalized)) {
+    return { ok: false, error: '所选游戏进程已经退出，请刷新列表' };
+  }
+  selectedGamePid = normalized;
+  latestSnapshot = null;
+  if (!isDemo) persistSelectedGamePid(selectedGamePid);
+  broadcastState();
+  return { ok: true, selectedPid: selectedGamePid };
 }
 
 function broadcast(channel, payload) {
@@ -124,19 +169,20 @@ function setServiceState(name, state, message, extra = {}) {
 }
 
 function runtimeFor(name) {
+  const processArgs = selectedGamePid ? ['--pid', String(selectedGamePid)] : [];
   if (!app.isPackaged) {
     const script = name === 'damage' ? 'eco_damage_bridge.py' : 'eco_npc_mitm.py';
-    return { command: process.env.ECO_PYTHON || 'python', args: ['-u', path.join(backendDir(), script)] };
+    return { command: process.env.ECO_PYTHON || 'python', args: ['-u', path.join(backendDir(), script), ...processArgs] };
   }
   if (name === 'damage') {
     return {
       command: path.join(process.resourcesPath, 'backend', 'damage', 'eco_damage_bridge', 'eco_damage_bridge.exe'),
-      args: []
+      args: processArgs
     };
   }
   return {
     command: path.join(process.resourcesPath, 'backend', 'translator', 'eco_npc_mitm', 'eco_npc_mitm.exe'),
-    args: []
+    args: processArgs
   };
 }
 
@@ -161,6 +207,11 @@ function handleDamageMessage(message) {
 function startService(name) {
   if (!['damage', 'translator'].includes(name)) return { ok: false, error: '未知服务' };
   if (services[name]) return { ok: true };
+  if (!selectedGamePid) {
+    const error = '没有可用的 eco.exe，请启动游戏并刷新进程列表';
+    setServiceState(name, 'error', error);
+    return { ok: false, error };
+  }
   if (isDemo && name === 'damage') {
     startDemo();
     return { ok: true };
@@ -168,7 +219,7 @@ function startService(name) {
 
   const runtime = runtimeFor(name);
   setServiceState(name, 'starting', '正在启动');
-  addLog(name, 'info', `启动 ${path.basename(runtime.command)}`);
+  addLog(name, 'info', `启动 ${path.basename(runtime.command)}，连接游戏进程 ${selectedGamePid}`);
   try {
     const child = spawn(runtime.command, runtime.args, {
       cwd: backendDir(),
@@ -185,6 +236,12 @@ function startService(name) {
     services[name] = child;
 
     if (name === 'damage') {
+      if (child.stdin.writable) {
+        child.stdin.write(`${JSON.stringify({
+          action: 'set-categories',
+          categories: appSettings().capture
+        })}\n`);
+      }
       const lines = readline.createInterface({ input: child.stdout });
       lines.on('line', (line) => {
         try {
@@ -197,8 +254,9 @@ function startService(name) {
       const lines = readline.createInterface({ input: child.stdout });
       lines.on('line', (line) => {
         if (line.trim()) addLog(name, 'info', line.trim());
-        if (line.includes('attach')) setServiceState(name, 'running', 'NPC 翻译正在运行');
+        if (line.includes('attach')) setServiceState(name, 'running', `NPC 翻译正在运行（进程 ${selectedGamePid}）`, { pid: selectedGamePid });
         if (line.includes('没有运行中的 eco.exe')) setServiceState(name, 'error', '没有找到 eco.exe，请先进入游戏');
+        if (line.includes('指定的 eco.exe 进程不存在')) setServiceState(name, 'error', '所选游戏进程已经退出，请刷新后重选');
         if (line.includes('还没有配置翻译服务')) setServiceState(name, 'error', '请先完成翻译设置');
       });
     }
@@ -218,7 +276,7 @@ function startService(name) {
     });
     if (name === 'translator') setTimeout(() => {
       if (services[name] === child && serviceState[name].state === 'starting') {
-        setServiceState(name, 'running', 'NPC 翻译正在运行');
+        setServiceState(name, 'running', `NPC 翻译正在运行（进程 ${selectedGamePid}）`, { pid: selectedGamePid });
       }
     }, 1600);
     return { ok: true };
@@ -350,6 +408,12 @@ function createMainWindow() {
   mainWindow.once('ready-to-show', () => mainWindow.show());
   if (process.env.ECO_CAPTURE_PATH) {
     mainWindow.webContents.once('did-finish-load', () => setTimeout(async () => {
+      if (process.env.ECO_CAPTURE_PAGE) {
+        await mainWindow.webContents.executeJavaScript(
+          `document.querySelector('[data-page="${process.env.ECO_CAPTURE_PAGE}"]')?.click()`
+        );
+        await new Promise((resolve) => setTimeout(resolve, 180));
+      }
       const image = await mainWindow.webContents.capturePage();
       fs.writeFileSync(process.env.ECO_CAPTURE_PATH, image.toPNG());
       app.quit();
@@ -415,7 +479,7 @@ function demoSnapshot(seed) {
 function startDemo() {
   if (demoTimer) return;
   let seed = 0;
-  setServiceState('damage', 'running', '演示数据正在运行', { pid: 1699 });
+  setServiceState('damage', 'running', '演示数据正在运行', { pid: selectedGamePid });
   latestSnapshot = demoSnapshot(seed);
   broadcast('damage:snapshot', latestSnapshot);
   demoTimer = setInterval(() => {
@@ -432,6 +496,8 @@ function stopDemo() {
 }
 
 ipcMain.handle('app:get-state', () => publicState());
+ipcMain.handle('game-processes:refresh', () => refreshGameProcesses());
+ipcMain.handle('game-processes:select', (_event, pid) => selectGameProcess(pid));
 ipcMain.handle('service:start', (_event, name) => startService(name));
 ipcMain.handle('service:stop', (_event, name) => stopService(name));
 ipcMain.handle('damage:reset', () => resetDamage());
@@ -446,6 +512,12 @@ ipcMain.handle('overlay:set-editing', (_event, editing) => ({ ok: setOverlayEdit
 ipcMain.handle('settings:save-app', (_event, incoming) => {
   const current = mergeDeep(appSettings(), incoming || {});
   writeJson(path.join(dataDir(), 'app_settings.json'), current);
+  if (incoming?.capture && services.damage?.stdin?.writable) {
+    services.damage.stdin.write(`${JSON.stringify({
+      action: 'set-categories',
+      categories: current.capture
+    })}\n`);
+  }
   if (overlayWindow && !overlayWindow.isDestroyed()) {
     overlayWindow.setBounds(overlayBounds(current.overlay));
     overlayWindow.setOpacity(Math.min(1, Math.max(0.3, Number(current.overlay.opacity) || 1)));
@@ -489,9 +561,10 @@ ipcMain.handle('logs:open-folder', () => {
   return { ok: true };
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   createMainWindow();
   createOverlayWindow();
+  await refreshGameProcesses();
   const settings = appSettings();
   if (isDemo) startDemo();
   else {

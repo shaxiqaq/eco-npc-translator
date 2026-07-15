@@ -24,6 +24,7 @@ Expand-Archive -LiteralPath $ElectronZip.FullName -DestinationPath $Target -Forc
 Copy-Item -LiteralPath (Join-Path $Electron "main.js") -Destination $Stage
 Copy-Item -LiteralPath (Join-Path $Electron "preload.js") -Destination $Stage
 Copy-Item -LiteralPath (Join-Path $Electron "package.json") -Destination $Stage
+Copy-Item -LiteralPath (Join-Path $Electron "lib") -Destination $Stage -Recurse
 Copy-Item -LiteralPath (Join-Path $Electron "renderer") -Destination $Stage -Recurse
 Copy-Item -LiteralPath (Join-Path $Electron "overlay") -Destination $Stage -Recurse
 

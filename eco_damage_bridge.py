@@ -45,12 +45,21 @@ def command_loop(meter, stop_event):
         if action == "reset":
             meter.reset()
             emit("notice", level="success", message="伤害统计已清空")
+        elif action == "set-categories":
+            meter.set_capture_categories(command.get("categories"))
+            emit(
+                "notice",
+                level="success",
+                message="战斗采集项目已更新",
+                categories=dict(meter.capture_categories),
+            )
         elif action == "stop":
             stop_event.set()
 
 
 def main():
     parser = argparse.ArgumentParser(description="ECO damage data bridge")
+    parser.add_argument("--pid", type=int, help="要连接的 eco.exe 进程编号")
     parser.add_argument("--self-id", type=lambda value: int(value, 0))
     parser.add_argument("--interval", type=float, default=0.25)
     args = parser.parse_args()
@@ -66,7 +75,19 @@ def main():
         emit("status", service="damage", state="error", message="没有找到 eco.exe，请先进入游戏")
         return 2
 
-    pid = max(games, key=lambda process: process.pid).pid
+    if args.pid is not None:
+        selected = next((process for process in games if process.pid == args.pid), None)
+        if selected is None:
+            emit(
+                "status",
+                service="damage",
+                state="error",
+                message=f"指定的 eco.exe 进程不存在（进程 {args.pid}）",
+            )
+            return 2
+        pid = selected.pid
+    else:
+        pid = max(games, key=lambda process: process.pid).pid
     meter = DamageMeter(out_path=log_path, self_id=args.self_id, game_chat=False)
     meter.event_sink = lambda event: emit("damage-event", event=event)
 

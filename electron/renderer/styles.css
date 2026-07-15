@@ -47,7 +47,16 @@ svg { width: 18px; height: 18px; stroke-width: 1.8; flex: 0 0 auto; }
 .topbar h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
 .topbar p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
 .top-actions, .toolbar-actions { display: flex; align-items: center; gap: 9px; }
+.game-process-picker { height: 38px; display: flex; align-items: center; gap: 7px; padding-left: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.game-process-picker > svg { width: 16px; height: 16px; color: var(--amber); }
+.game-process-picker select { width: 218px; height: 34px; padding: 0 24px 0 2px; border: 0; background: transparent; box-shadow: none; color: #d8dcdd; font-size: 11px; }
+.game-process-picker select:focus { border: 0; box-shadow: none; }
+.game-process-picker select:disabled { color: #7d858a; cursor: not-allowed; }
+.game-process-picker .icon-btn { width: 34px; height: 36px; border-width: 0 0 0 1px; border-radius: 0 5px 5px 0; background: transparent; }
+.game-process-picker .icon-btn.refreshing svg { animation: process-spin .8s linear infinite; }
+@keyframes process-spin { to { transform: rotate(360deg); } }
 .game-state { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; margin-right: 8px; }
+.game-state.ready { color: var(--amber); }
 .game-state.connected { color: var(--green); }
 .btn { min-height: 36px; border-radius: 6px; border: 1px solid transparent; padding: 0 14px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; font-size: 12px; font-weight: 650; }
 .btn.primary { background: var(--amber); color: #17130c; }
@@ -91,6 +100,13 @@ svg { width: 18px; height: 18px; stroke-width: 1.8; flex: 0 0 auto; }
 .metric span, .metric strong, .metric small { display: block; }
 .metric span { color: var(--muted); font-size: 11px; }
 .metric .metric-kicker { font-weight: 700; }
+.metric-heading { min-height: 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.metric-heading .metric-kicker { min-width: 0; }
+.metric-switch { flex: 0 0 auto; }
+.metric-switch > span { display: block; width: 32px; height: 18px; }
+.metric-switch > span::after { width: 12px; height: 12px; }
+.metric-switch input:checked + span::after { left: 17px; }
+.metric.capture-disabled > strong, .metric.capture-disabled > small { opacity: .42; }
 .metric strong { margin: 12px 0 9px; font-size: 27px; font-variant-numeric: tabular-nums; }
 .metric small { color: var(--muted); font-size: 10px; }
 .metric small b { color: #cbd0d2; font-weight: 600; }
@@ -121,6 +137,19 @@ svg { width: 18px; height: 18px; stroke-width: 1.8; flex: 0 0 auto; }
 .empty-state { min-height: 116px; display: grid; place-items: center; color: #687075; font-size: 11px; }
 
 .page-toolbar { min-height: 48px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.capture-controls { min-height: 58px; margin-bottom: 14px; display: grid; grid-template-columns: 122px repeat(4, minmax(0, 1fr)); align-items: stretch; border: 1px solid var(--line); background: var(--surface); }
+.capture-controls-title, .capture-control { display: flex; align-items: center; gap: 9px; padding: 0 14px; border-right: 1px solid var(--line); }
+.capture-controls-title { color: var(--muted); font-size: 11px; font-weight: 700; }
+.capture-controls-title svg { color: var(--amber); }
+.capture-control:last-child { border-right: 0; }
+.capture-control b { min-width: 0; flex: 1; font-size: 10px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.capture-control .switch > span { width: 32px; height: 18px; }
+.capture-control .switch > span::after { width: 12px; height: 12px; }
+.capture-control .switch input:checked + span::after { left: 17px; }
+.capture-color { width: 6px; height: 20px; border-radius: 2px; background: #dfe4e3; }
+.capture-color.skill { background: var(--amber); }
+.capture-color.pet { background: var(--green); }
+.capture-color.taken { background: var(--red); }
 .segmented { display: inline-flex; padding: 3px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
 .segmented button { height: 32px; padding: 0 12px; border: 0; background: transparent; color: var(--muted); border-radius: 4px; cursor: pointer; font-size: 11px; }
 .segmented button.active { background: #373d41; color: var(--text); }
@@ -205,6 +234,9 @@ input:focus, select:focus { border-color: var(--amber); box-shadow: 0 0 0 2px rg
 @media (max-width: 1120px) {
   .app-shell { grid-template-columns: 204px minmax(0, 1fr); }
   .topbar, .page { padding-left: 22px; padding-right: 22px; }
+  .top-actions { gap: 6px; }
+  .game-process-picker select { width: 168px; }
+  .game-state { display: none; }
   .service-strip { grid-template-columns: 1fr; }
   .service-panel { border-right: 0; border-bottom: 1px solid var(--line); min-height: 82px; }
   .service-panel:last-child { border-bottom: 0; }
@@ -212,4 +244,7 @@ input:focus, select:focus { border-color: var(--amber); box-shadow: 0 0 0 2px rg
   .metric:nth-child(2) { border-right: 0; }
   .metric:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
   .two-column { grid-template-columns: 1fr; }
+  .capture-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .capture-controls-title { grid-column: 1 / -1; min-height: 42px; border-bottom: 1px solid var(--line); }
+  .capture-control { min-height: 50px; border-bottom: 1px solid var(--line); }
 }

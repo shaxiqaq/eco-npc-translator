@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('eco', {
   getState: () => ipcRenderer.invoke('app:get-state'),
+  refreshGameProcesses: () => ipcRenderer.invoke('game-processes:refresh'),
+  selectGameProcess: (pid) => ipcRenderer.invoke('game-processes:select', pid),
   startService: (name) => ipcRenderer.invoke('service:start', name),
   stopService: (name) => ipcRenderer.invoke('service:stop', name),
   resetDamage: () => ipcRenderer.invoke('damage:reset'),
