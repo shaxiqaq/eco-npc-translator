@@ -20,7 +20,8 @@ electron/release/ECO-Toolbox-Setup-0.2.0.exe
 安装后的主界面使用左侧菜单组织全部功能：
 
 - `总览`：启动或停止伤害采集、NPC 翻译和透明悬浮窗。
-- `伤害统计`：分别查看技能造成、普通攻击造成、宠物造成和受到伤害流水。
+- `总览`与`伤害统计`：均可单独开关技能造成、普通攻击造成、宠物造成和受到伤害四类采集，两页开关实时同步。关闭后，对应的新伤害不会进入统计、流水或 Overlay，开关状态会自动保存。
+- 顶部游戏进程选择器会列出全部 `eco.exe`。多开游戏时，先停止采集与翻译，刷新列表并选择目标 PID，再启动服务；伤害采集和 NPC 翻译会连接到同一个所选进程。
 - `NPC 翻译`：查看翻译运行状态和实时日志。
 - `运行日志`：集中查看两个后端的输出。
 - `设置`：配置翻译服务、Overlay 样式、位置和自动启动行为。
@@ -170,6 +171,14 @@ Electron 开发版：
 cd electron
 npm.cmd install
 npm.cmd start
+```
+
+运行回归测试：
+
+```powershell
+python -m unittest discover -s tests -v
+cd electron
+npm.cmd test
 ```
 
 生成 Windows 安装包：

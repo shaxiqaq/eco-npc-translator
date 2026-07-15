@@ -15,9 +15,14 @@ import time
 from collections import Counter, deque
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import frida
 
 from eco_damage_capture import MAP_PORT, parse_packet
+from eco_damage_categories import (
+    category_for_damage,
+    default_capture_categories,
+    update_capture_categories,
+)
+from eco_damage_console import render
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGDIR = os.path.join(HERE, "logs")
@@ -32,7 +37,8 @@ MOB_NAMES = os.path.join(HERE, "mob_names.json")
 
 def load_skill_names(path=SKILL_NAMES):
     try:
-        data = json.load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as stream:
+            data = json.load(stream)
     except Exception:
         return {}
     if not isinstance(data, dict):
@@ -50,7 +56,8 @@ def load_skill_names(path=SKILL_NAMES):
 
 def load_id_names(path):
     try:
-        data = json.load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as stream:
+            data = json.load(stream)
     except Exception:
         return {}
     if not isinstance(data, dict):
@@ -64,11 +71,6 @@ def load_id_names(path):
         if isinstance(value, str) and value.strip():
             names[item_id] = value.strip()
     return names
-
-
-def fmt_time(seconds):
-    seconds = max(0, int(seconds))
-    return f"{seconds // 60:02d}:{seconds % 60:02d}"
 
 
 def now_label():
@@ -90,7 +92,6 @@ class DamageMeter:
         self.recent_targets = deque(maxlen=16)
         self.recent_actions = deque(maxlen=32)
         self.recent_damage_hits = deque(maxlen=32)
-        self.recent_hp_delta_hits = deque(maxlen=32)
         self.events = deque(maxlen=12)
         self.damage_details = deque(maxlen=12)
         self.damage_history = []
@@ -103,6 +104,7 @@ class DamageMeter:
         self.unknown_combat_actors = Counter()
         self.skill_names = load_skill_names()
         self.mob_names = load_id_names(MOB_NAMES)
+        self.capture_categories = default_capture_categories()
         self.reset()
 
     def close(self):
@@ -111,6 +113,21 @@ class DamageMeter:
 
     def set_script(self, script):
         self.script = script
+
+    def set_capture_categories(self, categories):
+        if not isinstance(categories, dict):
+            return
+        with self.lock:
+            self.capture_categories = update_capture_categories(
+                self.capture_categories,
+                categories,
+            )
+
+    def category_enabled(self, category):
+        return self.capture_categories.get(category, True)
+
+    def should_capture_damage(self, side, skill_id=None):
+        return self.category_enabled(category_for_damage(side, skill_id))
 
     def build_public_chat_subpacket(self, text):
         actor = self.self_id or 0
@@ -200,7 +217,6 @@ class DamageMeter:
             self.unknown_combat_actors.clear()
             self.recent_actions.clear()
             self.recent_damage_hits.clear()
-            self.recent_hp_delta_hits.clear()
 
     def mark_self_candidate(self, actor, score):
         if not self.auto_self or actor is None:
@@ -333,7 +349,7 @@ class DamageMeter:
         return self.is_pet_actor(src)
 
     def add_pet_damage(self, ts, src, dst, damage, skill_id, parsed=None, source_kind="伤害包"):
-        if damage <= 0:
+        if damage <= 0 or not self.should_capture_damage("pet_dealt", skill_id):
             return None
         self.pet_dealt += damage
         self.hits_pet_dealt += 1
@@ -457,12 +473,6 @@ class DamageMeter:
                 return True
         return False
 
-    def recently_counted_hp_delta(self, ts, actor, damage):
-        for hit_ts, hit_actor, hit_damage in list(self.recent_hp_delta_hits):
-            if actor == hit_actor and damage == hit_damage and 0 <= ts - hit_ts <= 3.0:
-                return True
-        return False
-
     def apply_hp_delta_damage(self, ts, actor, prev_hp, hp):
         if prev_hp is None or hp is None or hp >= prev_hp:
             return False
@@ -487,64 +497,6 @@ class DamageMeter:
             "matched_action": action,
         })
         return False
-
-        skill_id = action.get("skill_id")
-        own = bool(action.get("own"))
-        side = "other"
-        src = action.get("actor")
-        dst = actor
-        if own or (self.self_id is not None and src == self.self_id):
-            side = "dealt"
-            src = self.self_id if self.self_id is not None else "self"
-            self.total_dealt += damage
-            self.skill_dealt += damage
-            self.hits_dealt += 1
-            self.hits_skill_dealt += 1
-            self.max_dealt = max(self.max_dealt, damage)
-            self.max_skill_dealt = max(self.max_skill_dealt, damage)
-            self.by_target[dst] += damage
-            self.by_skill_dealt[skill_id] += damage
-        elif self.self_id is not None and actor == self.self_id:
-            side = "taken"
-            self.total_taken += damage
-            self.skill_taken += damage
-            self.hits_taken += 1
-            self.hits_skill_taken += 1
-            self.max_taken = max(self.max_taken, damage)
-            self.max_skill_taken = max(self.max_skill_taken, damage)
-            self.by_source[src] += damage
-            self.by_skill_taken[skill_id] += damage
-        else:
-            return False
-
-        self.remember_damage_time(ts)
-        detail = self.add_damage_detail(ts, side, src, dst, damage, skill_id,
-                                        source_kind="HP变化推算", raw_op=getattr(self, "_current_op", None))
-        self.emit_event({"side": side, "damage": damage, "total": self.total_dealt if side == "dealt" else self.total_taken,
-                         "target": dst, "source": src, "skill": detail["skill"], "ts": ts})
-        self.log({
-            "ts": ts,
-            "kind": "damage",
-            "source_kind": "hp_delta",
-            "side": side,
-            "self": self.self_id,
-            "src": src,
-            "dst": dst,
-            "damage": damage,
-            "skill_id": skill_id,
-            "skill": self.skill_label(skill_id),
-            "src_label": self.actor_label(src),
-            "dst_label": self.actor_label(dst),
-            "src_mob_id": self.actor_mobs.get(src),
-            "dst_mob_id": self.actor_mobs.get(dst),
-            "matched_action": action,
-            "dealt_total": self.total_dealt,
-            "taken_total": self.total_taken,
-        })
-        self.recent_damage_hits.appendleft((ts, dst))
-        self.recent_hp_delta_hits.appendleft((ts, dst, damage))
-        action["hp_delta_used"] = True
-        return True
 
     def add_damage_detail(self, ts, side, src, dst, damage, skill_id,
                           source_kind="伤害包", raw_op=None):
@@ -587,6 +539,8 @@ class DamageMeter:
             side = "other"
             src = caster
             if self.self_id is not None and caster == self.self_id:
+                if not self.should_capture_damage("dealt", skill_id):
+                    continue
                 side = "dealt"
                 self.total_dealt += damage
                 self.skill_dealt += damage
@@ -597,6 +551,8 @@ class DamageMeter:
                 self.by_target[dst] += damage
                 self.by_skill_dealt[skill_id] += damage
             elif self.self_id is not None and dst == self.self_id:
+                if not self.should_capture_damage("taken", skill_id):
+                    continue
                 side = "taken"
                 self.total_taken += damage
                 self.skill_taken += damage
@@ -608,8 +564,10 @@ class DamageMeter:
                 self.by_skill_taken[skill_id] += damage
             elif self.maybe_mark_pet_from_damage(ts, caster, dst):
                 side = "pet_dealt"
-                self.add_pet_damage(ts, caster, dst, damage, skill_id, parsed,
-                                    source_kind="宠物技能结果包")
+                detail = self.add_pet_damage(ts, caster, dst, damage, skill_id, parsed,
+                                             source_kind="宠物技能结果包")
+                if detail is None:
+                    continue
             elif self.self_id is None and (
                 self.best_self_candidate() == caster
                 or self.has_recent_own_skill_request(ts, skill_id, dst)
@@ -618,6 +576,8 @@ class DamageMeter:
                 self.self_id = caster
                 self.auto_self = False
                 src = caster
+                if not self.should_capture_damage("dealt", skill_id):
+                    continue
                 self.total_dealt += damage
                 self.skill_dealt += damage
                 self.hits_dealt += 1
@@ -629,11 +589,7 @@ class DamageMeter:
             else:
                 continue
 
-            if side == "pet_dealt":
-                detail = self.damage_history[-1] if self.damage_history else {
-                    "skill": self.skill_label(skill_id)
-                }
-            else:
+            if side != "pet_dealt":
                 self.remember_damage_time(ts)
                 detail = self.add_damage_detail(ts, side, src, dst, damage, skill_id,
                                             source_kind="技能结果包", raw_op=parsed.get("_op"))
@@ -820,20 +776,6 @@ class DamageMeter:
         self.note_unknown_actor(dst)
         action = self.find_action(ts, src, dst)
         skill_id = None
-        if damage > 0 and self.recently_counted_hp_delta(ts, dst, damage):
-            self.log({
-                "ts": ts,
-                "kind": "damage_duplicate",
-                "reason": "same HP delta already counted",
-                "src": src,
-                "dst": dst,
-                "damage": damage,
-                "raw_op": parsed.get("_op"),
-                "raw_dir": parsed.get("_dir"),
-                "raw_sub": parsed.get("_sub"),
-                "matched_action": action,
-            })
-            return
         fresh_skill_action = self.find_fresh_skill_action(ts, src, dst)
         if fresh_skill_action is not None:
             action = fresh_skill_action
@@ -856,6 +798,8 @@ class DamageMeter:
 
         side = "other"
         if self.self_id is not None and src == self.self_id:
+            if not self.should_capture_damage("dealt", skill_id):
+                return
             side = "dealt"
             self.total_dealt += damage
             if damage > 0:
@@ -882,6 +826,8 @@ class DamageMeter:
             elif damage <= 0:
                 self.events.appendleft((now_label(), f"{self.actor_label(src)} 未命中 {self.actor_label(dst)}"))
         elif self.self_id is not None and dst == self.self_id:
+            if not self.should_capture_damage("taken", skill_id):
+                return
             side = "taken"
             self.total_taken += damage
             if damage > 0:
@@ -909,6 +855,8 @@ class DamageMeter:
                 self.events.appendleft((now_label(), f"{self.actor_label(src)} 未命中 {self.actor_label(dst)}"))
 
         elif damage > 0 and self.maybe_mark_pet_from_damage(ts, src, dst):
+            if not self.should_capture_damage("pet_dealt", skill_id):
+                return
             side = "pet_dealt"
             self.add_pet_damage(ts, src, dst, damage, skill_id, parsed,
                                 source_kind="宠物普通攻击包" if skill_id is None else "宠物技能伤害包")
@@ -1022,6 +970,7 @@ class DamageMeter:
                 "pet_sources": list(self.by_pet.most_common(5)),
                 "pet_skills": list(self.by_pet_skill.most_common(8)),
                 "pet_actors": sorted(self.pet_actors),
+                "capture_categories": dict(self.capture_categories),
                 "recent_actions": list(self.recent_actions)[:10],
                 "damage_details": list(self.damage_details),
                 "damage_history": list(self.damage_history),
@@ -1031,150 +980,12 @@ class DamageMeter:
             }
 
 
-def render(meter):
-    snap = meter.snapshot()
-    os.system("cls")
-    print("技能伤害明细")
-    print("================")
-    self_text = snap["self_id"] if snap["self_id"] is not None else f"detecting... {snap['candidates']}"
-    print(f"角色编号  : {self_text}")
-    print(f"运行时间  : {fmt_time(snap['elapsed'])}   战斗时间: {fmt_time(snap['active'])}")
-    print()
-    print("伤害统计")
-    print(f"  技能造成      : {snap['skill_dealt']:>8}   秒伤: {snap['skill_dps']:>7.2f}   次数: {snap['hits_skill_dealt']:>3}   最大: {snap['max_skill_dealt']}")
-    print(f"  普通攻击造成  : {snap['normal_dealt']:>8}   秒伤: {snap['normal_dps']:>7.2f}   次数: {snap['hits_normal_dealt']:>3}   最大: {snap['max_normal_dealt']}")
-    print(f"  宠物造成      : {snap['pet_dealt']:>8}   秒伤: {snap['pet_dps']:>7.2f}   次数: {snap['hits_pet_dealt']:>3}   最大: {snap['max_pet_dealt']}")
-    print(f"      宠物技能  : {snap['pet_skill_dealt']:>8}   次数: {snap['hits_pet_skill_dealt']:>3}   最大: {snap['max_pet_skill_dealt']}")
-    print(f"      宠物普攻  : {snap['pet_normal_dealt']:>8}   次数: {snap['hits_pet_normal_dealt']:>3}   最大: {snap['max_pet_normal_dealt']}")
-    print(f"  对我造成      : {snap['taken']:>8}   秒均: {snap['tps']:>7.2f}   次数: {snap['hits_taken']:>3}   最大: {snap['max_taken']}")
-    print(f"      其中技能  : {snap['skill_taken']:>8}   次数: {snap['hits_skill_taken']:>3}   最大: {snap['max_skill_taken']}")
-    print(f"      其中普通  : {snap['normal_taken']:>8}   次数: {snap['hits_normal_taken']:>3}   最大: {snap['max_normal_taken']}")
-    if snap["skills_dealt"]:
-        dealt_skills = " / ".join(f"{meter.skill_label(skill_id)}:{damage}" for skill_id, damage in snap["skills_dealt"][:4])
-        print(f"  技能造成: {dealt_skills}")
-    else:
-        print("  技能造成: -")
-    if snap["skills_taken"]:
-        taken_skills = " / ".join(f"{meter.skill_label(skill_id)}:{damage}" for skill_id, damage in snap["skills_taken"][:4])
-        print(f"  技能受到: {taken_skills}")
-    else:
-        print("  技能受到: -")
-    if snap["pet_skills"]:
-        pet_skills = " / ".join(f"{meter.skill_label(skill_id)}:{damage}" for skill_id, damage in snap["pet_skills"][:4])
-        print(f"  宠物技能: {pet_skills}")
-    else:
-        print("  宠物技能: -")
-    print()
-    print("技能造成流水")
-    skill_dealt_hits = [
-        item for item in snap["damage_history"]
-        if item.get("skill_id") is not None and item.get("side") == "dealt"
-    ]
-    if skill_dealt_hits:
-        for item in skill_dealt_hits[-10:]:
-            skill_id = item.get("skill_id")
-            op = item.get("raw_op")
-            op_text = f" op={op}" if op is not None else ""
-            print(f"  [{item['time']}] 造成 {item['damage']}  "
-                  f"{item['source']} -> {item['target']}")
-            print(f"      技能: {item['skill']}#{skill_id}  来源: {item.get('source_kind', '未知')}{op_text}")
-    else:
-        print("  - 还没有技能造成伤害")
-    print()
-    print("技能受到流水")
-    skill_taken_hits = [
-        item for item in snap["damage_history"]
-        if item.get("skill_id") is not None and item.get("side") == "taken"
-    ]
-    if skill_taken_hits:
-        for item in skill_taken_hits[-10:]:
-            skill_id = item.get("skill_id")
-            op = item.get("raw_op")
-            op_text = f" op={op}" if op is not None else ""
-            print(f"  [{item['time']}] 受到 {item['damage']}  "
-                  f"{item['source']} -> {item['target']}")
-            print(f"      技能: {item['skill']}#{skill_id}  来源: {item.get('source_kind', '未知')}{op_text}")
-    else:
-        print("  - 还没有技能受到伤害")
-    print()
-    print("宠物造成流水")
-    pet_hits = [
-        item for item in snap["damage_history"]
-        if item.get("side") == "pet_dealt"
-    ]
-    if pet_hits:
-        for item in pet_hits[-10:]:
-            skill_id = item.get("skill_id")
-            op = item.get("raw_op")
-            op_text = f" op={op}" if op is not None else ""
-            kind = "技能" if skill_id is not None else "普攻"
-            skill_text = f"  技能: {item['skill']}#{skill_id}" if skill_id is not None else ""
-            print(f"  [{item['time']}] 宠物{kind} {item['damage']}  "
-                  f"{item['source']} -> {item['target']}  来源: {item.get('source_kind', '未知')}{op_text}")
-            if skill_text:
-                print(f"     {skill_text}")
-    else:
-        print("  - 还没有宠物造成伤害")
-    print()
-    print("普通攻击造成流水")
-    normal_dealt_hits = [
-        item for item in snap["damage_history"]
-        if item.get("skill_id") is None and item.get("side") == "dealt"
-    ]
-    if normal_dealt_hits:
-        for item in normal_dealt_hits[-10:]:
-            op = item.get("raw_op")
-            op_text = f" op={op}" if op is not None else ""
-            print(f"  [{item['time']}] 造成 {item['damage']}  "
-                  f"{item['source']} -> {item['target']}  来源: {item.get('source_kind', '未知')}{op_text}")
-    else:
-        print("  - 还没有普通攻击造成伤害")
-    print()
-    print("普通攻击受到流水")
-    normal_taken_hits = [
-        item for item in snap["damage_history"]
-        if item.get("skill_id") is None and item.get("side") == "taken"
-    ]
-    if normal_taken_hits:
-        for item in normal_taken_hits[-10:]:
-            op = item.get("raw_op")
-            op_text = f" op={op}" if op is not None else ""
-            print(f"  [{item['time']}] 受到 {item['damage']}  "
-                  f"{item['source']} -> {item['target']}  来源: {item.get('source_kind', '未知')}{op_text}")
-    else:
-        print("  - 还没有普通攻击受到伤害")
-    print()
-    print("最近技能动作")
-    skill_actions = [a for a in snap.get("recent_actions", []) if a.get("kind") == "skill"]
-    if skill_actions:
-        for action in skill_actions[:6]:
-            age = max(0, int(time.time() - action["ts"]))
-            print(f"  {age:>2}s前  {meter.skill_label(action.get('skill_id'))}#{action.get('skill_id')}  "
-                  f"{meter.actor_label(action.get('actor'))} -> {meter.actor_label(action.get('target'))}")
-    else:
-        print("  -")
-    print()
-    print("未识别对象")
-    if snap["unknown_actors"]:
-        guess = snap.get("mob_template_guess")
-        if guess is not None:
-            guess_name = meter.mob_names.get(guess) or f"怪物#{guess}"
-            print(f"  当前按已出现怪物推测为: {guess_name}（等待精确出现包确认）")
-        for actor, count in snap["unknown_actors"]:
-            print(f"  {actor}  出现在伤害包 {count} 次；等待怪物出现包或名字包")
-    else:
-        print("  -")
-    print()
-    print("最近")
-    for t, text in snap["events"][:10]:
-        print(f"  [{t}] {text}")
-    print()
-    print("F8 清空当前明细，F10 测试游戏聊天，Ctrl+C 停止")
-
-
 def main():
+    import frida
+
     ap = argparse.ArgumentParser(description="实时伤害统计")
     ap.add_argument("self_actor_id", nargs="?", type=lambda x: int(x, 0), help="可选：自己的角色编号")
+    ap.add_argument("--pid", type=int, help="要连接的 eco.exe 进程编号")
     ap.add_argument("--no-game-chat", action="store_true", help="不向游戏聊天框注入本地消息")
     ap.add_argument("--chat-mode", choices=("whole", "public", "both"), default="whole",
                     help="本地游戏聊天包格式")
@@ -1189,7 +1000,14 @@ def main():
     if not ecos:
         print("eco.exe is not running")
         return 1
-    pid = max(ecos, key=lambda x: x.pid).pid
+    if args.pid is not None:
+        selected = next((process for process in ecos if process.pid == args.pid), None)
+        if selected is None:
+            print(f"指定的 eco.exe 进程不存在（进程 {args.pid}）")
+            return 2
+        pid = selected.pid
+    else:
+        pid = max(ecos, key=lambda x: x.pid).pid
 
     js = open(os.path.join(HERE, "_damage_capture.js"), encoding="utf-8").read()
     js = js.replace("__MAP_PORT__", str(MAP_PORT))

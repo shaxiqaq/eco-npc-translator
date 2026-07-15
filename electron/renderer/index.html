@@ -32,6 +32,11 @@
       <header class="topbar">
         <div><h1 id="page-title">总览</h1><p id="page-subtitle">游戏连接与实时运行状态</p></div>
         <div class="top-actions">
+          <div class="game-process-picker">
+            <i data-lucide="monitor-dot"></i>
+            <select id="game-process-select" aria-label="选择游戏进程"><option value="">正在查找 eco.exe</option></select>
+            <button class="icon-btn" id="refresh-game-processes" title="刷新游戏进程"><i data-lucide="refresh-cw"></i></button>
+          </div>
           <span class="game-state" id="game-state"><i data-lucide="circle-off"></i>未连接游戏</span>
           <button class="btn secondary" id="stop-all"><i data-lucide="square"></i>全部停止</button>
           <button class="btn primary" id="start-all"><i data-lucide="play"></i>全部启动</button>
@@ -59,10 +64,10 @@
 
         <div class="section-heading"><div><h2>当前战斗</h2><p id="battle-time">战斗时间 00:00</p></div><button class="icon-btn" id="overview-reset" title="清空伤害统计"><i data-lucide="rotate-ccw"></i></button></div>
         <div class="metric-grid">
-          <article class="metric"><span class="metric-kicker amber-text">技能造成</span><strong id="metric-skill">0</strong><small><b id="metric-skill-dps">0.00</b> 秒伤</small></article>
-          <article class="metric"><span class="metric-kicker white-text">普通攻击</span><strong id="metric-normal">0</strong><small><b id="metric-normal-dps">0.00</b> 秒伤</small></article>
-          <article class="metric"><span class="metric-kicker green-text">宠物造成</span><strong id="metric-pet">0</strong><small><b id="metric-pet-dps">0.00</b> 秒伤</small></article>
-          <article class="metric"><span class="metric-kicker red-text">受到伤害</span><strong id="metric-taken">0</strong><small><b id="metric-tps">0.00</b> 秒均</small></article>
+          <article class="metric"><div class="metric-heading"><span class="metric-kicker amber-text">技能造成</span><label class="switch metric-switch" title="采集技能造成"><input type="checkbox" data-capture-key="skill" checked><span></span></label></div><strong id="metric-skill">0</strong><small><b id="metric-skill-dps">0.00</b> 秒伤</small></article>
+          <article class="metric"><div class="metric-heading"><span class="metric-kicker white-text">普通攻击</span><label class="switch metric-switch" title="采集普通攻击造成"><input type="checkbox" data-capture-key="normal" checked><span></span></label></div><strong id="metric-normal">0</strong><small><b id="metric-normal-dps">0.00</b> 秒伤</small></article>
+          <article class="metric"><div class="metric-heading"><span class="metric-kicker green-text">宠物造成</span><label class="switch metric-switch" title="采集宠物造成"><input type="checkbox" data-capture-key="pet" checked><span></span></label></div><strong id="metric-pet">0</strong><small><b id="metric-pet-dps">0.00</b> 秒伤</small></article>
+          <article class="metric"><div class="metric-heading"><span class="metric-kicker red-text">受到伤害</span><label class="switch metric-switch" title="采集受到伤害"><input type="checkbox" data-capture-key="taken" checked><span></span></label></div><strong id="metric-taken">0</strong><small><b id="metric-tps">0.00</b> 秒均</small></article>
         </div>
 
         <div class="two-column">
@@ -91,6 +96,13 @@
             <button class="btn secondary" id="damage-reset"><i data-lucide="rotate-ccw"></i>清空统计</button>
           </div>
         </div>
+        <section class="capture-controls" aria-label="战斗采集项目">
+          <div class="capture-controls-title"><i data-lucide="radio-tower"></i><span>采集项目</span></div>
+          <label class="capture-control"><span class="capture-color skill"></span><b>技能造成</b><span class="switch"><input type="checkbox" id="capture-skill" data-capture-key="skill" checked><span></span></span></label>
+          <label class="capture-control"><span class="capture-color normal"></span><b>普通攻击造成</b><span class="switch"><input type="checkbox" id="capture-normal" data-capture-key="normal" checked><span></span></span></label>
+          <label class="capture-control"><span class="capture-color pet"></span><b>宠物造成</b><span class="switch"><input type="checkbox" id="capture-pet" data-capture-key="pet" checked><span></span></span></label>
+          <label class="capture-control"><span class="capture-color taken"></span><b>受到伤害</b><span class="switch"><input type="checkbox" id="capture-taken" data-capture-key="taken" checked><span></span></span></label>
+        </section>
         <div class="metric-grid compact-metrics">
           <article class="metric"><span>总计造成</span><strong id="damage-total">0</strong><small id="damage-total-hits">0 次命中</small></article>
           <article class="metric"><span>综合秒伤</span><strong id="damage-dps">0.00</strong><small>战斗期间</small></article>

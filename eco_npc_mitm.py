@@ -6,6 +6,7 @@ Stage B (方案A): recvfrom 进程内改包, 把 NPC 对话英文替换成中文
   * 翻译复用 自动翻译/screen_translator, 带磁盘缓存
 用法: python eco_npc_mitm.py   (eco.exe 在线; 首次见到的对话英文, 再次见到变中文)
 """
+import argparse
 import os, sys, json, time, threading, re, queue
 
 # Electron reads child-process output as UTF-8. Frozen Python otherwise uses
@@ -472,6 +473,10 @@ def warmup():
         print("[*] 预热失败(忽略):", e, flush=True)
 
 def main():
+    parser = argparse.ArgumentParser(description="ECO NPC 实时翻译")
+    parser.add_argument("--pid", type=int, help="要连接的 eco.exe 进程编号")
+    args = parser.parse_args()
+
     if not PROVIDER:
         print("=" * 50, flush=True)
         print(" 还没有配置翻译服务 (或缺少 API Key)。", flush=True)
@@ -495,13 +500,21 @@ def main():
     dev = frida.get_local_device()
     ecos = [p for p in dev.enumerate_processes() if p.name.lower() == "eco.exe"]
     if not ecos: print("没有运行中的 eco.exe"); return
+    if args.pid is not None:
+        selected = next((process for process in ecos if process.pid == args.pid), None)
+        if selected is None:
+            print(f"指定的 eco.exe 进程不存在（进程 {args.pid}）", flush=True)
+            return 2
+        pid = selected.pid
+    else:
+        pid = max(ecos, key=lambda process: process.pid).pid
+
     threading.Thread(target=warmup, daemon=True).start()
     threading.Thread(target=_harvest_worker, daemon=True).start()   # 内置采集器(后台)
     print("[*] 内置采集器已启动: 边翻译边按 eventid 攒字典 -> harvest_dict.json", flush=True)
     if SYNC:
         SYNC.start()                       # 启动共享词库同步(拉取+定时上报)
         SYNC.push_all(CACHE)               # 把整个本地缓存补传一遍(含被跳过翻译/命中缓存的)
-    pid = max(ecos, key=lambda x: x.pid).pid
     print("[*] attach", pid, flush=True)
     s = dev.attach(pid)
     sref["s"] = s.create_script(JS); sref["s"].on("message", handler); sref["s"].load()
@@ -553,4 +566,4 @@ def setup_hotkey():
         print("[*] 一键跳过对话热键已关闭", flush=True)
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

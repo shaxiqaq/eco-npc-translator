@@ -24,6 +24,8 @@ let historyFilter = 'all';
 let logFilter = 'all';
 let overlayEditing = false;
 let toastTimer = null;
+const captureKeys = ['skill', 'normal', 'pet', 'taken'];
+const captureLabels = { skill: '技能造成', normal: '普通攻击造成', pet: '宠物造成', taken: '受到伤害' };
 
 function createIcons() {
   if (window.lucide) window.lucide.createIcons({ attrs: { 'aria-hidden': 'true' } });
@@ -88,11 +90,36 @@ function renderServices() {
   $('#translation-heading').textContent = translatorRunning ? '翻译正在运行' : state.services?.translator?.state === 'error' ? '翻译启动失败' : '服务已停止';
   $('#translation-message').textContent = state.services?.translator?.message || '完成翻译设置后即可启动';
 
-  const connected = Boolean(snapshot?.self_id || state.services?.damage?.pid);
+  renderGameProcessSelector();
+  const connectedPid = state.services?.damage?.pid || state.services?.translator?.pid;
+  const connected = Boolean(connectedPid);
+  const selectedPid = Number(state.selectedGamePid) || null;
   const game = $('#game-state');
   game.classList.toggle('connected', connected);
-  game.innerHTML = `<i data-lucide="${connected ? 'circle-check' : 'circle-off'}"></i>${connected ? `已连接 eco.exe${snapshot?.self_id ? ` · 角色 ${snapshot.self_id}` : ''}` : '未连接游戏'}`;
+  game.classList.toggle('ready', !connected && Boolean(selectedPid));
+  game.innerHTML = `<i data-lucide="${connected ? 'circle-check' : selectedPid ? 'circle-dot' : 'circle-off'}"></i>${connected ? `已连接进程 ${connectedPid}${snapshot?.self_id ? ` · 角色 ${snapshot.self_id}` : ''}` : selectedPid ? `已选择进程 ${selectedPid}` : '未找到游戏'}`;
   createIcons();
+}
+
+function renderGameProcessSelector() {
+  const select = $('#game-process-select');
+  const processes = state.gameProcesses || [];
+  const selectedPid = Number(state.selectedGamePid) || null;
+  select.replaceChildren();
+
+  if (!processes.length) {
+    select.add(new Option('没有找到 eco.exe', ''));
+  } else {
+    processes.forEach((process) => {
+      const title = process.title && process.title.toLowerCase() !== 'eco' ? ` · ${process.title}` : '';
+      const started = process.started ? ` · ${process.started}` : '';
+      select.add(new Option(`PID ${process.pid}${title}${started}`, String(process.pid)));
+    });
+    select.value = String(selectedPid || processes.at(-1).pid);
+  }
+
+  select.disabled = Boolean(state.processSelectionLocked) || !processes.length;
+  select.title = state.processSelectionLocked ? '请先停止伤害采集和 NPC 翻译' : '选择要连接的游戏窗口';
 }
 
 function buttonForService(button, running, iconOnly) {
@@ -208,6 +235,8 @@ function applySettingsToForm() {
   $('#summary-sync').textContent = translation.sync_enabled ? '开启' : '关闭';
 
   const settings = state.settings || {};
+  const capture = settings.capture || {};
+  applyCaptureSettings(capture);
   const overlay = settings.overlay || {};
   const startup = settings.startup || {};
   $('#setting-overlay-visible').checked = overlay.visible !== false;
@@ -223,9 +252,32 @@ function applySettingsToForm() {
   $('#setting-start-overlay').checked = startup.overlay !== false;
 }
 
+function applyCaptureSettings(capture = {}) {
+  captureKeys.forEach((key) => {
+    const enabled = capture[key] !== false;
+    $$(`[data-capture-key="${key}"]`).forEach((input) => {
+      input.checked = enabled;
+      input.closest('.metric')?.classList.toggle('capture-disabled', !enabled);
+    });
+  });
+}
+
+async function saveCaptureSetting(key, enabled) {
+  const capture = {
+    ...Object.fromEntries(captureKeys.map((item) => [item, state.settings?.capture?.[item] !== false])),
+    [key]: enabled
+  };
+  applyCaptureSettings(capture);
+  const result = await window.eco.saveAppSettings({ capture });
+  state.settings = result.settings;
+  applyCaptureSettings(result.settings?.capture);
+  showToast(`${captureLabels[key]}采集已${enabled ? '开启' : '关闭'}`);
+}
+
 async function toggleService(name) {
   const running = ['running', 'starting'].includes(state.services?.[name]?.state);
-  if (running) await window.eco.stopService(name); else await window.eco.startService(name);
+  const result = running ? await window.eco.stopService(name) : await window.eco.startService(name);
+  if (!result.ok && result.error) showToast(result.error);
 }
 
 async function setOverlayEditing() {
@@ -246,8 +298,27 @@ function bindEvents() {
   $('#toggle-damage').addEventListener('click', () => toggleService('damage'));
   $('#toggle-translator').addEventListener('click', () => toggleService('translator'));
   $('#translation-toggle').addEventListener('click', () => toggleService('translator'));
+  $('#refresh-game-processes').addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.classList.add('refreshing');
+    button.disabled = true;
+    const result = await window.eco.refreshGameProcesses();
+    state = { ...state, ...(await window.eco.getState()) };
+    renderServices();
+    button.classList.remove('refreshing');
+    button.disabled = false;
+    showToast(result.ok ? `找到 ${result.processes.length} 个游戏进程` : result.error);
+  });
+  $('#game-process-select').addEventListener('change', async (event) => {
+    const result = await window.eco.selectGameProcess(Number(event.target.value));
+    state = { ...state, ...(await window.eco.getState()) };
+    renderServices();
+    showToast(result.ok ? `已选择游戏进程 ${result.selectedPid}` : result.error);
+  });
   $('#start-all').addEventListener('click', async () => {
-    await Promise.all([window.eco.startService('damage'), window.eco.startService('translator')]);
+    const results = await Promise.all([window.eco.startService('damage'), window.eco.startService('translator')]);
+    const failed = results.find((result) => !result.ok);
+    if (failed?.error) showToast(failed.error);
   });
   $('#stop-all').addEventListener('click', async () => {
     await Promise.all([window.eco.stopService('damage'), window.eco.stopService('translator')]);
@@ -262,6 +333,12 @@ function bindEvents() {
     await window.eco.setOverlayVisible(event.target.checked);
     $('#setting-overlay-visible').checked = event.target.checked;
     $('#overlay-service-label').textContent = event.target.checked ? '已显示' : '已隐藏';
+  });
+
+  $$('[data-capture-key]').forEach((input) => {
+    input.addEventListener('change', (event) => {
+      saveCaptureSetting(event.target.dataset.captureKey, event.target.checked);
+    });
   });
 
   $$('#damage-filter button').forEach((button) => button.addEventListener('click', () => {

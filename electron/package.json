@@ -7,6 +7,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "set ECO_UI_DEMO=1&& electron .",
+    "test": "node --test test/*.test.js",
     "build:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-backend.ps1",
     "build:prepackaged": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-prepackaged.ps1",
     "dist": "npm run build:backend && npm run dist:ui",
@@ -30,6 +31,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "lib/**/*",
       "renderer/**/*",
       "overlay/**/*",
       "node_modules/lucide/dist/umd/lucide.js",
