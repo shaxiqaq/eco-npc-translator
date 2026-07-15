@@ -148,6 +148,7 @@
             <button class="active" data-settings-tab="translation"><i data-lucide="languages"></i>翻译服务</button>
             <button data-settings-tab="overlay"><i data-lucide="picture-in-picture-2"></i>悬浮窗</button>
             <button data-settings-tab="startup"><i data-lucide="power"></i>启动行为</button>
+            <button data-settings-tab="updates"><i data-lucide="download"></i>软件更新</button>
           </div>
           <div class="settings-content">
             <form class="settings-pane active" id="settings-translation">
@@ -184,11 +185,36 @@
               <label class="toggle-row"><div><strong>自动显示悬浮窗</strong><span>工具箱启动后立即显示悬浮窗</span></div><span class="switch"><input type="checkbox" id="setting-start-overlay"><span></span></span></label>
               <div class="form-actions"><span class="save-status" id="startup-save-status"></span><button type="submit" class="btn primary"><i data-lucide="save"></i>保存启动设置</button></div>
             </form>
+
+            <section class="settings-pane" id="settings-updates">
+              <div class="form-heading"><h2>软件更新</h2><p>通过 GitHub Releases 获取正式版本</p></div>
+              <label class="toggle-row"><div><strong>启动时检查更新</strong><span>仅检查版本，不会自动下载</span></div><span class="switch"><input type="checkbox" id="setting-check-updates" checked><span></span></span></label>
+              <div class="update-version-row"><span>当前版本</span><strong id="update-current-version">-</strong></div>
+              <div class="update-status-row">
+                <div class="update-status-icon"><i data-lucide="refresh-cw"></i></div>
+                <div><strong id="update-status-title">等待检查更新</strong><span id="update-status-message">-</span></div>
+              </div>
+              <div class="update-progress" id="update-progress" hidden><div><span id="update-progress-label">正在下载</span><b id="update-progress-percent">0%</b></div><progress id="update-progress-bar" max="100" value="0"></progress></div>
+              <div class="update-notes" id="update-notes" hidden><strong>更新说明</strong><pre id="update-notes-content"></pre></div>
+              <div class="form-actions update-actions">
+                <button type="button" class="btn secondary" id="check-updates"><i data-lucide="refresh-cw"></i>检查更新</button>
+                <button type="button" class="btn primary" id="download-update" hidden><i data-lucide="download"></i>下载更新</button>
+                <button type="button" class="btn primary" id="install-update" hidden><i data-lucide="rotate-ccw"></i>重启并安装</button>
+              </div>
+            </section>
           </div>
         </div>
       </section>
     </main>
   </div>
+
+  <dialog class="update-dialog" id="update-dialog">
+    <div class="update-dialog-heading"><div><span>软件更新</span><h2 id="update-dialog-title">发现新版本</h2></div><button class="icon-btn" id="update-dialog-close" title="关闭"><i data-lucide="x"></i></button></div>
+    <p id="update-dialog-version"></p>
+    <pre id="update-dialog-notes"></pre>
+    <div class="update-progress" id="update-dialog-progress" hidden><div><span>正在下载</span><b id="update-dialog-percent">0%</b></div><progress id="update-dialog-progress-bar" max="100" value="0"></progress></div>
+    <div class="update-dialog-actions"><button class="btn secondary" id="update-dialog-later">稍后</button><button class="btn primary" id="update-dialog-action"><i data-lucide="download"></i><span>下载更新</span></button></div>
+  </dialog>
 
   <div class="toast" id="toast"><i data-lucide="circle-check"></i><span></span></div>
   <script src="../node_modules/lucide/dist/umd/lucide.js"></script>

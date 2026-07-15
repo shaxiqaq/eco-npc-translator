@@ -18,12 +18,14 @@ const providers = {
   deepl: { model: 'default', url: 'https://api-free.deepl.com/v2' }
 };
 
-let state = { services: {}, settings: {}, translation: {}, logs: [] };
+let state = { services: {}, settings: {}, translation: {}, update: {}, logs: [] };
 let snapshot = null;
 let historyFilter = 'all';
 let logFilter = 'all';
 let overlayEditing = false;
 let toastTimer = null;
+let dismissedUpdateVersion = null;
+let downloadedPromptVersion = null;
 const captureKeys = ['skill', 'normal', 'pet', 'taken'];
 const captureLabels = { skill: '技能造成', normal: '普通攻击造成', pet: '宠物造成', taken: '受到伤害' };
 
@@ -41,6 +43,13 @@ function formatNumber(value, digits = 0) {
 function formatDuration(seconds) {
   const total = Math.max(0, Math.floor(Number(seconds || 0)));
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
 }
 
 function escapeHtml(value) {
@@ -214,6 +223,85 @@ function renderLogs() {
   $('#log-console').scrollTop = $('#log-console').scrollHeight;
 }
 
+function updateStatusMeta(phase) {
+  return {
+    idle: ['等待检查更新', '可随时手动检查', 'refresh-cw'],
+    checking: ['正在检查更新', '正在连接 GitHub Releases', 'loader-circle'],
+    available: ['发现新版本', '点击下载后才会开始传输', 'sparkles'],
+    downloading: ['正在下载更新', '程序可以继续使用', 'download'],
+    downloaded: ['更新已下载', '重启程序完成安装', 'circle-check'],
+    'not-available': ['当前已是最新版本', '没有可用更新', 'circle-check'],
+    error: ['检查更新失败', '请检查网络后重试', 'circle-alert'],
+    unsupported: ['开发模式不检查更新', '请使用正式安装版', 'info']
+  }[phase] || ['等待检查更新', '-', 'refresh-cw'];
+}
+
+function showUpdateDialog(update) {
+  const dialog = $('#update-dialog');
+  const downloaded = update.phase === 'downloaded';
+  $('#update-dialog-title').textContent = downloaded ? '更新已准备完成' : '发现新版本';
+  $('#update-dialog-version').textContent = `当前 ${update.currentVersion || '-'}  →  新版 ${update.availableVersion || '-'}`;
+  $('#update-dialog-notes').textContent = update.releaseNotes || '本次更新说明请查看 GitHub Release。';
+  const action = $('#update-dialog-action');
+  action.disabled = update.phase === 'downloading';
+  action.innerHTML = downloaded
+    ? '<i data-lucide="rotate-ccw"></i><span>重启并安装</span>'
+    : update.phase === 'downloading'
+      ? '<i data-lucide="loader-circle"></i><span>正在下载</span>'
+      : '<i data-lucide="download"></i><span>下载更新</span>';
+  if (!dialog.open) dialog.showModal();
+  createIcons();
+}
+
+function renderUpdate(update = state.update || {}, announce = false) {
+  state.update = update;
+  const phase = update.phase || 'idle';
+  const [title, fallbackMessage, icon] = updateStatusMeta(phase);
+  $('#update-current-version').textContent = update.currentVersion || '-';
+  $('#update-status-title').textContent = phase === 'available' && update.availableVersion
+    ? `发现版本 ${update.availableVersion}`
+    : title;
+  $('#update-status-message').textContent = update.message || fallbackMessage;
+  $('.update-status-icon').innerHTML = `<i data-lucide="${icon}"></i>`;
+  $('.update-status-icon').classList.toggle('spinning', phase === 'checking');
+
+  const checking = phase === 'checking';
+  const downloading = phase === 'downloading';
+  $('#check-updates').disabled = checking || downloading || phase === 'downloaded' || !update.enabled;
+  $('#download-update').hidden = phase !== 'available';
+  $('#download-update').disabled = downloading;
+  $('#install-update').hidden = phase !== 'downloaded';
+
+  const progress = update.progress || {};
+  const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+  const hasProgress = downloading || phase === 'downloaded';
+  $('#update-progress').hidden = !hasProgress;
+  $('#update-progress-percent').textContent = `${percent.toFixed(0)}%`;
+  $('#update-progress-bar').value = percent;
+  $('#update-progress-label').textContent = progress.total
+    ? `${formatBytes(progress.transferred)} / ${formatBytes(progress.total)}`
+    : phase === 'downloaded' ? '下载完成' : '正在连接下载服务器';
+  $('#update-dialog-progress').hidden = !hasProgress;
+  $('#update-dialog-percent').textContent = `${percent.toFixed(0)}%`;
+  $('#update-dialog-progress-bar').value = percent;
+
+  const notes = update.releaseNotes || '';
+  $('#update-notes').hidden = !notes;
+  $('#update-notes-content').textContent = notes;
+
+  if (announce && phase === 'available' && update.availableVersion !== dismissedUpdateVersion) {
+    showUpdateDialog(update);
+  }
+  if (phase === 'downloaded' && update.availableVersion !== downloadedPromptVersion) {
+    downloadedPromptVersion = update.availableVersion;
+    showUpdateDialog(update);
+  }
+  if ($('#update-dialog').open && ['available', 'downloading', 'downloaded'].includes(phase)) {
+    showUpdateDialog(update);
+  }
+  createIcons();
+}
+
 function applySettingsToForm() {
   const translation = state.translation || {};
   $('#setting-provider').value = translation.provider || 'deepseek';
@@ -250,6 +338,7 @@ function applySettingsToForm() {
   $('#setting-start-damage').checked = Boolean(startup.damage);
   $('#setting-start-translator').checked = Boolean(startup.translator);
   $('#setting-start-overlay').checked = startup.overlay !== false;
+  $('#setting-check-updates').checked = settings.updates?.checkOnStartup !== false;
 }
 
 function applyCaptureSettings(capture = {}) {
@@ -292,6 +381,22 @@ async function setOverlayEditing() {
   showToast(overlayEditing ? '现在可以拖动悬浮窗' : '悬浮窗位置已保存');
 }
 
+async function checkForUpdates() {
+  dismissedUpdateVersion = null;
+  const result = await window.eco.checkForUpdates();
+  if (!result.ok && result.error) showToast(result.error);
+}
+
+async function downloadUpdate() {
+  const result = await window.eco.downloadUpdate();
+  if (!result.ok && result.error) showToast(result.error);
+}
+
+async function installUpdate() {
+  const result = await window.eco.installUpdate();
+  if (!result.ok && result.error) showToast(result.error);
+}
+
 function bindEvents() {
   $$('.nav-item').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.page)));
   $$('[data-go]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.go)));
@@ -328,6 +433,26 @@ function bindEvents() {
   $('#edit-overlay').addEventListener('click', setOverlayEditing);
   $('#settings-edit-overlay').addEventListener('click', setOverlayEditing);
   $('#open-logs').addEventListener('click', () => window.eco.openLogs());
+  $('#check-updates').addEventListener('click', checkForUpdates);
+  $('#download-update').addEventListener('click', downloadUpdate);
+  $('#install-update').addEventListener('click', installUpdate);
+  $('#setting-check-updates').addEventListener('change', async (event) => {
+    const result = await window.eco.saveAppSettings({ updates: { checkOnStartup: event.target.checked } });
+    state.settings = result.settings;
+    showToast(`启动检查更新已${event.target.checked ? '开启' : '关闭'}`);
+  });
+  $('#update-dialog-close').addEventListener('click', () => {
+    dismissedUpdateVersion = state.update?.availableVersion || null;
+    $('#update-dialog').close();
+  });
+  $('#update-dialog-later').addEventListener('click', () => {
+    dismissedUpdateVersion = state.update?.availableVersion || null;
+    $('#update-dialog').close();
+  });
+  $('#update-dialog-action').addEventListener('click', () => {
+    if (state.update?.phase === 'downloaded') installUpdate();
+    else if (state.update?.phase === 'available') downloadUpdate();
+  });
 
   $('#overview-overlay-toggle').addEventListener('change', async (event) => {
     await window.eco.setOverlayVisible(event.target.checked);
@@ -433,6 +558,7 @@ async function init() {
   renderServices();
   renderSnapshot();
   renderLogs();
+  renderUpdate(state.update);
 
   window.eco.onState((next) => {
     state = { ...state, ...next };
@@ -449,6 +575,7 @@ async function init() {
     state.logs = [...(state.logs || []), entry].slice(-1000);
     renderLogs();
   });
+  window.eco.onUpdate((update) => renderUpdate(update, true));
 }
 
 init();

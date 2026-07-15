@@ -1,10 +1,12 @@
 const { app, BrowserWindow, ipcMain, shell, screen } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const { listGameProcesses } = require('./lib/game-processes');
 const { mergeDeep, readJson, writeJson } = require('./lib/json-store');
+const { UpdateService, initialUpdateState } = require('./lib/update-service');
 
 const isDemo = process.env.ECO_UI_DEMO === '1';
 const services = { damage: null, translator: null };
@@ -20,6 +22,7 @@ let overlayEditing = false;
 let demoTimer = null;
 let gameProcesses = [];
 let selectedGamePid = null;
+let updateService = null;
 
 const defaultAppSettings = {
   game: {
@@ -45,6 +48,9 @@ const defaultAppSettings = {
     damage: false,
     translator: false,
     overlay: true
+  },
+  updates: {
+    checkOnStartup: true
   }
 };
 
@@ -94,6 +100,7 @@ function publicState() {
     snapshot: latestSnapshot,
     settings: appSettings(),
     translation: translationSettings(),
+    update: updateService?.snapshot() || initialUpdateState(app.getVersion(), false),
     logs: logs.slice(-300)
   };
 }
@@ -316,6 +323,13 @@ function resetDamage() {
   return { ok: Boolean(child || isDemo) };
 }
 
+async function prepareForUpdateInstall() {
+  stopDemo();
+  for (const name of ['damage', 'translator']) stopService(name);
+  if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.hide();
+  await new Promise((resolve) => setTimeout(resolve, 1700));
+}
+
 function overlayBounds(settings) {
   const display = screen.getPrimaryDisplay().workArea;
   const scale = Math.min(1.4, Math.max(0.8, Number(settings.scale) || 1));
@@ -414,6 +428,12 @@ function createMainWindow() {
         );
         await new Promise((resolve) => setTimeout(resolve, 180));
       }
+      if (process.env.ECO_CAPTURE_SETTINGS_TAB) {
+        await mainWindow.webContents.executeJavaScript(
+          `document.querySelector('[data-settings-tab="${process.env.ECO_CAPTURE_SETTINGS_TAB}"]')?.click()`
+        );
+        await new Promise((resolve) => setTimeout(resolve, 180));
+      }
       const image = await mainWindow.webContents.capturePage();
       fs.writeFileSync(process.env.ECO_CAPTURE_PATH, image.toPNG());
       app.quit();
@@ -501,6 +521,14 @@ ipcMain.handle('game-processes:select', (_event, pid) => selectGameProcess(pid))
 ipcMain.handle('service:start', (_event, name) => startService(name));
 ipcMain.handle('service:stop', (_event, name) => stopService(name));
 ipcMain.handle('damage:reset', () => resetDamage());
+ipcMain.handle('update:check', () => updateService?.check() || { ok: false, error: '更新服务尚未就绪' });
+ipcMain.handle('update:download', () => updateService?.download() || { ok: false, error: '更新服务尚未就绪' });
+ipcMain.handle('update:install', async () => {
+  if (!updateService) return { ok: false, error: '更新服务尚未就绪' };
+  if (updateService.snapshot().phase !== 'downloaded') return { ok: false, error: '更新尚未下载完成' };
+  await prepareForUpdateInstall();
+  return updateService.install();
+});
 ipcMain.handle('overlay:set-visible', (_event, visible) => {
   const current = appSettings();
   current.overlay.visible = Boolean(visible);
@@ -562,6 +590,12 @@ ipcMain.handle('logs:open-folder', () => {
 });
 
 app.whenReady().then(async () => {
+  updateService = new UpdateService({
+    updater: autoUpdater,
+    currentVersion: app.getVersion(),
+    enabled: app.isPackaged && !isDemo,
+    onState: (next) => broadcast('update:state', next)
+  });
   createMainWindow();
   createOverlayWindow();
   await refreshGameProcesses();
@@ -570,6 +604,9 @@ app.whenReady().then(async () => {
   else {
     if (settings.startup.damage) startService('damage');
     if (settings.startup.translator) startService('translator');
+    if (settings.updates.checkOnStartup) {
+      setTimeout(() => updateService.check(), 3500);
+    }
   }
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

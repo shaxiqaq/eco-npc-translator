@@ -1,6 +1,6 @@
 {
   "name": "eco-toolbox",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "ECO NPC 翻译与伤害统计工具箱",
   "main": "main.js",
   "private": true,
@@ -11,9 +11,10 @@
     "build:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-backend.ps1",
     "build:prepackaged": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-prepackaged.ps1",
     "dist": "npm run build:backend && npm run dist:ui",
-    "dist:ui": "npm run build:prepackaged && set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/&& electron-builder --prepackaged release/win-unpacked --win nsis"
+    "dist:ui": "npm run build:prepackaged && set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/&& electron-builder --prepackaged release/win-unpacked --win nsis --publish never"
   },
   "dependencies": {
+    "electron-updater": "^6.6.2",
     "lucide": "^0.468.0"
   },
   "devDependencies": {
@@ -28,6 +29,14 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "shaxiqaq",
+        "repo": "eco-npc-translator",
+        "releaseType": "release"
+      }
+    ],
     "files": [
       "main.js",
       "preload.js",
@@ -51,7 +60,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "artifactName": "ECO-Toolbox-Setup-${version}.${ext}"

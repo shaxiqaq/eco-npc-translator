@@ -28,18 +28,31 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 Copy-Item -LiteralPath (Join-Path $Electron "main.js") -Destination $Stage
 Copy-Item -LiteralPath (Join-Path $Electron "preload.js") -Destination $Stage
 Copy-Item -LiteralPath (Join-Path $Electron "package.json") -Destination $Stage
+Copy-Item -LiteralPath (Join-Path $Electron "package-lock.json") -Destination $Stage
 Copy-Item -LiteralPath (Join-Path $Electron "lib") -Destination $Stage -Recurse
 Copy-Item -LiteralPath (Join-Path $Electron "renderer") -Destination $Stage -Recurse
 Copy-Item -LiteralPath (Join-Path $Electron "overlay") -Destination $Stage -Recurse
 
-$LucideTarget = Join-Path $Stage "node_modules\lucide\dist\umd"
-New-Item -ItemType Directory -Path $LucideTarget -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $Electron "node_modules\lucide\dist\umd\lucide.js") -Destination $LucideTarget
+& npm.cmd ci --prefix $Stage --omit=dev --ignore-scripts --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) { throw "生产依赖安装失败" }
+Remove-Item -LiteralPath (Join-Path $Stage "package-lock.json") -Force
 
 $Resources = Join-Path $Target "resources"
 Remove-Item -LiteralPath (Join-Path $Resources "default_app.asar") -Force -ErrorAction SilentlyContinue
 & (Join-Path $Electron "node_modules\.bin\asar.cmd") pack $Stage (Join-Path $Resources "app.asar")
 if ($LASTEXITCODE -ne 0) { throw "应用 ASAR 打包失败" }
+
+$UpdateConfig = @"
+provider: github
+owner: shaxiqaq
+repo: eco-npc-translator
+updaterCacheDirName: eco-toolbox-updater
+"@
+[IO.File]::WriteAllText(
+    (Join-Path $Resources "app-update.yml"),
+    $UpdateConfig,
+    [Text.UTF8Encoding]::new($false)
+)
 
 $Backend = Join-Path $Resources "backend"
 New-Item -ItemType Directory -Path (Join-Path $Backend "damage"), (Join-Path $Backend "translator") -Force | Out-Null

@@ -14,7 +14,7 @@
 运行安装包：
 
 ```text
-electron/release/ECO-Toolbox-Setup-0.2.0.exe
+electron/release/ECO-Toolbox-Setup-0.2.1.exe
 ```
 
 安装后的主界面使用左侧菜单组织全部功能：
@@ -24,11 +24,17 @@ electron/release/ECO-Toolbox-Setup-0.2.0.exe
 - 顶部游戏进程选择器会列出全部 `eco.exe`。多开游戏时，先停止采集与翻译，刷新列表并选择目标 PID，再启动服务；伤害采集和 NPC 翻译会连接到同一个所选进程。
 - `NPC 翻译`：查看翻译运行状态和实时日志。
 - `运行日志`：集中查看两个后端的输出。
-- `设置`：配置翻译服务、Overlay 样式、位置和自动启动行为。
+- `设置`：配置翻译服务、Overlay 样式、位置、自动启动行为和软件更新。
 
 Overlay 已改为 Electron 透明窗口。平时保持置顶和鼠标穿透；在主界面点击`调整悬浮窗`后可以拖动，点击`完成调整`会保存位置。
 
 安装版已经内置 Python 运行环境和 Frida 后端，使用者不需要另外安装 Python 或 Node.js。翻译 API Key 和运行配置保存在当前 Windows 用户的应用数据目录，不会写入安装目录。
+
+### 软件更新
+
+安装版默认在启动后检查 GitHub Releases，但不会自动下载。发现新版本时，用户可以查看更新说明并点击`下载更新`；下载完成后点击`重启并安装`即可升级。关闭“启动时检查更新”后，仍可在`设置 → 软件更新`中手动检查。
+
+自动更新需要 Release 同时包含安装包、`.blockmap` 和 `latest.yml`。`v0.2.0` 尚未内置更新功能，因此需要手动安装一次 `v0.2.1`；从 `v0.2.1` 开始可以使用程序内更新。
 
 ### 旧版脚本
 
@@ -189,6 +195,16 @@ npm.cmd run dist
 ```
 
 构建完成后，安装包位于 `electron/release/`。构建脚本会先用 PyInstaller 打包伤害采集和 NPC 翻译后端，再生成 NSIS 安装程序。
+
+发布新版本时，先修改 `electron/package.json` 中的版本号并提交，然后创建同名标签：
+
+```powershell
+git tag v0.2.1
+git push origin main
+git push origin v0.2.1
+```
+
+`.github/workflows/release.yml` 会在 Windows Runner 上运行测试、构建安装包，并自动创建 GitHub Release，上传 `.exe`、`.blockmap` 和 `latest.yml`。标签版本必须与 `electron/package.json` 完全一致，否则工作流会停止发布。
 
 ## 已知限制
 

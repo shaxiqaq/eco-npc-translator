@@ -1,0 +1,87 @@
+name: Build and publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+
+      - name: Verify release version
+        shell: pwsh
+        run: |
+          $version = node -p "require('./electron/package.json').version"
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match electron/package.json version $version"
+          }
+
+      - name: Install Python build dependencies
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Install Electron dependencies
+        working-directory: electron
+        run: npm ci
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          npm --prefix electron test
+          python -m unittest discover -s tests -v
+
+      - name: Build Windows installer
+        working-directory: electron
+        run: npm run dist
+
+      - name: Verify update artifacts
+        shell: pwsh
+        run: |
+          $version = node -p "require('./electron/package.json').version"
+          $required = @(
+            "electron/release/ECO-Toolbox-Setup-$version.exe",
+            "electron/release/ECO-Toolbox-Setup-$version.exe.blockmap",
+            "electron/release/latest.yml"
+          )
+          foreach ($file in $required) {
+            if (-not (Test-Path -LiteralPath $file)) { throw "Missing release artifact: $file" }
+          }
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = node -p "require('./electron/package.json').version"
+          $assets = @(
+            "electron/release/ECO-Toolbox-Setup-$version.exe",
+            "electron/release/ECO-Toolbox-Setup-$version.exe.blockmap",
+            "electron/release/latest.yml"
+          )
+          gh release create $env:GITHUB_REF_NAME @assets --title "ECO Toolbox $env:GITHUB_REF_NAME" --generate-notes
