@@ -14,7 +14,7 @@
 运行安装包：
 
 ```text
-electron/release/ECO-Toolbox-Setup-0.2.1.exe
+electron/release/ECO-Toolbox-Setup-0.2.2.exe
 ```
 
 安装后的主界面使用左侧菜单组织全部功能：
@@ -199,9 +199,9 @@ npm.cmd run dist
 发布新版本时，先修改 `electron/package.json` 中的版本号并提交，然后创建同名标签：
 
 ```powershell
-git tag v0.2.1
+git tag v0.2.2
 git push origin main
-git push origin v0.2.1
+git push origin v0.2.2
 ```
 
 `.github/workflows/release.yml` 会在 Windows Runner 上运行测试、构建安装包，并自动创建 GitHub Release，上传 `.exe`、`.blockmap` 和 `latest.yml`。标签版本必须与 `electron/package.json` 完全一致，否则工作流会停止发布。
