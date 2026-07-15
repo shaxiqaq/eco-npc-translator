@@ -16,10 +16,14 @@ if (-not $ElectronZip) {
     throw "没有找到 Electron 35.7.5 运行时缓存，请先运行 npm.cmd start"
 }
 
-Remove-Item -LiteralPath $Target -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
+foreach ($Path in @($Target, $Stage)) {
+    if (Test-Path -LiteralPath $Path) {
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+    }
+}
 New-Item -ItemType Directory -Path $Target, $Stage -Force | Out-Null
-Expand-Archive -LiteralPath $ElectronZip.FullName -DestinationPath $Target -Force
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[IO.Compression.ZipFile]::ExtractToDirectory($ElectronZip.FullName, $Target)
 
 Copy-Item -LiteralPath (Join-Path $Electron "main.js") -Destination $Stage
 Copy-Item -LiteralPath (Join-Path $Electron "preload.js") -Destination $Stage
