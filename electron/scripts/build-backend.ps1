@@ -7,7 +7,7 @@ $Work = Join-Path $Electron "build-python"
 
 python -m PyInstaller --version *> $null
 if ($LASTEXITCODE -ne 0) {
-    throw "缺少 PyInstaller，请先运行: python -m pip install pyinstaller"
+    throw "PyInstaller is required. Run: python -m pip install pyinstaller"
 }
 
 Remove-Item -LiteralPath $Dist -Recurse -Force -ErrorAction SilentlyContinue
@@ -25,7 +25,7 @@ try {
         --add-data "$Repo\skill_names.json;." `
         --add-data "$Repo\mob_names.json;." `
         eco_damage_bridge.py
-    if ($LASTEXITCODE -ne 0) { throw "伤害采集后端打包失败" }
+    if ($LASTEXITCODE -ne 0) { throw "Failed to package the damage capture backend" }
 
     python -m PyInstaller --noconfirm --clean --onedir --name eco_npc_mitm `
         --distpath (Join-Path $Dist "translator") `
@@ -35,7 +35,7 @@ try {
         --add-data "$Repo\screen_translator;screen_translator" `
         --hidden-import cache_sync `
         eco_npc_mitm.py
-    if ($LASTEXITCODE -ne 0) { throw "NPC 翻译后端打包失败" }
+    if ($LASTEXITCODE -ne 0) { throw "Failed to package the NPC translation backend" }
 }
 finally {
     Pop-Location
