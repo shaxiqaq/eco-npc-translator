@@ -20,6 +20,7 @@ COMPOSITE_BUFFS = (
         "category": "positive",
         "duration": 900.04,
         "timing": "estimated_observed",
+        "skill_id": 3114,
     },
 )
 
@@ -96,6 +97,7 @@ class BuffTracker:
                     "timing": metadata.get("timing") or (
                         "estimated_learned" if learned_duration else "elapsed_only"
                     ),
+                    "skill_id": metadata.get("skill_id"),
                 })
         return definitions
 
@@ -106,6 +108,7 @@ class BuffTracker:
             "key": item["key"],
             "name": item["name"],
             "category": item["category"],
+            "skill_id": item.get("skill_id"),
         })
         if len(self.history) > 200:
             del self.history[:-200]

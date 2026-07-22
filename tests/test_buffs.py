@@ -32,6 +32,7 @@ class BuffTrackerTest(unittest.TestCase):
         self.assertEqual(shield["key"], "magic_shield")
         self.assertEqual(shield["name"], "魔法护盾")
         self.assertEqual(shield["timing"], "estimated_observed")
+        self.assertEqual(shield["skill_id"], 3114)
         self.assertAlmostEqual(shield["remaining"], 890.04, places=2)
 
     def test_identical_later_packet_refreshes_countdown(self):

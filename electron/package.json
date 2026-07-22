@@ -1,6 +1,6 @@
 {
   "name": "eco-toolbox",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "ECO NPC 翻译与伤害统计工具箱",
   "main": "main.js",
   "private": true,
@@ -9,8 +9,9 @@
     "dev": "set ECO_UI_DEMO=1&& electron .",
     "test": "node --test test/*.test.js",
     "build:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-backend.ps1",
+    "build:icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-icon-helper.ps1",
     "build:prepackaged": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-prepackaged.ps1",
-    "dist": "npm run build:backend && npm run dist:ui",
+    "dist": "npm run build:backend && npm run build:icons && npm run dist:ui",
     "dist:ui": "npm run build:prepackaged && set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/&& electron-builder --prepackaged release/win-unpacked --win nsis --publish never"
   },
   "dependencies": {
@@ -54,6 +55,10 @@
       {
         "from": "dist-python/translator",
         "to": "backend/translator"
+      },
+      {
+        "from": "dist-native/icon-helper",
+        "to": "icon-helper"
       }
     ],
     "win": {

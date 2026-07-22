@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('eco', {
   setOverlayVisible: (visible) => ipcRenderer.invoke('overlay:set-visible', visible),
   setOverlayEditing: (editing) => ipcRenderer.invoke('overlay:set-editing', editing),
   resizeOverlayForContent: (height) => ipcRenderer.invoke('overlay:resize-content', height),
+  getSkillIcon: (skillId) => ipcRenderer.invoke('skill-icon:get', skillId),
   openLogs: () => ipcRenderer.invoke('logs:open-folder'),
   onState: (callback) => {
     const listener = (_event, state) => callback(state);

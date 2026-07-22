@@ -4,8 +4,10 @@ const POWERSHELL_SCRIPT = [
   '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
   '$items = @(Get-Process -Name eco -ErrorAction SilentlyContinue | Sort-Object Id | ForEach-Object {',
   '  $started = $null',
+  '  $path = $null',
   '  try { $started = $_.StartTime.ToString("HH:mm:ss") } catch {}',
-  '  [pscustomobject]@{ pid = $_.Id; title = $_.MainWindowTitle; started = $started }',
+  '  try { $path = $_.Path } catch {}',
+  '  [pscustomobject]@{ pid = $_.Id; title = $_.MainWindowTitle; started = $started; path = $path }',
   '})',
   'ConvertTo-Json -InputObject $items -Compress'
 ].join('; ');
@@ -16,7 +18,8 @@ function normalizeGameProcesses(value) {
     .map((item) => ({
       pid: Number(item?.pid),
       title: String(item?.title || '').trim(),
-      started: String(item?.started || '').trim()
+      started: String(item?.started || '').trim(),
+      path: String(item?.path || '').trim()
     }))
     .filter((item) => Number.isInteger(item.pid) && item.pid > 0)
     .sort((left, right) => left.pid - right.pid);

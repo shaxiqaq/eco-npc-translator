@@ -197,6 +197,7 @@
               <label class="toggle-row"><div><strong>显示状态悬浮窗</strong><span>显示自己的增益、减益和异常状态</span></div><span class="switch"><input type="checkbox" id="setting-overlay-visible"><span></span></span></label>
               <label class="range-row"><div><strong>显示比例</strong><span id="scale-value">100%</span></div><input id="setting-overlay-scale" type="range" min="0.8" max="1.4" step="0.05"></label>
               <label class="range-row"><div><strong>透明度</strong><span id="opacity-value">95%</span></div><input id="setting-overlay-opacity" type="range" min="0.45" max="1" step="0.05"></label>
+              <label class="number-row"><div><strong>到期闪烁提醒</strong><span>所有带倒计时的状态在剩余时间内闪烁</span></div><div class="number-field"><input id="setting-buff-warning-seconds" type="number" min="1" max="300" step="1"><span>秒</span></div></label>
               <div class="overlay-position-row"><div><strong>悬浮窗位置</strong><span>进入调整模式后直接拖动悬浮窗</span></div><button type="button" class="btn secondary" id="settings-edit-overlay"><i data-lucide="move"></i>调整位置</button></div>
               <div class="form-actions"><span class="save-status" id="overlay-save-status"></span><button type="submit" class="btn primary"><i data-lucide="save"></i>保存悬浮窗设置</button></div>
             </form>
@@ -241,6 +242,7 @@
 
   <div class="toast" id="toast"><i data-lucide="circle-check"></i><span></span></div>
   <script src="../node_modules/lucide/dist/umd/lucide.js"></script>
+  <script src="../lib/buff-warning.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

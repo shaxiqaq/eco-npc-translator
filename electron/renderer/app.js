@@ -30,11 +30,45 @@ let overlayEditing = false;
 let toastTimer = null;
 let dismissedUpdateVersion = null;
 let downloadedPromptVersion = null;
+let iconProcessPid = null;
+const skillIconCache = new Map();
 const captureKeys = ['skill', 'normal', 'pet', 'taken'];
 const captureLabels = { skill: '技能造成', normal: '普通攻击造成', pet: '宠物造成', taken: '受到伤害' };
 
 function createIcons() {
   if (window.lucide) window.lucide.createIcons({ attrs: { 'aria-hidden': 'true' } });
+}
+
+function syncIconProcess() {
+  const pid = Number(state.selectedGamePid) || null;
+  if (pid === iconProcessPid) return;
+  iconProcessPid = pid;
+  skillIconCache.clear();
+}
+
+function skillIconMarkup(skillId, fallback = 'sparkles', expiring = false) {
+  const normalized = Number(skillId);
+  const attribute = Number.isInteger(normalized) && normalized > 0
+    ? ` data-skill-icon="${normalized}"`
+    : '';
+  return `<span class="skill-icon${expiring ? ' expiring' : ''}"${attribute}><i data-lucide="${fallback}"></i></span>`;
+}
+
+function hydrateSkillIcons(root = document) {
+  root.querySelectorAll('.skill-icon[data-skill-icon]:not([data-icon-state])').forEach((element) => {
+    const skillId = Number(element.dataset.skillIcon);
+    element.dataset.iconState = 'loading';
+    if (!skillIconCache.has(skillId)) skillIconCache.set(skillId, window.eco.getSkillIcon(skillId));
+    skillIconCache.get(skillId).then((result) => {
+      if (!element.isConnected || Number(element.dataset.skillIcon) !== skillId) return;
+      if (!result?.ok || !result.dataUrl) {
+        element.dataset.iconState = 'fallback';
+        return;
+      }
+      element.innerHTML = `<img src="${result.dataUrl}" alt="" draggable="false">`;
+      element.dataset.iconState = 'loaded';
+    }).catch(() => { element.dataset.iconState = 'fallback'; });
+  });
 }
 
 function formatNumber(value, digits = 0) {
@@ -215,6 +249,13 @@ function buffTimingSource(item) {
   return '持续时间未知';
 }
 
+function isBuffExpiring(item) {
+  return window.ecoBuffWarning.isBuffExpiring(
+    item,
+    state.settings?.overlay?.expiryWarningSeconds
+  );
+}
+
 function formatEventTime(timestamp) {
   if (!Number.isFinite(Number(timestamp))) return '--:--:--';
   return new Date(Number(timestamp) * 1000).toLocaleTimeString('zh-CN', { hour12: false });
@@ -241,15 +282,18 @@ function renderBuffs() {
     const category = buffCategory(item);
     const sourceName = item.source_name && item.source_name !== item.name
       ? `<small title="原始名称">${escapeHtml(item.source_name)}</small>` : '';
-    return `<div class="buff-active-row ${category.cls}"><span class="buff-category">${category.label}</span><div class="buff-name"><strong>${escapeHtml(item.name)}</strong>${sourceName}</div><div class="buff-time"><strong>${buffTime(item)}</strong><span>${buffTimingSource(item)}</span></div></div>`;
+    return `<div class="buff-active-row ${category.cls}">${skillIconMarkup(item.skill_id, 'shield', isBuffExpiring(item))}<span class="buff-category">${category.label}</span><div class="buff-name"><strong>${escapeHtml(item.name)}</strong>${sourceName}</div><div class="buff-time"><strong>${buffTime(item)}</strong><span>${buffTimingSource(item)}</span></div></div>`;
   }).join('') : '<div class="empty-state">尚未检测到角色状态</div>';
 
   const historyRoot = $('#buff-history-list');
   const eventLabels = { gained: '获得', refreshed: '刷新', lost: '消失' };
   historyRoot.innerHTML = history.length ? history.map((item) => {
     const category = buffCategory(item);
-    return `<div class="buff-history-row"><time>${formatEventTime(item.time)}</time><span class="buff-category ${category.cls}">${category.label}</span><strong>${escapeHtml(item.name)}</strong><b class="buff-event ${escapeHtml(item.event)}">${eventLabels[item.event] || '变化'}</b></div>`;
+    return `<div class="buff-history-row"><time>${formatEventTime(item.time)}</time>${skillIconMarkup(item.skill_id, 'shield')}<span class="buff-category ${category.cls}">${category.label}</span><strong>${escapeHtml(item.name)}</strong><b class="buff-event ${escapeHtml(item.event)}">${eventLabels[item.event] || '变化'}</b></div>`;
   }).join('') : '<div class="empty-state">尚无状态变化记录</div>';
+  createIcons();
+  hydrateSkillIcons(activeRoot);
+  hydrateSkillIcons(historyRoot);
 }
 
 function renderOverviewHistory() {
@@ -264,8 +308,10 @@ function renderOverviewHistory() {
   }
   root.innerHTML = items.map((item) => {
     const type = historyType(item);
-    return `<div class="recent-row"><time>${escapeHtml(item.time || '--:--:--')}</time><span class="type-badge ${type.cls}">${type.text}</span><span class="route">${escapeHtml(item.source)} → ${escapeHtml(item.target)} · ${escapeHtml(item.skill)}</span><strong>${formatNumber(item.damage)}</strong></div>`;
+    return `<div class="recent-row"><time>${escapeHtml(item.time || '--:--:--')}</time><span class="type-badge ${type.cls}">${type.text}</span>${skillIconMarkup(item.skill_id, item.skill_id == null ? 'sword' : 'sparkles')}<span class="route">${escapeHtml(item.source)} → ${escapeHtml(item.target)} · ${escapeHtml(item.skill)}</span><strong>${formatNumber(item.damage)}</strong></div>`;
   }).join('');
+  createIcons();
+  hydrateSkillIcons(root);
 }
 
 function renderDamageTable() {
@@ -283,8 +329,10 @@ function renderDamageTable() {
   }
   root.innerHTML = items.slice(0, 500).map((item) => {
     const type = historyType(item);
-    return `<tr><td>${escapeHtml(item.time || '')}</td><td><span class="type-badge ${type.cls}">${type.text}</span></td><td title="${escapeHtml(item.source)}">${escapeHtml(item.source)}</td><td title="${escapeHtml(item.target)}">${escapeHtml(item.target)}</td><td>${escapeHtml(item.skill)}</td><td class="number">${formatNumber(item.damage)}</td></tr>`;
+    return `<tr><td>${escapeHtml(item.time || '')}</td><td><span class="type-badge ${type.cls}">${type.text}</span></td><td title="${escapeHtml(item.source)}">${escapeHtml(item.source)}</td><td title="${escapeHtml(item.target)}">${escapeHtml(item.target)}</td><td><div class="skill-cell">${skillIconMarkup(item.skill_id, item.skill_id == null ? 'sword' : 'sparkles')}<span>${escapeHtml(item.skill)}</span></div></td><td class="number">${formatNumber(item.damage)}</td></tr>`;
   }).join('');
+  createIcons();
+  hydrateSkillIcons(root);
 }
 
 function renderLogs() {
@@ -409,6 +457,7 @@ function applySettingsToForm() {
   $('#overlay-service-label').textContent = overlay.visible !== false ? '已显示' : '已隐藏';
   $('#setting-overlay-scale').value = overlay.scale || 1;
   $('#setting-overlay-opacity').value = overlay.opacity ?? 0.95;
+  $('#setting-buff-warning-seconds').value = window.ecoBuffWarning.normalizeWarningSeconds(overlay.expiryWarningSeconds);
   $('#scale-value').textContent = `${Math.round((overlay.scale || 1) * 100)}%`;
   $('#opacity-value').textContent = `${Math.round((overlay.opacity ?? 0.95) * 100)}%`;
   $('#setting-start-damage').checked = Boolean(startup.damage);
@@ -602,7 +651,8 @@ function bindEvents() {
     const overlay = {
       visible: $('#setting-overlay-visible').checked,
       scale: Number($('#setting-overlay-scale').value),
-      opacity: Number($('#setting-overlay-opacity').value)
+      opacity: Number($('#setting-overlay-opacity').value),
+      expiryWarningSeconds: window.ecoBuffWarning.normalizeWarningSeconds($('#setting-buff-warning-seconds').value)
     };
     const result = await window.eco.saveAppSettings({ overlay });
     state.settings = result.settings;
@@ -629,6 +679,7 @@ async function init() {
   createIcons();
   bindEvents();
   state = await window.eco.getState();
+  syncIconProcess();
   snapshot = state.snapshot;
   applySettingsToForm();
   renderServices();
@@ -638,6 +689,7 @@ async function init() {
 
   window.eco.onState((next) => {
     state = { ...state, ...next };
+    syncIconProcess();
     if (next.snapshot) snapshot = next.snapshot;
     applySettingsToForm();
     renderServices();

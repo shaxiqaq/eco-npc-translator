@@ -6,6 +6,7 @@ const path = require('path');
 const readline = require('readline');
 const { listGameProcesses } = require('./lib/game-processes');
 const { mergeDeep, readJson, writeJson } = require('./lib/json-store');
+const { SkillIconService } = require('./lib/skill-icons');
 const { UpdateService, initialUpdateState } = require('./lib/update-service');
 
 const isDemo = process.env.ECO_UI_DEMO === '1';
@@ -23,6 +24,7 @@ let demoTimer = null;
 let gameProcesses = [];
 let selectedGamePid = null;
 let updateService = null;
+let skillIconService = null;
 
 const defaultAppSettings = {
   game: {
@@ -41,7 +43,8 @@ const defaultAppSettings = {
     width: 430,
     height: 115,
     opacity: 0.95,
-    scale: 1
+    scale: 1,
+    expiryWarningSeconds: 10
   },
   startup: {
     damage: false,
@@ -114,8 +117,8 @@ async function refreshGameProcesses() {
   try {
     const found = isDemo
       ? [
-          { pid: 1699, title: 'ECO - 角色一', started: '21:08:12' },
-          { pid: 2840, title: 'ECO - 角色二', started: '21:16:45' }
+          { pid: 1699, title: 'ECO - 角色一', started: '21:08:12', path: process.env.ECO_GAME_PATH || '' },
+          { pid: 2840, title: 'ECO - 角色二', started: '21:16:45', path: process.env.ECO_GAME_PATH || '' }
         ]
       : await listGameProcesses();
     const previousPid = selectedGamePid;
@@ -490,19 +493,23 @@ function demoSnapshot(seed) {
     pet_skills: [[7505, 90]],
     damage_history: hits,
     buffs: [
-      { key: 'magic_shield', name: '魔法护盾', source_name: 'MAGIC_SHIELD', category: 'positive', timing: 'estimated_observed', started_at: nowSeconds - 72, expires_at: nowSeconds + 828, elapsed: 72, remaining: 828 },
+      { key: 'magic_shield', name: '魔法护盾', source_name: 'MAGIC_SHIELD', category: 'positive', skill_id: 3114, timing: 'estimated_observed', started_at: nowSeconds - 72, expires_at: nowSeconds + 828, elapsed: 72, remaining: 828 },
       { key: '3:0x00000020', name: '魔法攻击力上升', source_name: 'MAGIC_ATK_UP', category: 'positive', timing: 'elapsed_only', started_at: nowSeconds - 31, expires_at: null, elapsed: 31, remaining: null },
       { key: '4:0x00000008', name: '移动速度下降', source_name: 'SPEED_DOWN', category: 'negative', timing: 'elapsed_only', started_at: nowSeconds - 14, expires_at: null, elapsed: 14, remaining: null },
       { key: '0:0x00000004', name: '沉默', source_name: 'SILENCE', category: 'abnormal', timing: 'estimated_learned', started_at: nowSeconds - 5, expires_at: nowSeconds + 11, elapsed: 5, remaining: 11 }
     ],
     buff_history: [
-      { event: 'gained', time: nowSeconds - 72, key: 'magic_shield', name: '魔法护盾', category: 'positive' },
+      { event: 'gained', time: nowSeconds - 72, key: 'magic_shield', name: '魔法护盾', category: 'positive', skill_id: 3114 },
       { event: 'gained', time: nowSeconds - 31, key: '3:0x00000020', name: '魔法攻击力上升', category: 'positive' },
       { event: 'gained', time: nowSeconds - 14, key: '4:0x00000008', name: '移动速度下降', category: 'negative' },
       { event: 'gained', time: nowSeconds - 5, key: '0:0x00000004', name: '沉默', category: 'abnormal' }
     ],
     buff_version: 4
   };
+}
+
+function selectedGameProcess() {
+  return gameProcesses.find((process) => process.pid === selectedGamePid) || null;
 }
 
 function startDemo() {
@@ -555,6 +562,10 @@ ipcMain.handle('overlay:resize-content', (_event, requestedHeight) => {
   const bounds = overlayWindow.getBounds();
   overlayWindow.setBounds({ x: bounds.x, y: Math.min(bounds.y, display.y + display.height - height), width: bounds.width, height });
   return { ok: true, height };
+});
+ipcMain.handle('skill-icon:get', (_event, skillId) => {
+  const gamePath = selectedGameProcess()?.path || '';
+  return skillIconService?.getIcon(skillId, gamePath) || { ok: false, reason: 'unavailable' };
 });
 ipcMain.handle('settings:save-app', (_event, incoming) => {
   const current = mergeDeep(appSettings(), incoming || {});
@@ -609,6 +620,14 @@ ipcMain.handle('logs:open-folder', () => {
 });
 
 app.whenReady().then(async () => {
+  skillIconService = new SkillIconService({
+    helperPath: path.join(
+      app.isPackaged ? process.resourcesPath : __dirname,
+      app.isPackaged ? 'icon-helper' : 'dist-native/icon-helper',
+      'EcoIconHelper.exe'
+    ),
+    cacheDir: path.join(dataDir(), 'skill-icons')
+  });
   updateService = new UpdateService({
     updater: autoUpdater,
     currentVersion: app.getVersion(),

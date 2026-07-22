@@ -18,7 +18,9 @@ _smoke/
 electron/node_modules/
 electron/release/
 electron/dist-python/
+electron/dist-native/
 electron/build-python/
 electron/build-manual/
 electron/*-preview.png
 electron/_runtime-test/
+electron/_icon-test-cache/

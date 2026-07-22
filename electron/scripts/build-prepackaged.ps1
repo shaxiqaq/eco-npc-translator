@@ -1,9 +1,29 @@
 $ErrorActionPreference = "Stop"
 
 $Electron = Split-Path -Parent $PSScriptRoot
+$Repo = Split-Path -Parent $Electron
 $Release = [IO.Path]::GetFullPath((Join-Path $Electron "release"))
 $Target = [IO.Path]::GetFullPath((Join-Path $Release "win-unpacked"))
 $Stage = [IO.Path]::GetFullPath((Join-Path $Electron "build-manual\app"))
+
+$DamageExecutable = Join-Path $Electron "dist-python\damage\eco_damage_bridge\eco_damage_bridge.exe"
+$BackendInputs = @(
+    "eco_buffs.py",
+    "eco_damage_bridge.py",
+    "eco_damage_capture.py",
+    "eco_damage_meter.py",
+    "eco_npc_mitm.py"
+) | ForEach-Object { Join-Path $Repo $_ }
+$NeedsBackendBuild = -not (Test-Path -LiteralPath $DamageExecutable)
+if (-not $NeedsBackendBuild) {
+    $BuiltAt = (Get-Item -LiteralPath $DamageExecutable).LastWriteTimeUtc
+    $NeedsBackendBuild = $BackendInputs | Where-Object {
+        (Test-Path -LiteralPath $_) -and (Get-Item -LiteralPath $_).LastWriteTimeUtc -gt $BuiltAt
+    } | Select-Object -First 1
+}
+if ($NeedsBackendBuild) {
+    & (Join-Path $PSScriptRoot "build-backend.ps1")
+}
 
 if (-not $Target.StartsWith($Release, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Invalid build directory: $Target"
@@ -60,6 +80,11 @@ Copy-Item -LiteralPath (Join-Path $Electron "dist-python\damage\eco_damage_bridg
     -Destination (Join-Path $Backend "damage") -Recurse
 Copy-Item -LiteralPath (Join-Path $Electron "dist-python\translator\eco_npc_mitm") `
     -Destination (Join-Path $Backend "translator") -Recurse
+
+if (-not (Test-Path -LiteralPath (Join-Path $Electron "dist-native\icon-helper\EcoIconHelper.exe"))) {
+    & (Join-Path $PSScriptRoot "build-icon-helper.ps1")
+}
+Copy-Item -LiteralPath (Join-Path $Electron "dist-native\icon-helper") -Destination $Resources -Recurse
 
 Move-Item -LiteralPath (Join-Path $Target "electron.exe") -Destination (Join-Path $Target "ECO Toolbox.exe") -Force
 Write-Host "Prepackaged application created: $Target"
