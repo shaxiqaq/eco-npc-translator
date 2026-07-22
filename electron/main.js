@@ -39,10 +39,9 @@ const defaultAppSettings = {
     x: null,
     y: null,
     width: 430,
-    height: 258,
+    height: 115,
     opacity: 0.95,
-    scale: 1,
-    showDetails: true
+    scale: 1
   },
   startup: {
     damage: false,
@@ -330,7 +329,7 @@ function overlayBounds(settings) {
   const display = screen.getPrimaryDisplay().workArea;
   const scale = Math.min(1.4, Math.max(0.8, Number(settings.scale) || 1));
   const width = Math.round(430 * scale);
-  const height = Math.round(258 * scale);
+  const height = Math.round(115 * scale);
   const x = Number.isFinite(settings.x) ? settings.x : display.x + display.width - width - 28;
   const y = Number.isFinite(settings.y) ? settings.y : display.y + 56;
   return { x, y, width, height };
@@ -447,6 +446,7 @@ function createMainWindow() {
 
 function demoSnapshot(seed) {
   const now = new Date();
+  const nowSeconds = Date.now() / 1000;
   const hits = [
     { side: 'dealt', skill_id: 3001, skill: '法箭', damage: 283, source: '自己#1699', target: '沙地爬行者#11460' },
     { side: 'normal_dealt', skill_id: null, skill: '普通攻击', damage: 21, source: '自己#1699', target: '沙地爬行者#11434' },
@@ -488,7 +488,20 @@ function demoSnapshot(seed) {
     skills_dealt: [[3127, 354], [3001, 283], [3123, 240]],
     skills_taken: [],
     pet_skills: [[7505, 90]],
-    damage_history: hits
+    damage_history: hits,
+    buffs: [
+      { key: 'magic_shield', name: '魔法护盾', source_name: 'MAGIC_SHIELD', category: 'positive', timing: 'estimated_observed', started_at: nowSeconds - 72, expires_at: nowSeconds + 828, elapsed: 72, remaining: 828 },
+      { key: '3:0x00000020', name: '魔法攻击力上升', source_name: 'MAGIC_ATK_UP', category: 'positive', timing: 'elapsed_only', started_at: nowSeconds - 31, expires_at: null, elapsed: 31, remaining: null },
+      { key: '4:0x00000008', name: '移动速度下降', source_name: 'SPEED_DOWN', category: 'negative', timing: 'elapsed_only', started_at: nowSeconds - 14, expires_at: null, elapsed: 14, remaining: null },
+      { key: '0:0x00000004', name: '沉默', source_name: 'SILENCE', category: 'abnormal', timing: 'estimated_learned', started_at: nowSeconds - 5, expires_at: nowSeconds + 11, elapsed: 5, remaining: 11 }
+    ],
+    buff_history: [
+      { event: 'gained', time: nowSeconds - 72, key: 'magic_shield', name: '魔法护盾', category: 'positive' },
+      { event: 'gained', time: nowSeconds - 31, key: '3:0x00000020', name: '魔法攻击力上升', category: 'positive' },
+      { event: 'gained', time: nowSeconds - 14, key: '4:0x00000008', name: '移动速度下降', category: 'negative' },
+      { event: 'gained', time: nowSeconds - 5, key: '0:0x00000004', name: '沉默', category: 'abnormal' }
+    ],
+    buff_version: 4
   };
 }
 
@@ -533,6 +546,16 @@ ipcMain.handle('overlay:set-visible', (_event, visible) => {
   return { ok: true };
 });
 ipcMain.handle('overlay:set-editing', (_event, editing) => ({ ok: setOverlayEditing(editing) }));
+ipcMain.handle('overlay:resize-content', (_event, requestedHeight) => {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return { ok: false };
+  const settings = appSettings().overlay;
+  const scale = Math.min(1.4, Math.max(0.8, Number(settings.scale) || 1));
+  const display = screen.getDisplayMatching(overlayWindow.getBounds()).workArea;
+  const height = Math.min(display.height - 24, Math.max(Math.round(115 * scale), Math.round(Number(requestedHeight || 115) * scale)));
+  const bounds = overlayWindow.getBounds();
+  overlayWindow.setBounds({ x: bounds.x, y: Math.min(bounds.y, display.y + display.height - height), width: bounds.width, height });
+  return { ok: true, height };
+});
 ipcMain.handle('settings:save-app', (_event, incoming) => {
   const current = mergeDeep(appSettings(), incoming || {});
   writeJson(path.join(dataDir(), 'app_settings.json'), current);

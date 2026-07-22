@@ -1,6 +1,6 @@
 {
   "name": "eco-toolbox",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "ECO NPC 翻译与伤害统计工具箱",
   "main": "main.js",
   "private": true,

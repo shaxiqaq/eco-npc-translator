@@ -17,6 +17,7 @@
       <nav class="nav-list" aria-label="主导航">
         <button class="nav-item active" data-page="overview"><i data-lucide="layout-dashboard"></i><span>总览</span></button>
         <button class="nav-item" data-page="damage"><i data-lucide="swords"></i><span>伤害统计</span></button>
+        <button class="nav-item" data-page="buffs"><i data-lucide="shield-check"></i><span>状态监控</span></button>
         <button class="nav-item" data-page="translation"><i data-lucide="languages"></i><span>NPC 翻译</span></button>
         <button class="nav-item" data-page="logs"><i data-lucide="scroll-text"></i><span>运行日志</span></button>
         <button class="nav-item" data-page="settings"><i data-lucide="settings-2"></i><span>设置</span></button>
@@ -57,8 +58,8 @@
           </article>
           <article class="service-panel">
             <div class="service-icon blue"><i data-lucide="picture-in-picture-2"></i></div>
-            <div class="service-copy"><span>游戏悬浮窗</span><strong id="overlay-service-label">已显示</strong><small>透明置顶窗口</small></div>
-            <label class="switch" title="显示游戏悬浮窗"><input type="checkbox" id="overview-overlay-toggle" checked><span></span></label>
+            <div class="service-copy"><span>状态悬浮窗</span><strong id="overlay-service-label">已显示</strong><small>角色状态透明置顶窗口</small></div>
+            <label class="switch" title="显示状态悬浮窗"><input type="checkbox" id="overview-overlay-toggle" checked><span></span></label>
           </article>
         </div>
 
@@ -92,7 +93,7 @@
             <button data-filter="taken">受到伤害</button>
           </div>
           <div class="toolbar-actions">
-            <button class="btn secondary" id="edit-overlay"><i data-lucide="move"></i>调整悬浮窗</button>
+            <button class="btn secondary" id="edit-overlay"><i data-lucide="move"></i>调整状态悬浮窗</button>
             <button class="btn secondary" id="damage-reset"><i data-lucide="rotate-ccw"></i>清空统计</button>
           </div>
         </div>
@@ -118,6 +119,29 @@
             </table>
           </div>
         </section>
+      </section>
+
+      <section class="page" id="page-buffs">
+        <div class="page-toolbar">
+          <div class="status-page-heading"><i data-lucide="shield-check"></i><div><strong>自己的角色状态</strong><span id="buff-actor">等待识别角色</span></div></div>
+          <button class="btn secondary" id="buff-edit-overlay"><i data-lucide="move"></i>调整状态悬浮窗</button>
+        </div>
+        <div class="metric-grid compact-metrics buff-metrics">
+          <article class="metric"><span>当前状态</span><strong id="buff-total">0</strong><small>实时读取状态包</small></article>
+          <article class="metric"><span class="green-text">增益</span><strong id="buff-positive">0</strong><small>对角色有利</small></article>
+          <article class="metric"><span class="red-text">减益</span><strong id="buff-negative">0</strong><small>属性降低效果</small></article>
+          <article class="metric"><span class="blue-text">异常</span><strong id="buff-abnormal">0</strong><small>行动异常效果</small></article>
+        </div>
+        <div class="buff-layout">
+          <section class="data-section">
+            <div class="section-heading compact"><div><h2>当前生效</h2><span id="buff-active-count">0 项</span></div><span class="live-indicator"><i></i>实时更新</span></div>
+            <div class="buff-active-list" id="buff-active-list"><div class="empty-state">尚未检测到角色状态</div></div>
+          </section>
+          <section class="data-section">
+            <div class="section-heading compact"><div><h2>状态变化</h2><span id="buff-history-count">0 条</span></div></div>
+            <div class="buff-history-list" id="buff-history-list"><div class="empty-state">尚无状态变化记录</div></div>
+          </section>
+        </div>
       </section>
 
       <section class="page" id="page-translation">
@@ -169,11 +193,10 @@
             </form>
 
             <form class="settings-pane" id="settings-overlay">
-              <div class="form-heading"><h2>悬浮窗</h2><p>游戏内伤害信息的显示样式</p></div>
-              <label class="toggle-row"><div><strong>显示悬浮窗</strong><span>启动伤害采集时保持置顶显示</span></div><span class="switch"><input type="checkbox" id="setting-overlay-visible"><span></span></span></label>
+              <div class="form-heading"><h2>状态悬浮窗</h2><p>游戏内角色状态的显示样式</p></div>
+              <label class="toggle-row"><div><strong>显示状态悬浮窗</strong><span>显示自己的增益、减益和异常状态</span></div><span class="switch"><input type="checkbox" id="setting-overlay-visible"><span></span></span></label>
               <label class="range-row"><div><strong>显示比例</strong><span id="scale-value">100%</span></div><input id="setting-overlay-scale" type="range" min="0.8" max="1.4" step="0.05"></label>
               <label class="range-row"><div><strong>透明度</strong><span id="opacity-value">95%</span></div><input id="setting-overlay-opacity" type="range" min="0.45" max="1" step="0.05"></label>
-              <label class="toggle-row"><div><strong>显示伤害明细</strong><span>展示最近几条技能和普攻记录</span></div><span class="switch"><input type="checkbox" id="setting-overlay-details"><span></span></span></label>
               <div class="overlay-position-row"><div><strong>悬浮窗位置</strong><span>进入调整模式后直接拖动悬浮窗</span></div><button type="button" class="btn secondary" id="settings-edit-overlay"><i data-lucide="move"></i>调整位置</button></div>
               <div class="form-actions"><span class="save-status" id="overlay-save-status"></span><button type="submit" class="btn primary"><i data-lucide="save"></i>保存悬浮窗设置</button></div>
             </form>
@@ -182,7 +205,7 @@
               <div class="form-heading"><h2>启动行为</h2><p>打开 ECO 工具箱时自动运行的服务</p></div>
               <label class="toggle-row"><div><strong>自动启动伤害采集</strong><span>游戏未运行时会保留错误提示</span></div><span class="switch"><input type="checkbox" id="setting-start-damage"><span></span></span></label>
               <label class="toggle-row"><div><strong>自动启动 NPC 翻译</strong><span>使用已保存的翻译配置</span></div><span class="switch"><input type="checkbox" id="setting-start-translator"><span></span></span></label>
-              <label class="toggle-row"><div><strong>自动显示悬浮窗</strong><span>工具箱启动后立即显示悬浮窗</span></div><span class="switch"><input type="checkbox" id="setting-start-overlay"><span></span></span></label>
+              <label class="toggle-row"><div><strong>自动显示状态悬浮窗</strong><span>工具箱启动后立即显示角色状态</span></div><span class="switch"><input type="checkbox" id="setting-start-overlay"><span></span></span></label>
               <div class="form-actions"><span class="save-status" id="startup-save-status"></span><button type="submit" class="btn primary"><i data-lucide="save"></i>保存启动设置</button></div>
             </form>
 

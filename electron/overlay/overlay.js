@@ -1,10 +1,11 @@
 const $ = (selector) => document.querySelector(selector);
-let settings = { overlay: { showDetails: true } };
-let detailsVersion = null;
+let snapshot = {};
 
-function number(value, digits = 0) {
-  return Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
-}
+const categories = {
+  positive: { label: '增益', cls: 'positive' },
+  negative: { label: '减益', cls: 'negative' },
+  abnormal: { label: '异常', cls: 'abnormal' }
+};
 
 function duration(seconds) {
   const total = Math.max(0, Math.floor(Number(seconds || 0)));
@@ -12,45 +13,40 @@ function duration(seconds) {
 }
 
 function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
+  return String(value ?? '').replace(/[&<>'"]/g, (char) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+  })[char]);
 }
 
-function render(snapshot = {}) {
-  $('#battle-time').textContent = duration(snapshot.active);
-  $('#skill-total').textContent = number(snapshot.skill_dealt);
-  $('#normal-total').textContent = number(snapshot.normal_dealt);
-  $('#pet-total').textContent = number(snapshot.pet_dealt);
-  $('#taken-total').textContent = number(snapshot.taken);
-  $('#skill-dps').textContent = `${number(snapshot.skill_dps, 2)} 秒伤`;
-  $('#normal-dps').textContent = `${number(snapshot.normal_dps, 2)} 秒伤`;
-  $('#pet-dps').textContent = `${number(snapshot.pet_dps, 2)} 秒伤`;
-  $('#taken-dps').textContent = `${number(snapshot.tps, 2)} 秒均`;
-
-  const root = $('#details');
-  if (settings.overlay?.showDetails === false) {
-    root.innerHTML = '';
-    detailsVersion = null;
-    return;
+function timeLabel(item) {
+  const now = Date.now() / 1000;
+  if (item?.expires_at != null && Number.isFinite(Number(item.expires_at))) {
+    const remaining = Math.max(0, Number(item.expires_at) - now);
+    return remaining > 0 ? `预计 ${duration(remaining)}` : '等待移除';
   }
-  const version = Number(snapshot.history_version || 0);
-  if (detailsVersion === version) return;
-  detailsVersion = version;
-  const items = [...(snapshot.damage_history || [])].reverse().slice(0, 4);
-  root.innerHTML = items.length ? items.map((item) => {
-    const type = item.side === 'pet_dealt' ? 'pet' : item.side === 'taken' ? 'taken' : '';
-    const label = item.side === 'pet_dealt' ? '宠物' : item.side === 'taken' ? '受到' : item.skill_id == null ? '普攻' : '技能';
-    const peer = item.side === 'taken' ? item.source : item.target;
-    return `<div class="hit ${type}"><span>${label}</span><b>${escapeHtml(item.skill)} · ${escapeHtml(peer)}</b><strong>${number(item.damage)}</strong></div>`;
-  }).join('') : '<div class="empty">等待战斗数据</div>';
+  return `已持续 ${duration(Math.max(0, now - Number(item?.started_at || now)))}`;
 }
 
-window.eco.getState().then((state) => {
-  settings = state.settings || settings;
-  render(state.snapshot || {});
-});
-window.eco.onState((state) => {
-  settings = state.settings || settings;
-  render(state.snapshot || {});
-});
+function resizeFor(count) {
+  const rows = Math.max(1, Math.ceil(count / 2));
+  window.eco.resizeOverlayForContent(58 + rows * 45 + 12);
+}
+
+function render(next = snapshot) {
+  snapshot = next || {};
+  const items = [...(snapshot.buffs || [])];
+  $('#actor-label').textContent = snapshot.self_id ? `角色 ${snapshot.self_id}` : '等待识别角色';
+  $('#active-count').textContent = `${items.length} 项`;
+  const root = $('#status-list');
+  root.innerHTML = items.length ? items.map((item) => {
+    const category = categories[item.category] || { label: '状态', cls: 'unknown' };
+    return `<div class="status-item ${category.cls}"><span>${category.label}</span><strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong><b>${timeLabel(item)}</b></div>`;
+  }).join('') : '<div class="empty">当前没有检测到状态</div>';
+  resizeFor(items.length);
+}
+
+window.eco.getState().then((state) => render(state.snapshot || {}));
+window.eco.onState((state) => render(state.snapshot || snapshot));
 window.eco.onSnapshot(render);
 window.eco.onOverlayEditing((editing) => $('#overlay').classList.toggle('editing', editing));
+setInterval(() => render(snapshot), 1000);

@@ -4,6 +4,7 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const pageMeta = {
   overview: ['总览', '游戏连接与实时运行状态'],
   damage: ['伤害统计', '技能、普攻、宠物与受到伤害明细'],
+  buffs: ['状态监控', '自己角色的增益、减益与异常状态'],
   translation: ['NPC 翻译', '游戏原生对话框实时翻译'],
   logs: ['运行日志', '采集器与翻译服务输出'],
   settings: ['设置', '翻译服务、悬浮窗与启动行为']
@@ -77,6 +78,7 @@ function navigate(page) {
   $('#page-subtitle').textContent = pageMeta[page][1];
   if (page === 'overview') renderOverviewHistory();
   if (page === 'damage') renderDamageTable();
+  if (page === 'buffs') renderBuffs();
 }
 
 function serviceText(service) {
@@ -184,6 +186,70 @@ function renderSnapshot() {
 
   if (activePage === 'overview') renderOverviewHistory();
   if (activePage === 'damage') renderDamageTable();
+  if (activePage === 'buffs') renderBuffs();
+}
+
+const buffCategories = {
+  positive: { label: '增益', cls: 'positive' },
+  negative: { label: '减益', cls: 'negative' },
+  abnormal: { label: '异常', cls: 'abnormal' }
+};
+
+function buffCategory(item) {
+  return buffCategories[item?.category] || { label: '状态', cls: 'unknown' };
+}
+
+function buffTime(item) {
+  const now = Date.now() / 1000;
+  if (item?.expires_at != null && Number.isFinite(Number(item.expires_at))) {
+    const remaining = Math.max(0, Number(item.expires_at) - now);
+    return remaining > 0 ? `预计剩余 ${formatDuration(remaining)}` : '等待状态移除';
+  }
+  const elapsed = Math.max(0, now - Number(item?.started_at || now));
+  return `已持续 ${formatDuration(elapsed)}`;
+}
+
+function buffTimingSource(item) {
+  if (item?.timing === 'estimated_observed') return '实测预计';
+  if (item?.timing === 'estimated_learned') return '本次运行学习';
+  return '持续时间未知';
+}
+
+function formatEventTime(timestamp) {
+  if (!Number.isFinite(Number(timestamp))) return '--:--:--';
+  return new Date(Number(timestamp) * 1000).toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+function renderBuffs() {
+  const items = [...(snapshot?.buffs || [])];
+  const history = [...(snapshot?.buff_history || [])].reverse();
+  const counts = { positive: 0, negative: 0, abnormal: 0 };
+  items.forEach((item) => {
+    if (Object.hasOwn(counts, item.category)) counts[item.category] += 1;
+  });
+
+  $('#buff-actor').textContent = snapshot?.self_id ? `角色编号 ${snapshot.self_id}` : '等待识别角色';
+  $('#buff-total').textContent = formatNumber(items.length);
+  $('#buff-positive').textContent = formatNumber(counts.positive);
+  $('#buff-negative').textContent = formatNumber(counts.negative);
+  $('#buff-abnormal').textContent = formatNumber(counts.abnormal);
+  $('#buff-active-count').textContent = `${items.length} 项`;
+  $('#buff-history-count').textContent = `${history.length} 条`;
+
+  const activeRoot = $('#buff-active-list');
+  activeRoot.innerHTML = items.length ? items.map((item) => {
+    const category = buffCategory(item);
+    const sourceName = item.source_name && item.source_name !== item.name
+      ? `<small title="原始名称">${escapeHtml(item.source_name)}</small>` : '';
+    return `<div class="buff-active-row ${category.cls}"><span class="buff-category">${category.label}</span><div class="buff-name"><strong>${escapeHtml(item.name)}</strong>${sourceName}</div><div class="buff-time"><strong>${buffTime(item)}</strong><span>${buffTimingSource(item)}</span></div></div>`;
+  }).join('') : '<div class="empty-state">尚未检测到角色状态</div>';
+
+  const historyRoot = $('#buff-history-list');
+  const eventLabels = { gained: '获得', refreshed: '刷新', lost: '消失' };
+  historyRoot.innerHTML = history.length ? history.map((item) => {
+    const category = buffCategory(item);
+    return `<div class="buff-history-row"><time>${formatEventTime(item.time)}</time><span class="buff-category ${category.cls}">${category.label}</span><strong>${escapeHtml(item.name)}</strong><b class="buff-event ${escapeHtml(item.event)}">${eventLabels[item.event] || '变化'}</b></div>`;
+  }).join('') : '<div class="empty-state">尚无状态变化记录</div>';
 }
 
 function renderOverviewHistory() {
@@ -343,7 +409,6 @@ function applySettingsToForm() {
   $('#overlay-service-label').textContent = overlay.visible !== false ? '已显示' : '已隐藏';
   $('#setting-overlay-scale').value = overlay.scale || 1;
   $('#setting-overlay-opacity').value = overlay.opacity ?? 0.95;
-  $('#setting-overlay-details').checked = overlay.showDetails !== false;
   $('#scale-value').textContent = `${Math.round((overlay.scale || 1) * 100)}%`;
   $('#opacity-value').textContent = `${Math.round((overlay.opacity ?? 0.95) * 100)}%`;
   $('#setting-start-damage').checked = Boolean(startup.damage);
@@ -383,10 +448,10 @@ async function toggleService(name) {
 async function setOverlayEditing() {
   overlayEditing = !overlayEditing;
   await window.eco.setOverlayEditing(overlayEditing);
-  const labels = [$('#edit-overlay'), $('#settings-edit-overlay')];
+  const labels = [$('#edit-overlay'), $('#buff-edit-overlay'), $('#settings-edit-overlay')];
   labels.forEach((button) => {
     if (!button) return;
-    button.innerHTML = `<i data-lucide="${overlayEditing ? 'check' : 'move'}"></i>${overlayEditing ? '完成调整' : '调整悬浮窗'}`;
+    button.innerHTML = `<i data-lucide="${overlayEditing ? 'check' : 'move'}"></i>${overlayEditing ? '完成调整' : '调整状态悬浮窗'}`;
   });
   createIcons();
   showToast(overlayEditing ? '现在可以拖动悬浮窗' : '悬浮窗位置已保存');
@@ -442,6 +507,7 @@ function bindEvents() {
   $('#overview-reset').addEventListener('click', async () => { await window.eco.resetDamage(); showToast('伤害统计已清空'); });
   $('#damage-reset').addEventListener('click', async () => { await window.eco.resetDamage(); showToast('伤害统计已清空'); });
   $('#edit-overlay').addEventListener('click', setOverlayEditing);
+  $('#buff-edit-overlay').addEventListener('click', setOverlayEditing);
   $('#settings-edit-overlay').addEventListener('click', setOverlayEditing);
   $('#open-logs').addEventListener('click', () => window.eco.openLogs());
   $('#check-updates').addEventListener('click', checkForUpdates);
@@ -536,8 +602,7 @@ function bindEvents() {
     const overlay = {
       visible: $('#setting-overlay-visible').checked,
       scale: Number($('#setting-overlay-scale').value),
-      opacity: Number($('#setting-overlay-opacity').value),
-      showDetails: $('#setting-overlay-details').checked
+      opacity: Number($('#setting-overlay-opacity').value)
     };
     const result = await window.eco.saveAppSettings({ overlay });
     state.settings = result.settings;
@@ -587,6 +652,9 @@ async function init() {
     renderLogs();
   });
   window.eco.onUpdate((update) => renderUpdate(update, true));
+  setInterval(() => {
+    if (activePage === 'buffs') renderBuffs();
+  }, 1000);
 }
 
 init();

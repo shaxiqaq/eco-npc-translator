@@ -24,6 +24,7 @@ try {
         --add-data "$Repo\_damage_capture.js;." `
         --add-data "$Repo\skill_names.json;." `
         --add-data "$Repo\mob_names.json;." `
+        --add-data "$Repo\buff_names.json;." `
         eco_damage_bridge.py
     if ($LASTEXITCODE -ne 0) { throw "Failed to package the damage capture backend" }
 

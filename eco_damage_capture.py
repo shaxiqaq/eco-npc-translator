@@ -236,6 +236,13 @@ def parse_packet(direction, op, sub):
             "actor": u32be(sub, 2),
             "status": sub[6] if len(sub) > 6 else None,
         }
+    if direction == "S2C" and op == 5500:
+        count = min(12, max(0, (len(sub) - 6) // 4))
+        return {
+            "type": "actor_buff",
+            "actor": u32be(sub, 2),
+            "masks": [u32be(sub, 6 + index * 4) for index in range(count)],
+        }
     if direction == "S2C" and op == 4640:
         return {
             "type": "mob_appear",

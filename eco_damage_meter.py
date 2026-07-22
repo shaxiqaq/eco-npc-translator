@@ -23,13 +23,14 @@ from eco_damage_categories import (
     update_capture_categories,
 )
 from eco_damage_console import render
+from eco_buffs import BuffTracker
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGDIR = os.path.join(HERE, "logs")
 WATCH_OPS = [
     3999, 4001, 4002, 4006, 4999,
     5001, 5005, 5010, 5025, 5030, 5035, 5040,
-    525, 540, 4640, 4645, 4655, 4660,
+    525, 540, 5500, 4640, 4645, 4655, 4660,
 ]
 SKILL_NAMES = os.path.join(HERE, "skill_names.json")
 MOB_NAMES = os.path.join(HERE, "mob_names.json")
@@ -106,6 +107,8 @@ class DamageMeter:
         self.mob_names = load_id_names(MOB_NAMES)
         self.capture_categories = default_capture_categories()
         self.reset()
+        self.actor_buff_masks = {}
+        self.buff_tracker = BuffTracker()
 
     def close(self):
         if self.out:
@@ -243,6 +246,16 @@ class DamageMeter:
             self.auto_self = False
             self.events.appendleft((now_label(), f"auto self actor={actor} by outgoing action"))
         return self.self_id
+
+    def sync_buffs_to_self(self, timestamp):
+        actor = self.self_id
+        if actor is None or actor == self.buff_tracker.actor_id:
+            return
+        pending = self.actor_buff_masks.get(actor)
+        self.buff_tracker.reset_actor(actor)
+        if pending is not None:
+            masks, packet_at = pending
+            self.buff_tracker.update(actor, masks, packet_at or timestamp)
 
     def remember_damage_time(self, ts):
         if self.first_damage_ts is None:
@@ -647,6 +660,13 @@ class DamageMeter:
                 })
             return
         if typ in ("skill_cast_result", "skill_active"):
+            if self.self_id is None and self.has_recent_own_skill_request(
+                ts, parsed.get("skill_id"), parsed.get("target")
+            ):
+                caster = parsed.get("caster")
+                if caster is not None:
+                    self.self_id = caster
+                    self.auto_self = False
             self.remember_action(ts, parsed.get("caster"), parsed.get("target"),
                                  parsed.get("skill_id"), "skill")
             if typ == "skill_active":
@@ -703,6 +723,31 @@ class DamageMeter:
             return
         if typ == "battle_status":
             self.mark_self_candidate(parsed.get("actor"), 1)
+            return
+        if typ == "actor_buff":
+            actor = parsed.get("actor")
+            masks = parsed.get("masks") or []
+            if actor is None:
+                return
+            self.actor_buff_masks[actor] = (masks, ts)
+            self.sync_buffs_to_self(ts)
+            if actor != self.self_id:
+                return
+            for event in self.buff_tracker.update(actor, masks, ts):
+                self.log({
+                    "ts": ts,
+                    "kind": "buff",
+                    "event": event.get("event"),
+                    "actor": actor,
+                    "key": event.get("key"),
+                    "name": event.get("name"),
+                    "category": event.get("category"),
+                    "duration": event.get("duration"),
+                    "timing": event.get("timing"),
+                    "raw_op": parsed.get("_op"),
+                    "raw_dir": parsed.get("_dir"),
+                    "raw_sub": parsed.get("_sub"),
+                })
             return
         if typ == "hpmpsp":
             actor = parsed.get("actor")
@@ -918,7 +963,10 @@ class DamageMeter:
 
     def snapshot(self, history_limit=None):
         with self.lock:
-            elapsed = time.time() - self.started
+            now = time.time()
+            elapsed = now - self.started
+            self.sync_buffs_to_self(now)
+            buffs = self.buff_tracker.snapshot(now)
             active = 0.0
             if self.first_damage_ts and self.last_damage_ts and self.last_damage_ts > self.first_damage_ts:
                 active = self.last_damage_ts - self.first_damage_ts
@@ -985,6 +1033,10 @@ class DamageMeter:
                 "unknown_actors": list(self.unknown_combat_actors.most_common(8)),
                 "mob_template_guess": self.guess_mob_template(),
                 "events": list(self.events),
+                "buffs": buffs["active"],
+                "buff_history": buffs["history"],
+                "buff_version": buffs["version"],
+                "buff_masks": buffs["masks"],
             }
 
 

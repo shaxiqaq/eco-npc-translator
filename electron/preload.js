@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('eco', {
   saveAppSettings: (settings) => ipcRenderer.invoke('settings:save-app', settings),
   setOverlayVisible: (visible) => ipcRenderer.invoke('overlay:set-visible', visible),
   setOverlayEditing: (editing) => ipcRenderer.invoke('overlay:set-editing', editing),
+  resizeOverlayForContent: (height) => ipcRenderer.invoke('overlay:resize-content', height),
   openLogs: () => ipcRenderer.invoke('logs:open-folder'),
   onState: (callback) => {
     const listener = (_event, state) => callback(state);

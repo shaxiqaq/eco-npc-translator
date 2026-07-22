@@ -1,0 +1,1377 @@
+{
+  "0:0x00000001": {
+    "name": "中毒",
+    "source_name": "Poison",
+    "category": "abnormal"
+  },
+  "0:0x00000002": {
+    "name": "石化",
+    "source_name": "Stone",
+    "category": "abnormal"
+  },
+  "0:0x00000004": {
+    "name": "麻痹",
+    "source_name": "Paralysis",
+    "category": "abnormal"
+  },
+  "0:0x00000008": {
+    "name": "睡眠",
+    "source_name": "Sleep",
+    "category": "abnormal"
+  },
+  "0:0x00000010": {
+    "name": "沉默",
+    "source_name": "Silence",
+    "category": "abnormal"
+  },
+  "0:0x00000020": {
+    "name": "移动速度下降",
+    "source_name": "SpeedDown",
+    "category": "abnormal"
+  },
+  "0:0x00000040": {
+    "name": "混乱",
+    "source_name": "Confused",
+    "category": "abnormal"
+  },
+  "0:0x00000080": {
+    "name": "冻结",
+    "source_name": "Frosen",
+    "category": "abnormal"
+  },
+  "0:0x00000100": {
+    "name": "眩晕",
+    "source_name": "Stun",
+    "category": "abnormal"
+  },
+  "0:0x00000200": {
+    "name": "Dead",
+    "source_name": "Dead",
+    "category": "abnormal"
+  },
+  "0:0x00000400": {
+    "name": "CannotMove",
+    "source_name": "CannotMove",
+    "category": "abnormal"
+  },
+  "0:0x00000800": {
+    "name": "中毒抗性",
+    "source_name": "PoisonResist",
+    "category": "positive"
+  },
+  "0:0x00001000": {
+    "name": "石化抗性",
+    "source_name": "StoneResist",
+    "category": "positive"
+  },
+  "0:0x00002000": {
+    "name": "麻痹抗性",
+    "source_name": "ParalysisResist",
+    "category": "positive"
+  },
+  "0:0x00004000": {
+    "name": "睡眠抗性",
+    "source_name": "SleepResist",
+    "category": "positive"
+  },
+  "0:0x00008000": {
+    "name": "沉默抗性",
+    "source_name": "SilenceResist",
+    "category": "positive"
+  },
+  "0:0x00010000": {
+    "name": "SpeedDownResist",
+    "source_name": "SpeedDownResist",
+    "category": "positive"
+  },
+  "0:0x00020000": {
+    "name": "ConfuseResist",
+    "source_name": "ConfuseResist",
+    "category": "positive"
+  },
+  "0:0x00040000": {
+    "name": "冻结抗性",
+    "source_name": "FrosenResist",
+    "category": "positive"
+  },
+  "0:0x00080000": {
+    "name": "昏厥抗性",
+    "source_name": "FaintResist",
+    "category": "positive"
+  },
+  "0:0x00100000": {
+    "name": "坐下",
+    "source_name": "Sit",
+    "category": "positive"
+  },
+  "0:0x00200000": {
+    "name": "灵魂状态",
+    "source_name": "Spirit",
+    "category": "positive"
+  },
+  "10:0x00000020": {
+    "name": "审判",
+    "source_name": "审判",
+    "category": "positive"
+  },
+  "10:0x00000400": {
+    "name": "食物效果",
+    "source_name": "食物效果",
+    "category": "positive"
+  },
+  "1:0x00000001": {
+    "name": "狂戦士",
+    "source_name": "狂戦士",
+    "category": "positive"
+  },
+  "1:0x00000002": {
+    "name": "诅咒",
+    "source_name": "Curse",
+    "category": "positive"
+  },
+  "1:0x00000004": {
+    "name": "透視",
+    "source_name": "透視",
+    "category": "positive"
+  },
+  "1:0x00000008": {
+    "name": "浮遊",
+    "source_name": "浮遊",
+    "category": "positive"
+  },
+  "1:0x00000010": {
+    "name": "水中呼吸",
+    "source_name": "水中呼吸",
+    "category": "positive"
+  },
+  "1:0x00000020": {
+    "name": "Transparent",
+    "source_name": "Transparent",
+    "category": "positive"
+  },
+  "1:0x00000040": {
+    "name": "Undead",
+    "source_name": "Undead",
+    "category": "positive"
+  },
+  "1:0x00000080": {
+    "name": "Mushroom",
+    "source_name": "Mushroom",
+    "category": "positive"
+  },
+  "1:0x00000100": {
+    "name": "硬直",
+    "source_name": "硬直",
+    "category": "positive"
+  },
+  "1:0x00000200": {
+    "name": "呪縛",
+    "source_name": "呪縛",
+    "category": "positive"
+  },
+  "1:0x00000400": {
+    "name": "封印",
+    "source_name": "封印",
+    "category": "positive"
+  },
+  "1:0x00000800": {
+    "name": "封魔",
+    "source_name": "封魔",
+    "category": "positive"
+  },
+  "1:0x00001000": {
+    "name": "憑依準備",
+    "source_name": "憑依準備",
+    "category": "positive"
+  },
+  "1:0x00002000": {
+    "name": "熱波防御",
+    "source_name": "熱波防御",
+    "category": "positive"
+  },
+  "1:0x00004000": {
+    "name": "寒波防御",
+    "source_name": "寒波防御",
+    "category": "positive"
+  },
+  "1:0x00008000": {
+    "name": "真空防御",
+    "source_name": "真空防御",
+    "category": "positive"
+  },
+  "1:0x00010000": {
+    "name": "猛毒",
+    "source_name": "猛毒",
+    "category": "positive"
+  },
+  "1:0x00020000": {
+    "name": "HolyFeather",
+    "source_name": "HolyFeather",
+    "category": "positive"
+  },
+  "1:0x00040000": {
+    "name": "亀の構え",
+    "source_name": "亀の構え",
+    "category": "positive"
+  },
+  "1:0x00080000": {
+    "name": "必中陣",
+    "source_name": "必中陣",
+    "category": "positive"
+  },
+  "1:0x00100000": {
+    "name": "ShortSwordDelayCancel",
+    "source_name": "ShortSwordDelayCancel",
+    "category": "positive"
+  },
+  "1:0x00200000": {
+    "name": "DelayCancel",
+    "source_name": "DelayCancel",
+    "category": "positive"
+  },
+  "1:0x00400000": {
+    "name": "AxeDelayCancel",
+    "source_name": "AxeDelayCancel",
+    "category": "positive"
+  },
+  "1:0x00800000": {
+    "name": "SpearDelayCancel",
+    "source_name": "SpearDelayCancel",
+    "category": "positive"
+  },
+  "1:0x01000000": {
+    "name": "BowDelayCancel",
+    "source_name": "BowDelayCancel",
+    "category": "positive"
+  },
+  "1:0x02000000": {
+    "name": "DefenseSlash",
+    "source_name": "DefenseSlash",
+    "category": "positive"
+  },
+  "1:0x04000000": {
+    "name": "DefenseStub",
+    "source_name": "DefenseStub",
+    "category": "positive"
+  },
+  "1:0x08000000": {
+    "name": "DefenseBlow",
+    "source_name": "DefenseBlow",
+    "category": "positive"
+  },
+  "1:0x10000000": {
+    "name": "复活",
+    "source_name": "Revive",
+    "category": "positive"
+  },
+  "1:0x20000000": {
+    "name": "宠物强化",
+    "source_name": "PetUp",
+    "category": "positive"
+  },
+  "1:0x40000000": {
+    "name": "点火",
+    "source_name": "点火",
+    "category": "positive"
+  },
+  "2:0x00000001": {
+    "name": "武器の無属性上昇",
+    "source_name": "武器の無属性上昇",
+    "category": "positive"
+  },
+  "2:0x00000002": {
+    "name": "武器火属性上升",
+    "source_name": "WeaponFire",
+    "category": "positive"
+  },
+  "2:0x00000004": {
+    "name": "武器水属性上升",
+    "source_name": "WeaponWater",
+    "category": "positive"
+  },
+  "2:0x00000008": {
+    "name": "武器风属性上升",
+    "source_name": "WeaponWind",
+    "category": "positive"
+  },
+  "2:0x00000010": {
+    "name": "武器土属性上升",
+    "source_name": "WeaponEarth",
+    "category": "positive"
+  },
+  "2:0x00000020": {
+    "name": "武器光属性上升",
+    "source_name": "WeaponHoly",
+    "category": "positive"
+  },
+  "2:0x00000040": {
+    "name": "武器暗属性上升",
+    "source_name": "WeaponDark",
+    "category": "positive"
+  },
+  "2:0x00000080": {
+    "name": "武器の無属性減少",
+    "source_name": "武器の無属性減少",
+    "category": "positive"
+  },
+  "2:0x00000100": {
+    "name": "武器の火属性減少",
+    "source_name": "武器の火属性減少",
+    "category": "positive"
+  },
+  "2:0x00000200": {
+    "name": "武器の水属性減少",
+    "source_name": "武器の水属性減少",
+    "category": "positive"
+  },
+  "2:0x00000400": {
+    "name": "武器の風属性減少",
+    "source_name": "武器の風属性減少",
+    "category": "positive"
+  },
+  "2:0x00000800": {
+    "name": "武器の土属性減少",
+    "source_name": "武器の土属性減少",
+    "category": "positive"
+  },
+  "2:0x00001000": {
+    "name": "武器の光属性減少",
+    "source_name": "武器の光属性減少",
+    "category": "positive"
+  },
+  "2:0x00002000": {
+    "name": "武器の闇属性減少",
+    "source_name": "武器の闇属性減少",
+    "category": "positive"
+  },
+  "2:0x00004000": {
+    "name": "体の無属性上昇",
+    "source_name": "体の無属性上昇",
+    "category": "positive"
+  },
+  "2:0x00008000": {
+    "name": "ShieldFire",
+    "source_name": "ShieldFire",
+    "category": "positive"
+  },
+  "2:0x00010000": {
+    "name": "ShieldWater",
+    "source_name": "ShieldWater",
+    "category": "positive"
+  },
+  "2:0x00020000": {
+    "name": "ShieldWind",
+    "source_name": "ShieldWind",
+    "category": "positive"
+  },
+  "2:0x00040000": {
+    "name": "ShieldEarth",
+    "source_name": "ShieldEarth",
+    "category": "positive"
+  },
+  "2:0x00080000": {
+    "name": "ShieldHoly",
+    "source_name": "ShieldHoly",
+    "category": "positive"
+  },
+  "2:0x00100000": {
+    "name": "体の水属性減少",
+    "source_name": "体の水属性減少",
+    "category": "positive"
+  },
+  "2:0x00200000": {
+    "name": "体の無属性減少",
+    "source_name": "体の無属性減少",
+    "category": "positive"
+  },
+  "2:0x00400000": {
+    "name": "体の火属性減少",
+    "source_name": "体の火属性減少",
+    "category": "positive"
+  },
+  "2:0x01000000": {
+    "name": "体の風属性減少",
+    "source_name": "体の風属性減少",
+    "category": "positive"
+  },
+  "2:0x02000000": {
+    "name": "体の土属性減少",
+    "source_name": "体の土属性減少",
+    "category": "positive"
+  },
+  "2:0x04000000": {
+    "name": "体の光属性減少",
+    "source_name": "体の光属性減少",
+    "category": "positive"
+  },
+  "2:0x08000000": {
+    "name": "体の闇属性減少",
+    "source_name": "体の闇属性減少",
+    "category": "positive"
+  },
+  "3:0x00000001": {
+    "name": "最大HP上昇",
+    "source_name": "最大HP上昇",
+    "category": "positive"
+  },
+  "3:0x00000002": {
+    "name": "最大MP上昇",
+    "source_name": "最大MP上昇",
+    "category": "positive"
+  },
+  "3:0x00000004": {
+    "name": "最大SP上昇",
+    "source_name": "最大SP上昇",
+    "category": "positive"
+  },
+  "3:0x00000008": {
+    "name": "移動力上昇",
+    "source_name": "移動力上昇",
+    "category": "positive"
+  },
+  "3:0x00000010": {
+    "name": "AtkMinUp",
+    "source_name": "AtkMinUp",
+    "category": "positive"
+  },
+  "3:0x00000020": {
+    "name": "AtkMaxUp",
+    "source_name": "AtkMaxUp",
+    "category": "positive"
+  },
+  "3:0x00000040": {
+    "name": "MAtkMinUp",
+    "source_name": "MAtkMinUp",
+    "category": "positive"
+  },
+  "3:0x00000080": {
+    "name": "MAtkMaxUp",
+    "source_name": "MAtkMaxUp",
+    "category": "positive"
+  },
+  "3:0x00000100": {
+    "name": "物理防御率上升",
+    "source_name": "DefUp",
+    "category": "positive"
+  },
+  "3:0x00000200": {
+    "name": "物理防御力上升",
+    "source_name": "DefAddUp",
+    "category": "positive"
+  },
+  "3:0x00000400": {
+    "name": "魔法防御率上升",
+    "source_name": "MDefUp",
+    "category": "positive"
+  },
+  "3:0x00000800": {
+    "name": "魔法防御力上升",
+    "source_name": "MDefAddUp",
+    "category": "positive"
+  },
+  "3:0x00001000": {
+    "name": "近战命中上升",
+    "source_name": "HitMeleeUp",
+    "category": "positive"
+  },
+  "3:0x00002000": {
+    "name": "HitRangeUp",
+    "source_name": "HitRangeUp",
+    "category": "positive"
+  },
+  "3:0x00004000": {
+    "name": "HitMagicUp",
+    "source_name": "HitMagicUp",
+    "category": "positive"
+  },
+  "3:0x00008000": {
+    "name": "AvdMeleeUp",
+    "source_name": "AvdMeleeUp",
+    "category": "positive"
+  },
+  "3:0x00010000": {
+    "name": "AvdRangeUp",
+    "source_name": "AvdRangeUp",
+    "category": "positive"
+  },
+  "3:0x00020000": {
+    "name": "AvdMagicUp",
+    "source_name": "AvdMagicUp",
+    "category": "positive"
+  },
+  "3:0x00040000": {
+    "name": "HitCriUp",
+    "source_name": "HitCriUp",
+    "category": "positive"
+  },
+  "3:0x00080000": {
+    "name": "AvdCriUp",
+    "source_name": "AvdCriUp",
+    "category": "positive"
+  },
+  "3:0x00100000": {
+    "name": "HPRecUp",
+    "source_name": "HPRecUp",
+    "category": "positive"
+  },
+  "3:0x00200000": {
+    "name": "MPRecUp",
+    "source_name": "MPRecUp",
+    "category": "positive"
+  },
+  "3:0x00400000": {
+    "name": "SPRecUp",
+    "source_name": "SPRecUp",
+    "category": "positive"
+  },
+  "3:0x00800000": {
+    "name": "AspdUp",
+    "source_name": "AspdUp",
+    "category": "positive"
+  },
+  "3:0x01000000": {
+    "name": "CspdUp",
+    "source_name": "CspdUp",
+    "category": "positive"
+  },
+  "3:0x02000000": {
+    "name": "STR上昇",
+    "source_name": "STR上昇",
+    "category": "positive"
+  },
+  "3:0x04000000": {
+    "name": "DEX上昇",
+    "source_name": "DEX上昇",
+    "category": "positive"
+  },
+  "3:0x08000000": {
+    "name": "INT上昇",
+    "source_name": "INT上昇",
+    "category": "positive"
+  },
+  "3:0x10000000": {
+    "name": "VIT上昇",
+    "source_name": "VIT上昇",
+    "category": "positive"
+  },
+  "3:0x20000000": {
+    "name": "AGI上昇",
+    "source_name": "AGI上昇",
+    "category": "positive"
+  },
+  "3:0x40000000": {
+    "name": "MAG上昇",
+    "source_name": "MAG上昇",
+    "category": "positive"
+  },
+  "4:0x00000001": {
+    "name": "最大HP減少",
+    "source_name": "最大HP減少",
+    "category": "negative"
+  },
+  "4:0x00000002": {
+    "name": "最大MP減少",
+    "source_name": "最大MP減少",
+    "category": "negative"
+  },
+  "4:0x00000004": {
+    "name": "最大SP減少",
+    "source_name": "最大SP減少",
+    "category": "negative"
+  },
+  "4:0x00000010": {
+    "name": "最小攻撃力減少",
+    "source_name": "最小攻撃力減少",
+    "category": "negative"
+  },
+  "4:0x00000020": {
+    "name": "最大攻撃力減少",
+    "source_name": "最大攻撃力減少",
+    "category": "negative"
+  },
+  "4:0x00000040": {
+    "name": "最小魔法攻撃力減少",
+    "source_name": "最小魔法攻撃力減少",
+    "category": "negative"
+  },
+  "4:0x00000080": {
+    "name": "最大魔法攻撃力減少",
+    "source_name": "最大魔法攻撃力減少",
+    "category": "negative"
+  },
+  "4:0x00000100": {
+    "name": "防御率減少",
+    "source_name": "防御率減少",
+    "category": "negative"
+  },
+  "4:0x00000200": {
+    "name": "防御力減少",
+    "source_name": "防御力減少",
+    "category": "negative"
+  },
+  "4:0x00000400": {
+    "name": "魔法防御率減少",
+    "source_name": "魔法防御率減少",
+    "category": "negative"
+  },
+  "4:0x00000800": {
+    "name": "魔法防御力減少",
+    "source_name": "魔法防御力減少",
+    "category": "negative"
+  },
+  "4:0x00001000": {
+    "name": "近距離命中率減少",
+    "source_name": "近距離命中率減少",
+    "category": "negative"
+  },
+  "4:0x00002000": {
+    "name": "遠距離命中率減少",
+    "source_name": "遠距離命中率減少",
+    "category": "negative"
+  },
+  "4:0x00004000": {
+    "name": "魔法命中率減少",
+    "source_name": "魔法命中率減少",
+    "category": "negative"
+  },
+  "4:0x00008000": {
+    "name": "近距離回避率減少",
+    "source_name": "近距離回避率減少",
+    "category": "negative"
+  },
+  "4:0x00010000": {
+    "name": "遠距離回避率減少",
+    "source_name": "遠距離回避率減少",
+    "category": "negative"
+  },
+  "4:0x00020000": {
+    "name": "魔法抵抗率減少",
+    "source_name": "魔法抵抗率減少",
+    "category": "negative"
+  },
+  "4:0x00040000": {
+    "name": "クリティカル率減少",
+    "source_name": "クリティカル率減少",
+    "category": "negative"
+  },
+  "4:0x00080000": {
+    "name": "クリティカル回避率減少",
+    "source_name": "クリティカル回避率減少",
+    "category": "negative"
+  },
+  "4:0x00100000": {
+    "name": "HP回復率減少",
+    "source_name": "HP回復率減少",
+    "category": "negative"
+  },
+  "4:0x00200000": {
+    "name": "MP回復率減少",
+    "source_name": "MP回復率減少",
+    "category": "negative"
+  },
+  "4:0x00400000": {
+    "name": "SP回復率減少",
+    "source_name": "SP回復率減少",
+    "category": "negative"
+  },
+  "4:0x00800000": {
+    "name": "攻撃スピード減少",
+    "source_name": "攻撃スピード減少",
+    "category": "negative"
+  },
+  "4:0x01000000": {
+    "name": "詠唱スピード減少",
+    "source_name": "詠唱スピード減少",
+    "category": "negative"
+  },
+  "4:0x02000000": {
+    "name": "STR減少",
+    "source_name": "STR減少",
+    "category": "negative"
+  },
+  "4:0x04000000": {
+    "name": "DEX減少",
+    "source_name": "DEX減少",
+    "category": "negative"
+  },
+  "4:0x08000000": {
+    "name": "INT減少",
+    "source_name": "INT減少",
+    "category": "negative"
+  },
+  "4:0x10000000": {
+    "name": "VIT減少",
+    "source_name": "VIT減少",
+    "category": "negative"
+  },
+  "4:0x20000000": {
+    "name": "AGI減少",
+    "source_name": "AGI減少",
+    "category": "negative"
+  },
+  "4:0x40000000": {
+    "name": "MAG減少",
+    "source_name": "MAG減少",
+    "category": "negative"
+  },
+  "5:0x00000001": {
+    "name": "ゾンビ",
+    "source_name": "ゾンビ",
+    "category": "positive"
+  },
+  "5:0x00000002": {
+    "name": "リボーン",
+    "source_name": "リボーン",
+    "category": "positive"
+  },
+  "5:0x00000004": {
+    "name": "演奏中",
+    "source_name": "演奏中",
+    "category": "positive"
+  },
+  "5:0x00000008": {
+    "name": "羽交い絞め",
+    "source_name": "羽交い絞め",
+    "category": "positive"
+  },
+  "5:0x00000010": {
+    "name": "黑暗压制",
+    "source_name": "黑暗压制",
+    "category": "positive"
+  },
+  "5:0x00000020": {
+    "name": "オーバーレンジ",
+    "source_name": "オーバーレンジ",
+    "category": "positive"
+  },
+  "5:0x00000040": {
+    "name": "ライフテイク",
+    "source_name": "ライフテイク",
+    "category": "positive"
+  },
+  "5:0x00000080": {
+    "name": "Chilling",
+    "source_name": "Chilling",
+    "category": "positive"
+  },
+  "5:0x00000100": {
+    "name": "経験値上昇",
+    "source_name": "経験値上昇",
+    "category": "positive"
+  },
+  "5:0x00000200": {
+    "name": "パッシング",
+    "source_name": "パッシング",
+    "category": "positive"
+  },
+  "5:0x00000400": {
+    "name": "回復不可能",
+    "source_name": "回復不可能",
+    "category": "positive"
+  },
+  "5:0x00000800": {
+    "name": "エンチャントブロック",
+    "source_name": "エンチャントブロック",
+    "category": "positive"
+  },
+  "5:0x00001000": {
+    "name": "ソリッドボディ",
+    "source_name": "ソリッドボディ",
+    "category": "positive"
+  },
+  "5:0x00002000": {
+    "name": "ブラッディウエポン",
+    "source_name": "ブラッディウエポン",
+    "category": "positive"
+  },
+  "5:0x00004000": {
+    "name": "Burning",
+    "source_name": "Burning",
+    "category": "positive"
+  },
+  "5:0x00008000": {
+    "name": "ガンディレイキャンセル",
+    "source_name": "ガンディレイキャンセル",
+    "category": "positive"
+  },
+  "5:0x00010000": {
+    "name": "ダブルアップ",
+    "source_name": "ダブルアップ",
+    "category": "positive"
+  },
+  "5:0x00020000": {
+    "name": "ATフィールド",
+    "source_name": "ATフィールド",
+    "category": "positive"
+  },
+  "5:0x00040000": {
+    "name": "根性",
+    "source_name": "根性",
+    "category": "positive"
+  },
+  "5:0x00080000": {
+    "name": "物理攻撃付加",
+    "source_name": "物理攻撃付加",
+    "category": "positive"
+  },
+  "5:0x00100000": {
+    "name": "死んだふり",
+    "source_name": "死んだふり",
+    "category": "positive"
+  },
+  "5:0x00200000": {
+    "name": "パパ点火",
+    "source_name": "パパ点火",
+    "category": "positive"
+  },
+  "5:0x00400000": {
+    "name": "紫になる",
+    "source_name": "紫になる",
+    "category": "positive"
+  },
+  "5:0x00800000": {
+    "name": "精密射撃",
+    "source_name": "精密射撃",
+    "category": "positive"
+  },
+  "5:0x01000000": {
+    "name": "オーバーチューン",
+    "source_name": "オーバーチューン",
+    "category": "positive"
+  },
+  "5:0x02000000": {
+    "name": "警戒",
+    "source_name": "警戒",
+    "category": "positive"
+  },
+  "5:0x04000000": {
+    "name": "リフレクション",
+    "source_name": "リフレクション",
+    "category": "positive"
+  },
+  "5:0x08000000": {
+    "name": "エンチャントウエポン",
+    "source_name": "エンチャントウエポン",
+    "category": "positive"
+  },
+  "5:0x10000000": {
+    "name": "オラトリオ",
+    "source_name": "オラトリオ",
+    "category": "positive"
+  },
+  "5:0x20000000": {
+    "name": "イビルソウル",
+    "source_name": "イビルソウル",
+    "category": "positive"
+  },
+  "5:0x40000000": {
+    "name": "フレイムハート",
+    "source_name": "フレイムハート",
+    "category": "positive"
+  },
+  "5:0x80000000": {
+    "name": "アトラクトマーチ",
+    "source_name": "アトラクトマーチ",
+    "category": "positive"
+  },
+  "6:0x00000001": {
+    "name": "state190",
+    "source_name": "state190",
+    "category": "positive"
+  },
+  "6:0x00000002": {
+    "name": "オーバーワーク",
+    "source_name": "オーバーワーク",
+    "category": "positive"
+  },
+  "6:0x00000004": {
+    "name": "ディレイキャンセル",
+    "source_name": "ディレイキャンセル",
+    "category": "positive"
+  },
+  "6:0x00000008": {
+    "name": "赤くなる",
+    "source_name": "赤くなる",
+    "category": "positive"
+  },
+  "6:0x00000010": {
+    "name": "フェニックス",
+    "source_name": "フェニックス",
+    "category": "positive"
+  },
+  "6:0x00000020": {
+    "name": "スタミナテイク",
+    "source_name": "スタミナテイク",
+    "category": "positive"
+  },
+  "6:0x00000080": {
+    "name": "マナの守護",
+    "source_name": "マナの守護",
+    "category": "positive"
+  },
+  "6:0x00000100": {
+    "name": "チャンプモンスターキラー状態",
+    "source_name": "チャンプモンスターキラー状態",
+    "category": "positive"
+  },
+  "6:0x00000200": {
+    "name": "竜眼開放",
+    "source_name": "竜眼開放",
+    "category": "positive"
+  },
+  "6:0x00000400": {
+    "name": "温泉効果",
+    "source_name": "温泉効果",
+    "category": "positive"
+  },
+  "6:0x00000800": {
+    "name": "武器属性無効化",
+    "source_name": "武器属性無効化",
+    "category": "positive"
+  },
+  "6:0x00001000": {
+    "name": "防御属性無効化",
+    "source_name": "防御属性無効化",
+    "category": "positive"
+  },
+  "6:0x00002000": {
+    "name": "ロケットブースター点火",
+    "source_name": "ロケットブースター点火",
+    "category": "positive"
+  },
+  "6:0x00004000": {
+    "name": "斧头达人",
+    "source_name": "斧头达人",
+    "category": "positive"
+  },
+  "6:0x00008000": {
+    "name": "剑达人",
+    "source_name": "剑达人",
+    "category": "positive"
+  },
+  "6:0x00010000": {
+    "name": "矛达人",
+    "source_name": "矛达人",
+    "category": "positive"
+  },
+  "6:0x00020000": {
+    "name": "枪达人",
+    "source_name": "枪达人",
+    "category": "positive"
+  },
+  "6:0x00040000": {
+    "name": "三转未知强力增强",
+    "source_name": "三转未知强力增强",
+    "category": "positive"
+  },
+  "6:0x00080000": {
+    "name": "三转HP增强",
+    "source_name": "三转HP增强",
+    "category": "positive"
+  },
+  "6:0x00100000": {
+    "name": "三转MP增强",
+    "source_name": "三转MP增强",
+    "category": "positive"
+  },
+  "6:0x00200000": {
+    "name": "三转SP增强",
+    "source_name": "三转SP增强",
+    "category": "positive"
+  },
+  "6:0x00400000": {
+    "name": "三转ATK增强",
+    "source_name": "三转ATK增强",
+    "category": "positive"
+  },
+  "6:0x00800000": {
+    "name": "三转MATK增强",
+    "source_name": "三转MATK增强",
+    "category": "positive"
+  },
+  "6:0x01000000": {
+    "name": "三转DEF增强",
+    "source_name": "三转DEF增强",
+    "category": "positive"
+  },
+  "6:0x02000000": {
+    "name": "三转MDEF增强",
+    "source_name": "三转MDEF增强",
+    "category": "positive"
+  },
+  "6:0x04000000": {
+    "name": "三转HIT增强",
+    "source_name": "三转HIT增强",
+    "category": "positive"
+  },
+  "6:0x08000000": {
+    "name": "三转AVOID增强",
+    "source_name": "三转AVOID增强",
+    "category": "positive"
+  },
+  "6:0x10000000": {
+    "name": "三转CSPD增强",
+    "source_name": "三转CSPD增强",
+    "category": "positive"
+  },
+  "6:0x20000000": {
+    "name": "三转PAYL增强",
+    "source_name": "三转PAYL增强",
+    "category": "positive"
+  },
+  "6:0x40000000": {
+    "name": "三转CAPA增强",
+    "source_name": "三转CAPA增强",
+    "category": "positive"
+  },
+  "6:0x80000000": {
+    "name": "不知道18",
+    "source_name": "不知道18",
+    "category": "positive"
+  },
+  "7:0x00000001": {
+    "name": "三转HP吸收",
+    "source_name": "三转HP吸收",
+    "category": "positive"
+  },
+  "7:0x00000002": {
+    "name": "三转MP吸收",
+    "source_name": "三转MP吸收",
+    "category": "positive"
+  },
+  "7:0x00000004": {
+    "name": "三转SP吸收",
+    "source_name": "三转SP吸收",
+    "category": "positive"
+  },
+  "7:0x00000008": {
+    "name": "无1",
+    "source_name": "无1",
+    "category": "positive"
+  },
+  "7:0x00000010": {
+    "name": "无2",
+    "source_name": "无2",
+    "category": "positive"
+  },
+  "7:0x00000020": {
+    "name": "无3",
+    "source_name": "无3",
+    "category": "positive"
+  },
+  "7:0x00000040": {
+    "name": "三转波动伤害固定",
+    "source_name": "三转波动伤害固定",
+    "category": "positive"
+  },
+  "7:0x00000080": {
+    "name": "三转枪连弹",
+    "source_name": "三转枪连弹",
+    "category": "positive"
+  },
+  "7:0x00000100": {
+    "name": "单枪匹马",
+    "source_name": "单枪匹马",
+    "category": "positive"
+  },
+  "7:0x00000200": {
+    "name": "三转ATK与MATK互换",
+    "source_name": "三转ATK与MATK互换",
+    "category": "positive"
+  },
+  "7:0x00000400": {
+    "name": "三转元素身体属性赋予",
+    "source_name": "三转元素身体属性赋予",
+    "category": "positive"
+  },
+  "7:0x00000800": {
+    "name": "三转元素武器属性赋予",
+    "source_name": "三转元素武器属性赋予",
+    "category": "positive"
+  },
+  "7:0x00001000": {
+    "name": "三转2足ATKUP",
+    "source_name": "三转2足ATKUP",
+    "category": "positive"
+  },
+  "7:0x00002000": {
+    "name": "三转机器人不知道下降",
+    "source_name": "三转机器人不知道下降",
+    "category": "positive"
+  },
+  "7:0x00004000": {
+    "name": "三转换武器禁止",
+    "source_name": "三转换武器禁止",
+    "category": "positive"
+  },
+  "7:0x00008000": {
+    "name": "三转敌被伤害UPダメージマーキング",
+    "source_name": "三转敌被伤害UPダメージマーキング",
+    "category": "positive"
+  },
+  "7:0x00010000": {
+    "name": "三转伤害减免スピリットマーキング",
+    "source_name": "三转伤害减免スピリットマーキング",
+    "category": "positive"
+  },
+  "7:0x00020000": {
+    "name": "三转J速",
+    "source_name": "三转J速",
+    "category": "positive"
+  },
+  "7:0x00040000": {
+    "name": "三转人血管",
+    "source_name": "三转人血管",
+    "category": "positive"
+  },
+  "7:0x00080000": {
+    "name": "三转荆棘刺",
+    "source_name": "三转荆棘刺",
+    "category": "positive"
+  },
+  "7:0x00100000": {
+    "name": "三转鬼人斩",
+    "source_name": "三转鬼人斩",
+    "category": "positive"
+  },
+  "7:0x00200000": {
+    "name": "三转宙斯盾イージス",
+    "source_name": "三转宙斯盾イージス",
+    "category": "positive"
+  },
+  "7:0x00400000": {
+    "name": "三转凭依者封印",
+    "source_name": "三转凭依者封印",
+    "category": "positive"
+  },
+  "7:0x00800000": {
+    "name": "三转四属性赋予アンプリエレメント",
+    "source_name": "三转四属性赋予アンプリエレメント",
+    "category": "positive"
+  },
+  "7:0x01000000": {
+    "name": "三转铁匠2足DEFUP",
+    "source_name": "三转铁匠2足DEFUP",
+    "category": "positive"
+  },
+  "7:0x02000000": {
+    "name": "三转机器人UNKNOWS",
+    "source_name": "三转机器人UNKNOWS",
+    "category": "positive"
+  },
+  "7:0x04000000": {
+    "name": "三转禁言レストスキル",
+    "source_name": "三转禁言レストスキル",
+    "category": "positive"
+  },
+  "7:0x08000000": {
+    "name": "三转指定对象被会心率UPクリティカルマーキング",
+    "source_name": "三转指定对象被会心率UPクリティカルマーキング",
+    "category": "positive"
+  },
+  "7:0x10000000": {
+    "name": "三转凭依保护ソウルプロテクト",
+    "source_name": "三转凭依保护ソウルプロテクト",
+    "category": "positive"
+  },
+  "7:0x20000000": {
+    "name": "三转見切り",
+    "source_name": "三转見切り",
+    "category": "positive"
+  },
+  "7:0x40000000": {
+    "name": "三转魔法抗体",
+    "source_name": "三转魔法抗体",
+    "category": "positive"
+  },
+  "8:0x00000001": {
+    "name": "三转机器人攻速上升",
+    "source_name": "三转机器人攻速上升",
+    "category": "positive"
+  },
+  "8:0x00000002": {
+    "name": "三转机器人攻速下降",
+    "source_name": "三转机器人攻速下降",
+    "category": "positive"
+  },
+  "8:0x00000004": {
+    "name": "三转ウィークネスショット",
+    "source_name": "三转ウィークネスショット",
+    "category": "positive"
+  },
+  "8:0x00000008": {
+    "name": "点火紫火",
+    "source_name": "点火紫火",
+    "category": "positive"
+  },
+  "8:0x00000010": {
+    "name": "不知道27",
+    "source_name": "不知道27",
+    "category": "positive"
+  },
+  "8:0x00000020": {
+    "name": "三转红锤子ウェポンエンハンス",
+    "source_name": "三转红锤子ウェポンエンハンス",
+    "category": "positive"
+  },
+  "8:0x00000040": {
+    "name": "三转レトリック",
+    "source_name": "三转レトリック",
+    "category": "positive"
+  },
+  "8:0x00000080": {
+    "name": "师匠的加护",
+    "source_name": "师匠的加护",
+    "category": "positive"
+  },
+  "8:0x00000100": {
+    "name": "三转モンスターチェンジ",
+    "source_name": "三转モンスターチェンジ",
+    "category": "positive"
+  },
+  "8:0x00000200": {
+    "name": "三转知识的书",
+    "source_name": "三转知识的书",
+    "category": "positive"
+  },
+  "8:0x00000400": {
+    "name": "三转植物寄生",
+    "source_name": "三转植物寄生",
+    "category": "positive"
+  },
+  "8:0x00000800": {
+    "name": "三转パクティオ",
+    "source_name": "三转パクティオ",
+    "category": "positive"
+  },
+  "8:0x00001000": {
+    "name": "三转アドバンスアビリテイー",
+    "source_name": "三转アドバンスアビリテイー",
+    "category": "positive"
+  },
+  "8:0x00002000": {
+    "name": "三转フエンリル",
+    "source_name": "三转フエンリル",
+    "category": "positive"
+  },
+  "8:0x00004000": {
+    "name": "三转ブロッキング",
+    "source_name": "三转ブロッキング",
+    "category": "positive"
+  },
+  "8:0x00008000": {
+    "name": "钓鱼状态",
+    "source_name": "钓鱼状态",
+    "category": "positive"
+  },
+  "8:0x00010000": {
+    "name": "三转せーチウィークポイント",
+    "source_name": "三转せーチウィークポイント",
+    "category": "positive"
+  },
+  "8:0x00020000": {
+    "name": "不知道4",
+    "source_name": "不知道4",
+    "category": "positive"
+  },
+  "8:0x00040000": {
+    "name": "不知道5",
+    "source_name": "不知道5",
+    "category": "positive"
+  },
+  "8:0x00080000": {
+    "name": "不知道6",
+    "source_name": "不知道6",
+    "category": "positive"
+  },
+  "8:0x00100000": {
+    "name": "不知道7",
+    "source_name": "不知道7",
+    "category": "positive"
+  },
+  "8:0x00200000": {
+    "name": "不知道8",
+    "source_name": "不知道8",
+    "category": "positive"
+  },
+  "8:0x00400000": {
+    "name": "不知道9",
+    "source_name": "不知道9",
+    "category": "positive"
+  },
+  "8:0x00800000": {
+    "name": "不知道10",
+    "source_name": "不知道10",
+    "category": "positive"
+  },
+  "8:0x01000000": {
+    "name": "不知道11",
+    "source_name": "不知道11",
+    "category": "positive"
+  },
+  "8:0x02000000": {
+    "name": "不知道12",
+    "source_name": "不知道12",
+    "category": "positive"
+  },
+  "8:0x04000000": {
+    "name": "不知道13",
+    "source_name": "不知道13",
+    "category": "positive"
+  },
+  "8:0x08000000": {
+    "name": "不知道14",
+    "source_name": "不知道14",
+    "category": "positive"
+  },
+  "8:0x10000000": {
+    "name": "不知道15",
+    "source_name": "不知道15",
+    "category": "positive"
+  },
+  "8:0x20000000": {
+    "name": "不知道16",
+    "source_name": "不知道16",
+    "category": "positive"
+  },
+  "8:0x40000000": {
+    "name": "不知道17",
+    "source_name": "不知道17",
+    "category": "positive"
+  },
+  "9:0x00000001": {
+    "name": "魂之手",
+    "source_name": "魂之手",
+    "category": "positive"
+  },
+  "9:0x00000002": {
+    "name": "精准攻击",
+    "source_name": "精准攻击",
+    "category": "positive"
+  },
+  "9:0x00000004": {
+    "name": "恶炎",
+    "source_name": "恶炎",
+    "category": "positive"
+  },
+  "9:0x00000008": {
+    "name": "九尾狐魅惑",
+    "source_name": "九尾狐魅惑",
+    "category": "positive"
+  },
+  "9:0x00000010": {
+    "name": "武装化",
+    "source_name": "武装化",
+    "category": "positive"
+  },
+  "9:0x00000020": {
+    "name": "武装化副作用",
+    "source_name": "武装化副作用",
+    "category": "positive"
+  },
+  "9:0x00000040": {
+    "name": "恶魂",
+    "source_name": "恶魂",
+    "category": "positive"
+  }
+}
