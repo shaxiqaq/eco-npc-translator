@@ -104,13 +104,25 @@ if ($NeedsXiaoyaCoreBuild) {
 }
 Copy-Item -LiteralPath (Join-Path $Electron "dist-native\xiaoya-core") -Destination $Resources -Recurse
 
+# Optional legacy Xiaoya binary (not required when XiaoyaCore is present).
 $XiaoyaName = "$([char]0x5c0f)$([char]0x96c5)"
 $XiaoyaConfigName = "$XiaoyaName$([char]0x8eab)$([char]0x4f53)$([char]0x914d)$([char]0x7f6e).ini"
 $XiaoyaSource = Join-Path $Repo $XiaoyaName
+$XiaoyaExe = Join-Path $XiaoyaSource "$XiaoyaName.exe"
+$XiaoyaIni = Join-Path $XiaoyaSource $XiaoyaConfigName
 $XiaoyaTarget = Join-Path $Resources "xiaoya"
-New-Item -ItemType Directory -Path $XiaoyaTarget -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $XiaoyaSource "$XiaoyaName.exe") -Destination $XiaoyaTarget
-Copy-Item -LiteralPath (Join-Path $XiaoyaSource $XiaoyaConfigName) -Destination $XiaoyaTarget
+if ((Test-Path -LiteralPath $XiaoyaExe) -and (Test-Path -LiteralPath $XiaoyaIni)) {
+    New-Item -ItemType Directory -Path $XiaoyaTarget -Force | Out-Null
+    Copy-Item -LiteralPath $XiaoyaExe -Destination $XiaoyaTarget -Force
+    Copy-Item -LiteralPath $XiaoyaIni -Destination $XiaoyaTarget -Force
+    Write-Host "Bundled optional legacy Xiaoya resources."
+} else {
+    Write-Host "Skip legacy Xiaoya resources (not found under $XiaoyaSource)."
+}
 
-Move-Item -LiteralPath (Join-Path $Target "electron.exe") -Destination (Join-Path $Target "ECO Toolbox.exe") -Force
+$ElectronExe = Join-Path $Target "electron.exe"
+$ToolboxExe = Join-Path $Target "ECO Toolbox.exe"
+if (Test-Path -LiteralPath $ElectronExe) {
+    Move-Item -LiteralPath $ElectronExe -Destination $ToolboxExe -Force
+}
 Write-Host "Prepackaged application created: $Target"

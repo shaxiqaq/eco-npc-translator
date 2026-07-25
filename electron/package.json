@@ -67,14 +67,6 @@
         "to": "icon-helper"
       },
       {
-        "from": "../小雅",
-        "to": "xiaoya",
-        "filter": [
-          "小雅.exe",
-          "小雅身体配置.ini"
-        ]
-      },
-      {
         "from": "dist-native/xiaoya-core",
         "to": "xiaoya-core"
       }
