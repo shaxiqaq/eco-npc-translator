@@ -186,17 +186,17 @@
   },
   "1:0x00002000": {
     "name": "熱波防御",
-    "source_name": "熱波防御",
+    "source_name": "Heat",
     "category": "positive"
   },
   "1:0x00004000": {
     "name": "寒波防御",
-    "source_name": "寒波防御",
+    "source_name": "heat",
     "category": "positive"
   },
   "1:0x00008000": {
     "name": "真空防御",
-    "source_name": "真空防御",
+    "source_name": "Vacuum",
     "category": "positive"
   },
   "1:0x00010000": {
@@ -1378,7 +1378,7 @@
   },
   "magic_shield": {
     "name": "魔法护盾",
-    "source_name": "MAGIC_SHIELD",
+    "source_name": "Magic Shield",
     "category": "positive",
     "skill_id": 3114,
     "duration": 900.04,

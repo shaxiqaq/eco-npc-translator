@@ -28,6 +28,7 @@ def render(meter):
     print(f"      其中技能  : {snap['skill_taken']:>8}   次数: {snap['hits_skill_taken']:>3}   最大: {snap['max_skill_taken']}")
     print(f"      其中普通  : {snap['normal_taken']:>8}   次数: {snap['hits_normal_taken']:>3}   最大: {snap['max_normal_taken']}")
     _print_skill_totals(meter, snap)
+    _print_skill_casts(snap)
     _print_skill_history(snap, "dealt", "技能造成流水", "造成")
     _print_skill_history(snap, "taken", "技能受到流水", "受到")
     _print_pet_history(snap)
@@ -59,6 +60,25 @@ def _print_skill_totals(meter, snap):
             print(f"  {label}: {text}")
         else:
             print(f"  {label}: -")
+
+
+def _print_skill_casts(snap):
+    print()
+    print("技能释放（含防御/自身技，如 パリイ）")
+    casts = snap.get("skill_casts") or []
+    history = snap.get("skill_cast_history") or []
+    total = snap.get("skill_cast_total") or 0
+    print(f"  合计释放: {total}")
+    if not casts:
+        print("  - 还没有技能释放记录")
+    else:
+        text = " / ".join(f"{item.get('skill')}:{item.get('count')}" for item in casts[:6])
+        print(f"  统计: {text}")
+    if history:
+        print("  最近:")
+        for item in history[:8]:
+            role = {"defensive": "防御", "self": "自身", "combat": "战斗"}.get(item.get("role"), "技能")
+            print(f"    [{item.get('time')}] {role} {item.get('skill')}#{item.get('skill_id')} -> {item.get('target_label')}")
 
 
 def _print_skill_history(snap, side, title, verb):

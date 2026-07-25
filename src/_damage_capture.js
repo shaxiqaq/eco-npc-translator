@@ -173,8 +173,22 @@ function onInject(msg) {
   recv('inject', onInject);
 }
 recv('inject', onInject);
+// Soft-disable + in-flight tracking so dispose() never detaches mid-callback.
+let HOOKS_ARMED = true;
+let IN_HOOK = 0;
+function enterHook() {
+  if (!HOOKS_ARMED) return false;
+  IN_HOOK += 1;
+  return true;
+}
+function leaveHook() {
+  if (IN_HOOK > 0) IN_HOOK -= 1;
+}
+
 Interceptor.attach(m.base.add(0x18cc4), {
   onEnter() {
+    if (!enterHook()) return;
+    this._h = true;
     try {
       const rkbytes = bytes(this.context.esp.add(4).readPointer(), 16);
       const k = [];
@@ -186,7 +200,8 @@ Interceptor.attach(m.base.add(0x18cc4), {
         send({ t: 'key', n: KEY_COUNT });
       }
     } catch (e) {}
-  }
+  },
+  onLeave() { if (this._h) leaveHook(); }
 });
 
 const PORT_CACHE = new Map();
@@ -295,7 +310,12 @@ function hookCloseSocket() {
   const p = exp('ws2_32.dll', 'closesocket');
   if (!p) return;
   Interceptor.attach(p, {
-    onEnter(a) { PORT_CACHE.delete(a[0].toUInt32()); }
+    onEnter(a) {
+      if (!enterHook()) return;
+      this._h = true;
+      try { PORT_CACHE.delete(a[0].toUInt32()); } catch (e) {}
+    },
+    onLeave() { if (this._h) leaveHook(); }
   });
 }
 
@@ -303,13 +323,23 @@ function hookSend(name) {
   const p = exp('ws2_32.dll', name);
   if (!p) return;
   Interceptor.attach(p, {
-    onEnter(a) { this.s = a[0].toUInt32(); this.b = a[1]; this.l = a[2].toInt32(); },
+    onEnter(a) {
+      if (!enterHook()) return;
+      this._h = true;
+      this.s = a[0].toUInt32(); this.b = a[1]; this.l = a[2].toInt32();
+    },
     onLeave(r) {
-      const n = r.toInt32();
-      if (n <= 0 || getPort(this.s) !== MAP_PORT) return;
+      if (!this._h) return;
       try {
-        processPackets('C2S', this.s, bytes(this.b, Math.min(this.l, n)), false);
-      } catch (e) {}
+        if (!HOOKS_ARMED) return;
+        const n = r.toInt32();
+        if (n <= 0 || getPort(this.s) !== MAP_PORT) return;
+        try {
+          processPackets('C2S', this.s, bytes(this.b, Math.min(this.l, n)), false);
+        } catch (e) {}
+      } finally {
+        leaveHook();
+      }
     }
   });
 }
@@ -318,17 +348,27 @@ function hookRecv(name) {
   const p = exp('ws2_32.dll', name);
   if (!p) return;
   Interceptor.attach(p, {
-    onEnter(a) { this.s = a[0].toUInt32(); this.b = a[1]; this.cap = a[2].toInt32(); },
+    onEnter(a) {
+      if (!enterHook()) return;
+      this._h = true;
+      this.s = a[0].toUInt32(); this.b = a[1]; this.cap = a[2].toInt32();
+    },
     onLeave(r) {
-      const n = r.toInt32();
-      if (n <= 0 || getPort(this.s) !== MAP_PORT) return;
+      if (!this._h) return;
       try {
-        const res = processPackets('S2C', this.s, bytes(this.b, n), true);
-        if (res && res.length <= this.cap) {
-          this.b.writeByteArray(res);
-          r.replace(ptr(res.length));
-        }
-      } catch (e) {}
+        if (!HOOKS_ARMED) return;
+        const n = r.toInt32();
+        if (n <= 0 || getPort(this.s) !== MAP_PORT) return;
+        try {
+          const res = processPackets('S2C', this.s, bytes(this.b, n), true);
+          if (res && res.length <= this.cap) {
+            this.b.writeByteArray(res);
+            r.replace(ptr(res.length));
+          }
+        } catch (e) {}
+      } finally {
+        leaveHook();
+      }
     }
   });
 }
@@ -338,4 +378,24 @@ hookSend('sendto');
 hookRecv('recv');
 hookRecv('recvfrom');
 hookCloseSocket();
+
+// Called by Python before unload. Order matters:
+// 1) arm=false so new calls pass through
+// 2) wait until no thread is inside onEnter/onLeave
+// 3) detachAll to restore original prologues
+rpc.exports = {
+  dispose() {
+    HOOKS_ARMED = false;
+    const deadline = Date.now() + 4000;
+    while (IN_HOOK > 0 && Date.now() < deadline) {
+      // Spin — other game threads can still finish onLeave and decrement IN_HOOK.
+    }
+    try { Interceptor.detachAll(); } catch (e) {}
+    try {
+      if (typeof Stalker !== 'undefined' && Stalker.unfollow) Stalker.unfollow();
+    } catch (e) {}
+    return { ok: true, drained: IN_HOOK === 0, inHook: IN_HOOK };
+  }
+};
+
 send('READY');

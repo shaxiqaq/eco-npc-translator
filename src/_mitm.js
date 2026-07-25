@@ -44,13 +44,24 @@ function be32(a,i){return ((a[i]<<24)|(a[i+1]<<16)|(a[i+2]<<8)|a[i+3])>>>0;}
 function wbe32(v){return [(v>>>24)&0xff,(v>>>16)&0xff,(v>>>8)&0xff,v&0xff];}
 
 const m=Process.findModuleByName('eco.exe');
+// Soft-disable + in-flight tracking for safe dispose().
+let HOOKS_ARMED=true; let IN_HOOK=0;
+function enterHook(){ if(!HOOKS_ARMED) return false; IN_HOOK++; return true; }
+function leaveHook(){ if(IN_HOOK>0) IN_HOOK--; }
 // 收割密钥(word-swap). KEYMAP: keyStr -> expanded round key (avoid re-expand on each frame).
 const KEYMAP={}; let RK=null;
-Interceptor.attach(m.base.add(0x18cc4),{onEnter(){try{
-  const rkbytes=hx(this.context.esp.add(4).readPointer(),16);
-  const k=[]; for(let i=0;i<16;i+=4){k.push(rkbytes[i+3],rkbytes[i+2],rkbytes[i+1],rkbytes[i]);}
-  const key=k.join(','); if(!KEYMAP[key]) KEYMAP[key]=expandKey(k);
-}catch(e){}}});
+Interceptor.attach(m.base.add(0x18cc4),{
+  onEnter(){
+    if(!enterHook()) return;
+    this._h=true;
+    try{
+      const rkbytes=hx(this.context.esp.add(4).readPointer(),16);
+      const k=[]; for(let i=0;i<16;i+=4){k.push(rkbytes[i+3],rkbytes[i+2],rkbytes[i+1],rkbytes[i]);}
+      const key=k.join(','); if(!KEYMAP[key]) KEYMAP[key]=expandKey(k);
+    }catch(e){}
+  },
+  onLeave(){ if(this._h) leaveHook(); }
+});
 
 // 缓存: hash -> 整条替换后的 subdata(字节数组), 由 Python 按结构重建好
 const CACHE={};
@@ -149,26 +160,47 @@ function validPlain(pt,num1){
 
 const pRecvfrom=exp('ws2_32.dll','recvfrom');
 if(pRecvfrom) Interceptor.attach(pRecvfrom,{
-  onEnter(a){this.s=a[0].toUInt32();this.b=a[1];this.cap=a[2].toInt32();},
+  onEnter(a){
+    if(!enterHook()) return;
+    this._h=true;
+    this.s=a[0].toUInt32();this.b=a[1];this.cap=a[2].toInt32();
+  },
   onLeave(r){
-    const n=r.toInt32(); if(n<=0) return;
-    if(!ENABLED) return;                          // 关闭=放行英文原文
-    if(getPort(this.s)!==__MAP_PORT__) return;
+    if(!this._h) return;
     try{
-      const buf=hx(this.b,n);
-      let off=0, out=[], changed=false;
-      while(off<buf.length){
-        const res=processFrame(buf,off);
-        if(res===null){ appendBytes(out, buf.slice(off)); break; }       // 半包/异常: 余下原样
-        if(res.newBytes){ appendBytes(out, res.newBytes); changed=true; }
-        else appendBytes(out, buf.slice(off,off+res.consumed));
-        off+=res.consumed;
-      }
-      if(changed && out.length<=this.cap){
-        this.b.writeByteArray(out);
-        r.replace(ptr(out.length));
-      }
-    }catch(e){ /* 出错原样放行 */ }
+      if(!HOOKS_ARMED) return;
+      const n=r.toInt32(); if(n<=0) return;
+      if(!ENABLED) return;                          // 关闭=放行英文原文
+      if(getPort(this.s)!==__MAP_PORT__) return;
+      try{
+        const buf=hx(this.b,n);
+        let off=0, out=[], changed=false;
+        while(off<buf.length){
+          const res=processFrame(buf,off);
+          if(res===null){ appendBytes(out, buf.slice(off)); break; }       // 半包/异常: 余下原样
+          if(res.newBytes){ appendBytes(out, res.newBytes); changed=true; }
+          else appendBytes(out, buf.slice(off,off+res.consumed));
+          off+=res.consumed;
+        }
+        if(changed && out.length<=this.cap){
+          this.b.writeByteArray(out);
+          r.replace(ptr(out.length));
+        }
+      }catch(e){ /* 出错原样放行 */ }
+    }finally{ leaveHook(); }
   }
 });
+
+// Called by Python before unload so ws2_32 hooks are fully removed.
+rpc.exports = {
+  dispose() {
+    HOOKS_ARMED = false;
+    ENABLED = false;
+    const deadline = Date.now() + 4000;
+    while (IN_HOOK > 0 && Date.now() < deadline) {}
+    try { Interceptor.detachAll(); } catch (e) {}
+    return { ok: true, drained: IN_HOOK === 0, inHook: IN_HOOK };
+  }
+};
+
 send('READY');

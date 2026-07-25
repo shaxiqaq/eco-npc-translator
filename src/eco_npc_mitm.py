@@ -586,16 +586,26 @@ def main():
             flush_cache(force=True)
         except Exception:
             pass
-        try:
-            scr = sref.get("s")
-            if scr is not None:
+        scr = sref.get("s")
+        # Prefer agent-side Interceptor.detachAll() before unload.
+        if scr is not None:
+            try:
+                exports = getattr(scr, "exports_sync", None) or getattr(scr, "exports", None)
+                if exports is not None and hasattr(exports, "dispose"):
+                    exports.dispose()
+                    time.sleep(0.15)
+            except Exception as e:
+                logger.warning("[*] script.dispose 忽略: %s", e)
+            try:
                 scr.unload()
-        except Exception as e:
-            logger.warning("[*] script.unload 忽略: %s", e)
+                time.sleep(0.2)
+            except Exception as e:
+                logger.warning("[*] script.unload 忽略: %s", e)
         try:
             sess = sref.get("session")
             if sess is not None:
                 sess.detach()
+                time.sleep(0.15)
         except Exception as e:
             logger.warning("[*] session.detach 忽略: %s", e)
         sref["s"] = None

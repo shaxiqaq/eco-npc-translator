@@ -19,7 +19,8 @@ test('returns cached icon data without launching the helper', async () => {
   const fsImpl = {
     existsSync: (file) => files.has(file),
     mkdirSync: () => {},
-    readFileSync: (file) => files.get(file)
+    readFileSync: (file) => files.get(file),
+    readdirSync: () => []
   };
   let launches = 0;
   const service = new SkillIconService({
@@ -39,6 +40,35 @@ test('returns cached icon data without launching the helper', async () => {
   assert.equal(result.dataUrl, 'data:image/png;base64,cG5n');
   assert.equal(result.name, 'Magic Shield');
   assert.equal(launches, 0);
+});
+
+test('serves any-namespace cache when game path is missing', async () => {
+  const ns = 'abc123cached';
+  const files = new Map();
+  const fsImpl = {
+    existsSync: (file) => files.has(file) || file === 'cache',
+    mkdirSync: () => {},
+    readFileSync: (file) => files.get(file),
+    readdirSync: (dir, opts) => {
+      if (dir !== 'cache') return [];
+      const entry = { name: ns, isDirectory: () => true };
+      return opts?.withFileTypes ? [entry] : [ns];
+    }
+  };
+  const service = new SkillIconService({
+    helperPath: 'helper.exe',
+    cacheDir: 'cache',
+    fsImpl,
+    execFileFn: () => { throw new Error('should not launch'); }
+  });
+  files.set(pathForTest('cache', ns, '3101.png'), Buffer.from('heat'));
+  files.set(pathForTest('cache', ns, '3101.txt'), Buffer.from('Heat'));
+
+  const result = await service.getIcon(3101, '');
+
+  assert.equal(result.ok, true);
+  assert.equal(result.name, 'Heat');
+  assert.equal(result.dataUrl, `data:image/png;base64,${Buffer.from('heat').toString('base64')}`);
 });
 
 function pathForTest(...parts) {

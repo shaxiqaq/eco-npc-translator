@@ -30,7 +30,8 @@ class BuffTrackerTest(unittest.TestCase):
         self.assertEqual(len(snapshot["active"]), 1)
         shield = snapshot["active"][0]
         self.assertEqual(shield["key"], "magic_shield")
-        self.assertEqual(shield["name"], "魔法护盾")
+        # Display prefers game-facing source_name over localized Chinese label.
+        self.assertEqual(shield["name"], "Magic Shield")
         self.assertEqual(shield["timing"], "estimated_observed")
         self.assertEqual(shield["skill_id"], 3114)
         self.assertAlmostEqual(shield["remaining"], 890.04, places=2)

@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """JSON-lines bridge between the existing damage meter and Electron."""
 import argparse
+import atexit
 import datetime as dt
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -34,10 +36,48 @@ def emit(kind, **payload):
     print(json.dumps(message, ensure_ascii=False, separators=(",", ":")), flush=True)
 
 
+def safe_frida_teardown(script, session, reason="stop"):
+    """Detach Interceptors then unload/detach so eco.exe keeps receiving packets.
+
+    Force-killing the Python bridge mid-hook is a common cause of eco.exe crashes
+    on Windows (ws2_32 send/recv hooks left in a half-removed state).
+
+    On Windows, Node's child.kill() is an unconditional process kill — so Electron
+    must wait for this function to finish and the process to exit on its own.
+    """
+    # 1) Agent-side: arm=false, drain in-flight callbacks, Interceptor.detachAll().
+    if script is not None:
+        try:
+            exports = getattr(script, "exports_sync", None) or getattr(script, "exports", None)
+            if exports is not None and hasattr(exports, "dispose"):
+                # dispose() may spin up to ~4s waiting for IN_HOOK == 0
+                exports.dispose()
+                time.sleep(0.25)
+        except Exception:
+            pass
+        try:
+            script.unload()
+            time.sleep(0.35)
+        except Exception:
+            pass
+    # 2) Detach session after hooks are gone.
+    if session is not None:
+        try:
+            session.detach()
+            time.sleep(0.35)
+        except Exception:
+            pass
+    try:
+        emit("status", service="damage", state="stopped", message=f"伤害采集已安全停止（{reason}）")
+    except Exception:
+        pass
+
+
 def command_loop(meter, stop_event):
     while not stop_event.is_set():
         line = sys.stdin.readline()
         if not line:
+            # Electron closed the pipe — request cooperative stop.
             stop_event.set()
             return
         try:
@@ -109,12 +149,45 @@ def main():
     session = None
     script = None
     stop_event = threading.Event()
+    cleaned = {"done": False}
+    refs = {"script": None, "session": None}
+
+    def cleanup(reason="stop"):
+        if cleaned["done"]:
+            stop_event.set()
+            return
+        cleaned["done"] = True
+        stop_event.set()
+        safe_frida_teardown(refs.get("script"), refs.get("session"), reason=reason)
+        refs["script"] = None
+        refs["session"] = None
+        try:
+            meter.close()
+        except Exception:
+            pass
+
+    def _on_signal(signum, _frame):
+        cleanup(f"signal-{signum}")
+
+    try:
+        signal.signal(signal.SIGINT, _on_signal)
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, _on_signal)
+        if hasattr(signal, "SIGBREAK"):
+            # Windows console Ctrl+Break / some terminate paths.
+            signal.signal(signal.SIGBREAK, _on_signal)
+    except Exception:
+        pass
+    atexit.register(lambda: cleanup("atexit") if not cleaned["done"] else None)
+
     try:
         session = device.attach(pid)
         script = session.create_script(source)
         script.on("message", meter.on_message)
         meter.set_script(script)
         script.load()
+        refs["script"] = script
+        refs["session"] = session
         emit(
             "status",
             service="damage",
@@ -130,32 +203,13 @@ def main():
             snapshot = meter.snapshot(history_limit=500)
             emit("snapshot", data=snapshot)
     except KeyboardInterrupt:
-        pass
+        cleanup("keyboard-interrupt")
     except Exception as exc:
         emit("status", service="damage", state="error", message=str(exc))
+        cleanup("error")
         return 1
     finally:
-        # Always unload hooks before detach. Force-killing the bridge without this
-        # can crash the hooked eco.exe process when the Frida agent tears down.
-        stop_event.set()
-        try:
-            if script is not None:
-                script.unload()
-        except Exception:
-            pass
-        try:
-            if session is not None:
-                session.detach()
-        except Exception:
-            pass
-        try:
-            meter.close()
-        except Exception:
-            pass
-        try:
-            emit("status", service="damage", state="stopped", message="伤害采集已停止")
-        except Exception:
-            pass
+        cleanup("finally")
     return 0
 
 

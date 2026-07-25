@@ -22,6 +22,7 @@ COMPOSITE_BUFFS = (
         "group": 3,
         "mask": 0x00000C00,
         "name": "魔法护盾",
+        "source_name": "Magic Shield",
         "category": "positive",
         "duration": 900.04,
         "timing": "estimated_observed",
@@ -41,21 +42,151 @@ def load_buff_names(path=BUFF_NAMES):
     return {str(key): value for key, value in data.items() if isinstance(value, dict)}
 
 
+def _positive_float(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0 or number != number:  # NaN
+        return None
+    return number
+
+
+def _skill_id_from_key(key):
+    text = str(key or "").strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    for prefix in ("skill:", "cd:"):
+        if lowered.startswith(prefix):
+            text = text[len(prefix):].strip()
+            break
+    try:
+        skill_id = int(text, 0)
+    except (TypeError, ValueError):
+        return None
+    return skill_id if skill_id > 0 else None
+
+
+def looks_like_skill_key(key):
+    text = str(key or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if lowered.startswith("skill:") or lowered.startswith("cd:"):
+        return True
+    return text.isdigit()
+
+
+def normalize_custom_entry(key, value):
+    """Normalize one custom timer entry.
+
+    Supports:
+      - legacy number → buff key = duration; skill-like key = cooldown
+      - object {duration, cooldown/cd, skill_id, label/name, overlay}
+    Returns None when neither duration nor cooldown is set.
+    """
+    name = str(key or "").strip()
+    if not name:
+        return None
+
+    duration = None
+    cooldown = None
+    skill_id = None
+    label = None
+    overlay = None
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        seconds = _positive_float(value)
+        if seconds is None:
+            return None
+        # Backward compatible: skill:2100 / 2100 bare numbers used to mean CD.
+        if looks_like_skill_key(name):
+            cooldown = seconds
+            skill_id = _skill_id_from_key(name)
+        else:
+            duration = seconds
+    elif isinstance(value, dict):
+        duration = _positive_float(value.get("duration"))
+        cooldown = _positive_float(value.get("cooldown") if value.get("cooldown") is not None else value.get("cd"))
+        try:
+            raw_skill = value.get("skill_id")
+            skill_id = int(raw_skill) if raw_skill is not None and str(raw_skill).strip() != "" else None
+            if skill_id is not None and skill_id <= 0:
+                skill_id = None
+        except (TypeError, ValueError):
+            skill_id = None
+        label = value.get("label") or value.get("name")
+        if label is not None:
+            label = str(label).strip() or None
+        if "overlay" in value:
+            overlay = bool(value.get("overlay"))
+    else:
+        return None
+
+    if skill_id is None:
+        skill_id = _skill_id_from_key(name)
+
+    if duration is None and cooldown is None:
+        return None
+
+    entry = {}
+    if duration is not None:
+        entry["duration"] = duration
+    if cooldown is not None:
+        entry["cooldown"] = cooldown
+    if skill_id is not None:
+        entry["skill_id"] = int(skill_id)
+    if label:
+        entry["label"] = label
+    # Skill entries default to overlay=true so existing CD configs keep showing;
+    # users can uncheck to hide. Non-skill buff rows ignore this flag.
+    if skill_id is not None:
+        entry["overlay"] = True if overlay is None else bool(overlay)
+    return entry
+
+
+def normalize_custom_durations(raw):
+    cleaned = {}
+    if not isinstance(raw, dict):
+        return cleaned
+    for key, value in raw.items():
+        entry = normalize_custom_entry(key, value)
+        if entry is None:
+            continue
+        cleaned[str(key).strip()] = entry
+    return cleaned
+
+
+def entry_duration_seconds(entry):
+    if isinstance(entry, (int, float)) and not isinstance(entry, bool):
+        return _positive_float(entry)
+    if isinstance(entry, dict):
+        return _positive_float(entry.get("duration"))
+    return None
+
+
+def entry_cooldown_seconds(entry):
+    if isinstance(entry, dict):
+        if entry.get("cooldown") is not None:
+            return _positive_float(entry.get("cooldown"))
+        return _positive_float(entry.get("cd"))
+    return None
+
+
 def load_custom_durations(path=CUSTOM_BUFFS):
     try:
         with open(path, encoding="utf-8") as stream:
             data = json.load(stream)
     except Exception:
         return {}
-    if not isinstance(data, dict):
-        return {}
-    return {str(k): float(v) for k, v in data.items() if isinstance(v, (int, float))}
+    return normalize_custom_durations(data)
 
 
 def save_custom_durations(durations, path=CUSTOM_BUFFS):
     try:
-        data = {str(k): v for k, v in durations.items()}
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        data = normalize_custom_durations(durations)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         return True
@@ -97,33 +228,78 @@ class BuffTracker:
         self.last_packet_at = None
 
     def _custom_duration_for(self, *keys):
-        """Look up a custom duration by any alias key (e.g. magic_shield or bit key)."""
+        """Look up a custom buff/effect duration by any alias key."""
         for key in keys:
             if not key:
                 continue
-            value = self.custom_durations.get(str(key))
-            if value is not None:
-                try:
-                    return float(value)
-                except (TypeError, ValueError):
-                    continue
+            entry = self.custom_durations.get(str(key))
+            seconds = entry_duration_seconds(entry)
+            if seconds is not None:
+                return seconds
         return None
 
     def set_custom_durations(self, durations):
         if not isinstance(durations, dict):
             self.custom_durations = {}
             return
-        cleaned = {}
-        for key, value in durations.items():
-            try:
-                cleaned[str(key)] = float(value)
-            except (TypeError, ValueError):
-                continue
-        self.custom_durations = cleaned
+        self.custom_durations = normalize_custom_durations(durations)
 
     def reload_custom_durations(self, path=None):
         self.custom_durations = load_custom_durations(path or CUSTOM_BUFFS)
         return dict(self.custom_durations)
+
+    def find_skill_timer_config(self, skill_id):
+        """Find custom duration/cooldown config for a skill id."""
+        try:
+            skill_id = int(skill_id)
+        except (TypeError, ValueError):
+            return None
+        if skill_id <= 0:
+            return None
+
+        def pack(key, entry):
+            duration = entry_duration_seconds(entry)
+            cooldown = entry_cooldown_seconds(entry)
+            if duration is None and cooldown is None:
+                return None
+            overlay = True
+            if isinstance(entry, dict) and "overlay" in entry:
+                overlay = bool(entry.get("overlay"))
+            return {
+                "key": key,
+                "skill_id": skill_id,
+                "duration": duration,
+                "cooldown": cooldown,
+                "label": (entry.get("label") if isinstance(entry, dict) else None),
+                "overlay": overlay,
+            }
+
+        candidates = (
+            f"skill:{skill_id}",
+            f"cd:{skill_id}",
+            str(skill_id),
+        )
+        for key in candidates:
+            entry = self.custom_durations.get(key)
+            if not entry:
+                continue
+            packed = pack(key, entry)
+            if packed:
+                return packed
+        # Also match entries that only store skill_id inside the object.
+        for key, entry in self.custom_durations.items():
+            if not isinstance(entry, dict):
+                continue
+            try:
+                entry_skill = int(entry.get("skill_id")) if entry.get("skill_id") is not None else None
+            except (TypeError, ValueError):
+                entry_skill = None
+            if entry_skill != skill_id:
+                continue
+            packed = pack(key, entry)
+            if packed:
+                return packed
+        return None
 
     def _definitions(self, masks):
         consumed = [0] * 12
@@ -134,6 +310,9 @@ class BuffTracker:
             if group < len(masks) and masks[group] & mask == mask:
                 consumed[group] |= mask
                 definition = dict(item)
+                # Prefer game-internal source_name for UI display.
+                if definition.get("source_name"):
+                    definition["name"] = definition["source_name"]
                 # Composite aliases: key name and bit-key both accepted.
                 custom = self._custom_duration_for(
                     definition.get("key"),
@@ -178,19 +357,21 @@ class BuffTracker:
                     skill_id = int(skill_id) if skill_id is not None else None
                 except (TypeError, ValueError):
                     skill_id = None
+                source_name = metadata.get("source_name") or (
+                    reference_name if unverified else None
+                )
+                # Prefer game-internal source_name for the primary display label.
+                display_name = (
+                    f"未确认状态 {group + 1}-{mask.bit_length()}"
+                    if unverified
+                    else (source_name or reference_name or f"未命名状态 {group + 1}-{mask.bit_length()}")
+                )
                 definition = {
                     "key": key,
                     "group": group,
                     "mask": mask,
-                    "name": (
-                        f"未确认状态 {group + 1}-{mask.bit_length()}"
-                        if unverified
-                        else reference_name or f"未命名状态 {group + 1}-{mask.bit_length()}"
-                    ),
-                    "source_name": (
-                        metadata.get("source_name")
-                        or (reference_name if unverified else None)
-                    ),
+                    "name": display_name,
+                    "source_name": source_name,
                     "category": metadata.get("category") or default_category(group),
                     "duration": effective_duration,
                     "timing": timing,
@@ -203,7 +384,15 @@ class BuffTracker:
                 }
                 learned = self.learned_skills.get(key)
                 if learned:
-                    definition.update(learned)
+                    # Learned skill names are game-facing; prefer them over localized dict names.
+                    learned_name = str(learned.get("name") or "").strip()
+                    if learned_name:
+                        definition["name"] = learned_name
+                        definition["source_name"] = learned.get("source_name") or learned_name
+                    if learned.get("skill_id") is not None:
+                        definition["skill_id"] = learned["skill_id"]
+                    if learned.get("confidence"):
+                        definition["confidence"] = learned["confidence"]
                     # Keep custom duration preferred over skill-learned metadata.
                     if custom_duration is not None:
                         definition["duration"] = custom_duration

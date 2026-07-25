@@ -116,6 +116,8 @@ class DamageMeter:
         self.unknown_combat_actors = Counter()
         self.skill_names = load_skill_names()
         self.mob_names = load_id_names(MOB_NAMES)
+        # Non-damaging defensive skills (パリイ / SKILL_A_PARRY family).
+        self.defensive_skill_ids = {2100, 6418}
         self.capture_categories = default_capture_categories()
         self.reset()
         self.actor_buff_masks = {}
@@ -228,6 +230,11 @@ class DamageMeter:
             self.by_skill_taken = Counter()
             self.by_pet = Counter()
             self.by_pet_skill = Counter()
+            self.by_skill_cast = Counter()
+            self.skill_cast_total = 0
+            self.skill_cast_history = deque(maxlen=200)
+            self.skill_cooldowns = {}
+            self.skill_effect_timers = {}
             self.events.clear()
             self.damage_details.clear()
             self.damage_history.clear()
@@ -411,6 +418,199 @@ class DamageMeter:
         if skill_id is None:
             return fallback
         return self.skill_names.get(skill_id) or f"技能#{skill_id}"
+
+    def classify_skill_cast(self, skill_id, target):
+        """Rough cast role for UI: defensive / self / other."""
+        if skill_id in getattr(self, "defensive_skill_ids", ()):
+            return "defensive"
+        if self.self_id is not None and target in (self.self_id, None):
+            return "self"
+        if target in (None, 0, 0xFFFFFFFF):
+            return "self"
+        return "combat"
+
+    def find_skill_timer_config(self, skill_id):
+        finder = getattr(self.buff_tracker, "find_skill_timer_config", None)
+        if callable(finder):
+            return finder(skill_id)
+        return None
+
+    def skill_cooldown_duration(self, skill_id):
+        """Configured skill CD seconds, if any."""
+        config = self.find_skill_timer_config(skill_id) or {}
+        return config.get("cooldown")
+
+    def skill_effect_duration(self, skill_id):
+        """Configured skill effect duration seconds (client estimate), if any."""
+        config = self.find_skill_timer_config(skill_id) or {}
+        return config.get("duration")
+
+    def _skill_display_name(self, skill_id, config=None):
+        label = None
+        if isinstance(config, dict):
+            label = config.get("label")
+        if label:
+            return str(label)
+        return self.skill_label(skill_id)
+
+    def start_skill_cooldown(self, ts, skill_id, config=None):
+        """Start/refresh a skill CD timer if the user configured one."""
+        config = config if config is not None else self.find_skill_timer_config(skill_id)
+        cooldown = (config or {}).get("cooldown")
+        if cooldown is None:
+            return None
+        try:
+            skill_id = int(skill_id)
+        except (TypeError, ValueError):
+            return None
+        name = self._skill_display_name(skill_id, config)
+        rec = {
+            "skill_id": skill_id,
+            "skill": name,
+            "started_at": float(ts),
+            "expires_at": float(ts) + float(cooldown),
+            "duration": float(cooldown),
+            "key": f"skill_cd:{skill_id}",
+            "name": name,
+            "category": "cooldown",
+            "timing": "custom",
+        }
+        if not hasattr(self, "skill_cooldowns") or self.skill_cooldowns is None:
+            self.skill_cooldowns = {}
+        self.skill_cooldowns[skill_id] = rec
+        return rec
+
+    def start_skill_effect_timer(self, ts, skill_id, config=None):
+        """Start/refresh skill effect duration timer if configured."""
+        config = config if config is not None else self.find_skill_timer_config(skill_id)
+        effect_duration = (config or {}).get("duration")
+        if effect_duration is None:
+            return None
+        try:
+            skill_id = int(skill_id)
+        except (TypeError, ValueError):
+            return None
+        name = self._skill_display_name(skill_id, config)
+        rec = {
+            "skill_id": skill_id,
+            "skill": name,
+            "started_at": float(ts),
+            "expires_at": float(ts) + float(effect_duration),
+            "duration": float(effect_duration),
+            "key": f"skill_effect:{skill_id}",
+            "name": name,
+            "category": "skill_duration",
+            "timing": "custom",
+        }
+        if not hasattr(self, "skill_effect_timers") or self.skill_effect_timers is None:
+            self.skill_effect_timers = {}
+        self.skill_effect_timers[skill_id] = rec
+        return rec
+
+    def start_skill_timers(self, ts, skill_id):
+        """Start configured effect duration and/or CD when a skill is cast."""
+        config = self.find_skill_timer_config(skill_id)
+        if not config:
+            return None
+        # Only surface skills the user opted into for the floating overlay.
+        if config.get("overlay") is False:
+            return None
+        return {
+            "effect": self.start_skill_effect_timer(ts, skill_id, config),
+            "cooldown": self.start_skill_cooldown(ts, skill_id, config),
+            "config": config,
+        }
+
+    def _public_skill_timer_map(self, store, now, category, required_field):
+        if not store:
+            return []
+        items = []
+        expired = []
+        for skill_id, item in list(store.items()):
+            config = self.find_skill_timer_config(skill_id) or {}
+            if config.get("overlay") is False:
+                expired.append(skill_id)
+                continue
+            if config.get(required_field) is None:
+                expired.append(skill_id)
+                continue
+            expires_at = item.get("expires_at")
+            if expires_at is None:
+                expired.append(skill_id)
+                continue
+            remaining = float(expires_at) - float(now)
+            if remaining <= 0:
+                expired.append(skill_id)
+                continue
+            public = dict(item)
+            public["remaining"] = remaining
+            public["elapsed"] = max(0.0, float(now) - float(item.get("started_at") or now))
+            public["name"] = public.get("skill") or self._skill_display_name(skill_id, config)
+            public["category"] = category
+            public["timing"] = "custom"
+            items.append(public)
+        for skill_id in expired:
+            store.pop(skill_id, None)
+        items.sort(key=lambda entry: (entry.get("remaining") or 0, entry.get("skill_id") or 0))
+        return items
+
+    def skill_cooldowns_public(self, now):
+        """Active skill CDs with remaining > 0 (configured skills only)."""
+        if not hasattr(self, "skill_cooldowns") or not self.skill_cooldowns:
+            return []
+        return self._public_skill_timer_map(self.skill_cooldowns, now, "cooldown", "cooldown")
+
+    def skill_effect_timers_public(self, now):
+        """Active skill effect duration timers with remaining > 0."""
+        if not hasattr(self, "skill_effect_timers") or not self.skill_effect_timers:
+            return []
+        return self._public_skill_timer_map(self.skill_effect_timers, now, "skill_duration", "duration")
+
+    def record_own_skill_cast(self, ts, skill_id, target=None, source="request"):
+        """Count own skill releases, including 0-damage defensive skills like パリイ."""
+        if skill_id is None:
+            return None
+        try:
+            skill_id = int(skill_id)
+        except (TypeError, ValueError):
+            return None
+        # Dedup request/result/active for the same cast (~1s window).
+        for item in list(self.skill_cast_history):
+            if item.get("skill_id") != skill_id:
+                continue
+            age = ts - item.get("ts", 0)
+            if 0 <= age < 1.0:
+                return None
+        role = self.classify_skill_cast(skill_id, target)
+        rec = {
+            "time": now_label(),
+            "ts": ts,
+            "skill_id": skill_id,
+            "skill": self.skill_label(skill_id),
+            "target": target,
+            "target_label": self.actor_label(target) if target not in (None, 0xFFFFFFFF) else "自己",
+            "role": role,
+            "source": source,
+        }
+        self.by_skill_cast[skill_id] += 1
+        self.skill_cast_total += 1
+        self.skill_cast_history.appendleft(rec)
+        self.history_version += 1
+        # Start configured effect duration and/or CD on a real cast.
+        self.start_skill_timers(ts, skill_id)
+        role_text = {"defensive": "防御技", "self": "自身技", "combat": "战斗技"}.get(role, "技能")
+        self.events.appendleft((rec["time"], f"释放{role_text} {rec['skill']}#{skill_id}"))
+        self.log({
+            "ts": ts,
+            "kind": "skill_cast",
+            "skill_id": skill_id,
+            "skill": rec["skill"],
+            "target": target,
+            "role": role,
+            "source": source,
+            "count": self.by_skill_cast[skill_id],
+        })
+        return rec
 
     def remember_action(self, ts, actor, target, skill_id=None, kind="attack", own=False):
         if target is None or target == 0xFFFFFFFF:
@@ -684,6 +884,8 @@ class DamageMeter:
                 actor = self.own_actor()
                 self.recent_targets.append((ts, target))
                 self.remember_action(ts, actor, target, parsed.get("skill_id"), "skill", own=True)
+                # Count own cast on client request (includes 0-damage skills like パリイ).
+                self.record_own_skill_cast(ts, parsed.get("skill_id"), target, source="request")
                 self.log({
                     "ts": ts,
                     "kind": "skill_action",
@@ -707,6 +909,15 @@ class DamageMeter:
                     self.auto_self = False
             self.remember_action(ts, parsed.get("caster"), parsed.get("target"),
                                  parsed.get("skill_id"), "skill")
+            # Fallback: if request was missed, count own cast on server active/result.
+            own_cast = (
+                (self.self_id is not None and parsed.get("caster") == self.self_id)
+                or self.has_recent_own_skill_request(ts, parsed.get("skill_id"), parsed.get("target"))
+            )
+            if own_cast:
+                self.record_own_skill_cast(
+                    ts, parsed.get("skill_id"), parsed.get("target"), source=typ
+                )
             if typ == "skill_active":
                 self.apply_skill_result_damage(ts, parsed)
             self.log({
@@ -1077,6 +1288,19 @@ class DamageMeter:
                 "sources": list(self.by_source.most_common(5)),
                 "skills_dealt": list(self.by_skill_dealt.most_common(8)),
                 "skills_taken": list(self.by_skill_taken.most_common(8)),
+                "skill_casts": [
+                    {
+                        "skill_id": skill_id,
+                        "skill": self.skill_label(skill_id),
+                        "count": count,
+                        "role": self.classify_skill_cast(skill_id, self.self_id),
+                    }
+                    for skill_id, count in self.by_skill_cast.most_common(16)
+                ],
+                "skill_cast_total": self.skill_cast_total,
+                "skill_cast_history": list(self.skill_cast_history)[:40],
+                "skill_cooldowns": self.skill_cooldowns_public(now),
+                "skill_effect_timers": self.skill_effect_timers_public(now),
                 "pet_sources": list(self.by_pet.most_common(5)),
                 "pet_skills": list(self.by_pet_skill.most_common(8)),
                 "pet_actors": sorted(self.pet_actors),
