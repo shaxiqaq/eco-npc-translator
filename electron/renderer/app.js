@@ -6,6 +6,7 @@ const pageMeta = {
   damage: ['伤害统计', '技能、普攻、宠物与受到伤害明细'],
   buffs: ['状态监控', '自己角色的增益、减益与异常状态'],
   translation: ['NPC 翻译', '游戏原生对话框实时翻译'],
+  xiaoya: ['小雅助手', 'F1–F6 技能按键与延迟配置'],
   logs: ['运行日志', '采集器与翻译服务输出'],
   settings: ['设置', '翻译服务、悬浮窗与启动行为']
 };
@@ -26,11 +27,14 @@ let logFilter = 'all';
 let activePage = 'overview';
 let overviewHistoryVersion = null;
 let damageHistoryRenderKey = null;
+let logRenderKey = null;
+let logRenderPending = false;
 let overlayEditing = false;
 let toastTimer = null;
 let dismissedUpdateVersion = null;
 let downloadedPromptVersion = null;
 let iconProcessPid = null;
+let xiaoyaSkills = null;
 const skillIconCache = new Map();
 const captureKeys = ['skill', 'normal', 'pet', 'taken'];
 const captureLabels = { skill: '技能造成', normal: '普通攻击造成', pet: '宠物造成', taken: '受到伤害' };
@@ -54,20 +58,69 @@ function skillIconMarkup(skillId, fallback = 'sparkles', expiring = false) {
   return `<span class="skill-icon${expiring ? ' expiring' : ''}"${attribute}><i data-lucide="${fallback}"></i></span>`;
 }
 
+function skillNameMarkup(skillId, statusKey = '') {
+  const normalized = Number(skillId);
+  if (Number.isInteger(normalized) && normalized > 0) {
+    return `<span data-skill-name="${normalized}">技能#${normalized}</span>`;
+  }
+  return `<span>状态 ${escapeHtml(statusKey || '未知')}</span>`;
+}
+
+/** Prefer buff/status display name from backend; fall back to skill id hydration. */
+function buffLabelMarkup(item = {}) {
+  const skillId = Number(item.skill_id);
+  const hasSkill = Number.isInteger(skillId) && skillId > 0;
+  const name = String(item.name || '').trim();
+  const source = String(item.source_name || '').trim();
+  const key = String(item.key || '').trim();
+  const usableName = name
+    && !name.startsWith('未命名')
+    && !name.startsWith('未确认')
+    && !/^状态\s/i.test(name)
+    ? name
+    : '';
+
+  if (hasSkill) {
+    const text = usableName || `技能#${skillId}`;
+    return `<span data-skill-name="${skillId}" title="${escapeHtml(key || source || text)}">${escapeHtml(text)}</span>`;
+  }
+  if (usableName) {
+    return `<span title="${escapeHtml(key || source || usableName)}">${escapeHtml(usableName)}</span>`;
+  }
+  if (source) {
+    return `<span title="${escapeHtml(key)}">${escapeHtml(source)}</span>`;
+  }
+  return `<span>状态 ${escapeHtml(key || '未知')}</span>`;
+}
+
 function hydrateSkillIcons(root = document) {
-  root.querySelectorAll('.skill-icon[data-skill-icon]:not([data-icon-state])').forEach((element) => {
-    const skillId = Number(element.dataset.skillIcon);
-    element.dataset.iconState = 'loading';
+  const skillIds = new Set(
+    [...root.querySelectorAll('[data-skill-icon], [data-skill-name]')]
+      .map((element) => Number(element.dataset.skillIcon || element.dataset.skillName))
+      .filter((skillId) => Number.isInteger(skillId) && skillId > 0)
+  );
+  skillIds.forEach((skillId) => {
     if (!skillIconCache.has(skillId)) skillIconCache.set(skillId, window.eco.getSkillIcon(skillId));
     skillIconCache.get(skillId).then((result) => {
-      if (!element.isConnected || Number(element.dataset.skillIcon) !== skillId) return;
-      if (!result?.ok || !result.dataUrl) {
-        element.dataset.iconState = 'fallback';
-        return;
+      root.querySelectorAll(`.skill-icon[data-skill-icon="${skillId}"]`).forEach((element) => {
+        if (!element.isConnected) return;
+        if (!result?.ok || !result.dataUrl) {
+          element.dataset.iconState = 'fallback';
+          return;
+        }
+        element.innerHTML = `<img src="${result.dataUrl}" alt="" draggable="false">`;
+        element.dataset.iconState = 'loaded';
+      });
+      if (result?.ok && result.name) {
+        root.querySelectorAll(`[data-skill-name="${skillId}"]`).forEach((element) => {
+          element.textContent = result.name;
+        });
       }
-      element.innerHTML = `<img src="${result.dataUrl}" alt="" draggable="false">`;
-      element.dataset.iconState = 'loaded';
-    }).catch(() => { element.dataset.iconState = 'fallback'; });
+    }).catch(() => {
+      root.querySelectorAll(`.skill-icon[data-skill-icon="${skillId}"]`).forEach((element) => {
+        element.dataset.iconState = 'fallback';
+      });
+    });
   });
 }
 
@@ -112,7 +165,100 @@ function navigate(page) {
   $('#page-subtitle').textContent = pageMeta[page][1];
   if (page === 'overview') renderOverviewHistory();
   if (page === 'damage') renderDamageTable();
-  if (page === 'buffs') renderBuffs();
+  if (page === 'buffs') {
+    renderBuffs();
+    renderCustomBuffConfig();
+  }
+  if (page === 'xiaoya') renderXiaoya();
+  if (page === 'settings') renderCustomBuffConfig();
+  if (page === 'overview' || page === 'logs' || page === 'translation') {
+    scheduleRenderLogs(true);
+  }
+}
+
+function applyXiaoyaSkills(skills) {
+  if (!Array.isArray(skills)) return;
+  xiaoyaSkills = skills;
+  $$('.xiaoya-skill-row').forEach((row) => {
+    const skill = skills[Number(row.dataset.skillIndex)] || {};
+    row.querySelector('[data-field="enabled"]').checked = Boolean(skill.enabled);
+    row.querySelector('[data-field="skillTime"]').value = Number(skill.skillTime || 0);
+    row.querySelector('[data-field="mouse"]').checked = Boolean(skill.mouse);
+    row.querySelector('[data-field="delay"]').value = Number(skill.delay || 0);
+  });
+}
+
+function readXiaoyaSkills() {
+  return $$('.xiaoya-skill-row').map((row) => ({
+    enabled: row.querySelector('[data-field="enabled"]').checked,
+    skillTime: Number(row.querySelector('[data-field="skillTime"]').value || 0),
+    mouse: row.querySelector('[data-field="mouse"]').checked,
+    delay: Number(row.querySelector('[data-field="delay"]').value || 0)
+  }));
+}
+
+function renderXiaoya() {
+  const service = state.xiaoya || {};
+  const active = ['starting', 'running', 'stopping'].includes(service.state);
+  const running = service.state === 'running';
+  const status = $('#xiaoya-state');
+  status.className = `xiaoya-state ${service.state || 'stopped'}`;
+  status.innerHTML = `<i data-lucide="${running ? 'circle-check' : service.state === 'error' ? 'triangle-alert' : active ? 'loader-circle' : 'circle-off'}"></i>${service.state === 'starting' ? '启动中' : service.state === 'stopping' ? '停止中' : running ? `运行中${service.pid ? ` · PID ${service.pid}` : ''}` : service.state === 'error' ? '启动失败' : '已停止'}`;
+  $('#xiaoya-message').textContent = service.message || (service.available ? '尚未启动' : '未找到 XiaoyaCore.exe');
+  const toggle = $('#xiaoya-toggle');
+  toggle.disabled = service.state === 'stopping' || !service.available;
+  toggle.innerHTML = `<i data-lucide="${active ? 'square' : 'play'}"></i><span>${active ? '停止小雅' : '启动小雅'}</span>`;
+  createIcons();
+}
+
+async function saveXiaoyaConfig(showSuccess = true) {
+  const result = await window.eco.saveXiaoyaConfig(readXiaoyaSkills());
+  if (!result.ok) {
+    showToast(result.error || '保存小雅配置失败');
+    return false;
+  }
+  applyXiaoyaSkills(result.skills);
+  if (showSuccess) showToast('小雅配置已保存');
+  return true;
+}
+
+async function reloadXiaoyaConfig() {
+  const result = await window.eco.getXiaoyaConfig();
+  if (!result.ok) {
+    showToast(result.error || '读取上次设置失败');
+    return;
+  }
+  applyXiaoyaSkills(result.skills);
+  showToast('已读取上次设置');
+}
+
+async function toggleXiaoya() {
+  const active = ['starting', 'running', 'stopping'].includes(state.xiaoya?.state);
+  if (!active && !(await saveXiaoyaConfig(false))) return;
+  const result = active ? await window.eco.stopXiaoya() : await window.eco.startXiaoya();
+  if (!result.ok) showToast(result.error || '操作小雅失败');
+  if (result.state) {
+    state.xiaoya = result.state;
+    renderXiaoya();
+  }
+}
+
+async function toggleXiaoyaSs() {
+  const result = await window.eco.toggleXiaoyaSs();
+  if (!result.ok) {
+    showToast(result.error || 'SS 模式切换失败');
+    return;
+  }
+  showToast('SS 模式切换已发送');
+}
+
+async function toggleXiaoyaVisibility() {
+  const result = await window.eco.toggleXiaoyaVisibility();
+  if (!result.ok) {
+    showToast(result.error || '无法显示或隐藏 ECO 窗口');
+    return;
+  }
+  showToast(result.visible ? 'ECO 窗口已显示' : 'ECO 窗口已隐藏');
 }
 
 function serviceText(service) {
@@ -244,6 +390,7 @@ function buffTime(item) {
 }
 
 function buffTimingSource(item) {
+  if (item?.timing === 'custom') return '自定义持续时间';
   if (item?.timing === 'estimated_observed') return '实测预计';
   if (item?.timing === 'estimated_learned') return '本次运行学习';
   return '持续时间未知';
@@ -255,6 +402,111 @@ function isBuffExpiring(item) {
     state.settings?.overlay?.expiryWarningSeconds
   );
 }
+
+function normalizeCustomDurations(raw) {
+  const cleaned = {};
+  for (const [key, value] of Object.entries(raw || {})) {
+    const name = String(key || '').trim();
+    const seconds = Number(value);
+    if (!name || !Number.isFinite(seconds) || seconds <= 0) continue;
+    cleaned[name] = seconds;
+  }
+  return cleaned;
+}
+
+function collectCustomBuffDurationsFromDom(root) {
+  if (!root) return {};
+  const result = {};
+  root.querySelectorAll('.custom-buff-row').forEach((row) => {
+    const keyInput = row.querySelector('[data-field="key"]');
+    const valueInput = row.querySelector('[data-field="seconds"]');
+    const key = String(keyInput?.value || '').trim();
+    const seconds = Number(valueInput?.value);
+    if (!key || !Number.isFinite(seconds) || seconds <= 0) return;
+    result[key] = seconds;
+  });
+  return result;
+}
+
+function customBuffRowMarkup(key = '', seconds = 30) {
+  return `<div class="custom-buff-row">
+    <input type="text" data-field="key" value="${escapeHtml(key)}" placeholder="如 magic_shield 或 2:0x00000002" spellcheck="false">
+    <div class="number-field"><input type="number" data-field="seconds" value="${Number(seconds) || 30}" min="0.1" step="0.1"><span>秒</span></div>
+    <button type="button" class="btn secondary custom-buff-remove">删除</button>
+  </div>`;
+}
+
+function bindCustomBuffListEvents(root) {
+  if (!root || root.dataset.bound === '1') return;
+  root.dataset.bound = '1';
+  root.addEventListener('click', (event) => {
+    const button = event.target.closest('.custom-buff-remove');
+    if (!button) return;
+    const row = button.closest('.custom-buff-row');
+    row?.remove();
+    if (!root.querySelector('.custom-buff-row')) {
+      root.innerHTML = '<div class="empty-state">暂无自定义持续时间，点击“添加一条”</div>';
+    }
+    state.custom_durations = collectCustomBuffDurationsFromDom(root);
+  });
+  root.addEventListener('change', () => {
+    state.custom_durations = collectCustomBuffDurationsFromDom(root);
+  });
+  root.addEventListener('input', () => {
+    state.custom_durations = collectCustomBuffDurationsFromDom(root);
+  });
+}
+
+function renderCustomBuffConfig(force = false) {
+  const custom = normalizeCustomDurations(state.custom_durations);
+  state.custom_durations = custom;
+  const keys = Object.keys(custom).sort();
+  const html = keys.length
+    ? keys.map((key) => customBuffRowMarkup(key, custom[key])).join('')
+    : '<div class="empty-state">暂无自定义持续时间，点击“添加一条”</div>';
+  const renderKey = JSON.stringify(custom);
+
+  ['#buff-page-custom-list', '#settings-custom-buff-list'].forEach((selector) => {
+    const root = $(selector);
+    if (!root) return;
+    const editing = root.contains(document.activeElement);
+    // Avoid wiping in-progress edits on unrelated state broadcasts.
+    if (!force && (editing || root.dataset.renderKey === renderKey)) {
+      bindCustomBuffListEvents(root);
+      return;
+    }
+    root.dataset.renderKey = renderKey;
+    root.innerHTML = html;
+    bindCustomBuffListEvents(root);
+  });
+}
+
+async function saveCustomBuffDurationsFromUi(sourceRootId) {
+  const source = sourceRootId ? $(sourceRootId) : null;
+  const payload = source
+    ? collectCustomBuffDurationsFromDom(source)
+    : normalizeCustomDurations(state.custom_durations);
+  const result = await window.eco.saveBuffCustomDurations(payload);
+  if (!result?.ok) {
+    showToast(result?.error || '保存自定义持续时间失败');
+    return;
+  }
+  state.custom_durations = normalizeCustomDurations(result.custom_durations || payload);
+  renderCustomBuffConfig(true);
+  showToast(`已保存 ${Object.keys(state.custom_durations).length} 条自定义持续时间`);
+}
+
+function addCustomBuffDurationRow(listId) {
+  const root = $(listId);
+  if (!root) return;
+  const empty = root.querySelector('.empty-state');
+  if (empty) empty.remove();
+  root.insertAdjacentHTML('beforeend', customBuffRowMarkup('', 30));
+  bindCustomBuffListEvents(root);
+  const keyInput = root.querySelector('.custom-buff-row:last-child [data-field="key"]');
+  keyInput?.focus();
+}
+
 
 function formatEventTime(timestamp) {
   if (!Number.isFinite(Number(timestamp))) return '--:--:--';
@@ -276,20 +528,19 @@ function renderBuffs() {
   $('#buff-abnormal').textContent = formatNumber(counts.abnormal);
   $('#buff-active-count').textContent = `${items.length} 项`;
   $('#buff-history-count').textContent = `${history.length} 条`;
+  // Do not rebuild the custom-duration editor every second; it would steal focus.
 
   const activeRoot = $('#buff-active-list');
   activeRoot.innerHTML = items.length ? items.map((item) => {
     const category = buffCategory(item);
-    const sourceName = item.source_name && item.source_name !== item.name
-      ? `<small title="原始名称">${escapeHtml(item.source_name)}</small>` : '';
-    return `<div class="buff-active-row ${category.cls}">${skillIconMarkup(item.skill_id, 'shield', isBuffExpiring(item))}<span class="buff-category">${category.label}</span><div class="buff-name"><strong>${escapeHtml(item.name)}</strong>${sourceName}</div><div class="buff-time"><strong>${buffTime(item)}</strong><span>${buffTimingSource(item)}</span></div></div>`;
+    return `<div class="buff-active-row ${category.cls}">${skillIconMarkup(item.skill_id, 'shield', isBuffExpiring(item))}<span class="buff-category">${category.label}</span><div class="buff-name"><strong>${buffLabelMarkup(item)}</strong></div><div class="buff-time"><strong>${buffTime(item)}</strong><span>${buffTimingSource(item)}</span></div></div>`;
   }).join('') : '<div class="empty-state">尚未检测到角色状态</div>';
 
   const historyRoot = $('#buff-history-list');
   const eventLabels = { gained: '获得', refreshed: '刷新', lost: '消失' };
   historyRoot.innerHTML = history.length ? history.map((item) => {
     const category = buffCategory(item);
-    return `<div class="buff-history-row"><time>${formatEventTime(item.time)}</time>${skillIconMarkup(item.skill_id, 'shield')}<span class="buff-category ${category.cls}">${category.label}</span><strong>${escapeHtml(item.name)}</strong><b class="buff-event ${escapeHtml(item.event)}">${eventLabels[item.event] || '变化'}</b></div>`;
+    return `<div class="buff-history-row"><time>${formatEventTime(item.time)}</time>${skillIconMarkup(item.skill_id, 'shield')}<span class="buff-category ${category.cls}">${category.label}</span><strong>${buffLabelMarkup(item)}</strong><b class="buff-event ${escapeHtml(item.event)}">${eventLabels[item.event] || '变化'}</b></div>`;
   }).join('') : '<div class="empty-state">尚无状态变化记录</div>';
   createIcons();
   hydrateSkillIcons(activeRoot);
@@ -308,7 +559,7 @@ function renderOverviewHistory() {
   }
   root.innerHTML = items.map((item) => {
     const type = historyType(item);
-    return `<div class="recent-row"><time>${escapeHtml(item.time || '--:--:--')}</time><span class="type-badge ${type.cls}">${type.text}</span>${skillIconMarkup(item.skill_id, item.skill_id == null ? 'sword' : 'sparkles')}<span class="route">${escapeHtml(item.source)} → ${escapeHtml(item.target)} · ${escapeHtml(item.skill)}</span><strong>${formatNumber(item.damage)}</strong></div>`;
+    return `<div class="recent-row"><time>${escapeHtml(item.time || '--:--:--')}</time><span class="type-badge ${type.cls}">${type.text}</span>${skillIconMarkup(item.skill_id, item.skill_id == null ? 'sword' : 'sparkles')}<span class="route">${escapeHtml(item.source)} → ${escapeHtml(item.target)} · ${item.skill_id == null ? '普通攻击' : skillNameMarkup(item.skill_id)}</span><strong>${formatNumber(item.damage)}</strong></div>`;
   }).join('');
   createIcons();
   hydrateSkillIcons(root);
@@ -329,23 +580,64 @@ function renderDamageTable() {
   }
   root.innerHTML = items.slice(0, 500).map((item) => {
     const type = historyType(item);
-    return `<tr><td>${escapeHtml(item.time || '')}</td><td><span class="type-badge ${type.cls}">${type.text}</span></td><td title="${escapeHtml(item.source)}">${escapeHtml(item.source)}</td><td title="${escapeHtml(item.target)}">${escapeHtml(item.target)}</td><td><div class="skill-cell">${skillIconMarkup(item.skill_id, item.skill_id == null ? 'sword' : 'sparkles')}<span>${escapeHtml(item.skill)}</span></div></td><td class="number">${formatNumber(item.damage)}</td></tr>`;
+    return `<tr><td>${escapeHtml(item.time || '')}</td><td><span class="type-badge ${type.cls}">${type.text}</span></td><td title="${escapeHtml(item.source)}">${escapeHtml(item.source)}</td><td title="${escapeHtml(item.target)}">${escapeHtml(item.target)}</td><td><div class="skill-cell">${skillIconMarkup(item.skill_id, item.skill_id == null ? 'sword' : 'sparkles')}${item.skill_id == null ? '<span>普通攻击</span>' : skillNameMarkup(item.skill_id)}</div></td><td class="number">${formatNumber(item.damage)}</td></tr>`;
   }).join('');
   createIcons();
   hydrateSkillIcons(root);
 }
 
+function scheduleRenderLogs(force = false) {
+  if (force) {
+    logRenderKey = null;
+    renderLogs();
+    return;
+  }
+  if (logRenderPending) return;
+  logRenderPending = true;
+  requestAnimationFrame(() => {
+    logRenderPending = false;
+    renderLogs();
+  });
+}
+
 function renderLogs() {
   const all = state.logs || [];
-  const recent = all.slice(-5).reverse();
-  $('#overview-logs').innerHTML = recent.length ? recent.map((entry) => `<div class="activity-row"><i class="${escapeHtml(entry.level)}"></i><div><strong>${entry.service === 'damage' ? '伤害采集' : 'NPC 翻译'}</strong><span>${escapeHtml(entry.message)}</span></div><time>${escapeHtml(entry.time)}</time></div>`).join('') : '<div class="empty-state">等待服务启动</div>';
+  const last = all.length ? all[all.length - 1] : null;
+  const key = `${activePage}|${logFilter}|${all.length}|${last?.time || ''}|${last?.message || ''}`;
+  if (logRenderKey === key) return;
+  logRenderKey = key;
 
-  const translation = all.filter((entry) => entry.service === 'translator').slice(-80).reverse();
-  $('#translation-log').innerHTML = translation.length ? translation.map((entry) => `<div class="log-line"><time>${escapeHtml(entry.time)}</time>${escapeHtml(entry.message)}</div>`).join('') : '<div class="empty-state">尚无翻译日志</div>';
+  // Overview always shows a tiny tail of recent activity.
+  if (activePage === 'overview' || activePage === 'logs' || activePage === 'translation') {
+    const recent = all.slice(-5).reverse();
+    const overviewRoot = $('#overview-logs');
+    if (overviewRoot) {
+      overviewRoot.innerHTML = recent.length
+        ? recent.map((entry) => `<div class="activity-row"><i class="${escapeHtml(entry.level)}"></i><div><strong>${entry.service === 'damage' ? '伤害采集' : 'NPC 翻译'}</strong><span>${escapeHtml(entry.message)}</span></div><time>${escapeHtml(entry.time)}</time></div>`).join('')
+        : '<div class="empty-state">等待服务启动</div>';
+    }
+  }
 
-  const filtered = logFilter === 'all' ? all : all.filter((entry) => entry.service === logFilter);
-  $('#log-console').innerHTML = filtered.length ? filtered.slice(-500).map((entry) => `<div class="console-line ${escapeHtml(entry.level)}"><time>${escapeHtml(entry.time)}</time><b>${entry.service === 'damage' ? '伤害采集' : 'NPC 翻译'}</b><span>${escapeHtml(entry.message)}</span></div>`).join('') : '<div class="empty-state">暂无运行日志</div>';
-  $('#log-console').scrollTop = $('#log-console').scrollHeight;
+  if (activePage === 'translation' || activePage === 'logs') {
+    const translation = all.filter((entry) => entry.service === 'translator').slice(-80).reverse();
+    const translationRoot = $('#translation-log');
+    if (translationRoot) {
+      translationRoot.innerHTML = translation.length
+        ? translation.map((entry) => `<div class="log-line"><time>${escapeHtml(entry.time)}</time>${escapeHtml(entry.message)}</div>`).join('')
+        : '<div class="empty-state">尚无翻译日志</div>';
+    }
+  }
+
+  if (activePage === 'logs') {
+    const filtered = logFilter === 'all' ? all : all.filter((entry) => entry.service === logFilter);
+    const consoleRoot = $('#log-console');
+    if (consoleRoot) {
+      consoleRoot.innerHTML = filtered.length
+        ? filtered.slice(-500).map((entry) => `<div class="console-line ${escapeHtml(entry.level)}"><time>${escapeHtml(entry.time)}</time><b>${entry.service === 'damage' ? '伤害采集' : 'NPC 翻译'}</b><span>${escapeHtml(entry.message)}</span></div>`).join('')
+        : '<div class="empty-state">暂无运行日志</div>';
+      consoleRoot.scrollTop = consoleRoot.scrollHeight;
+    }
+  }
 }
 
 function updateStatusMeta(phase) {
@@ -528,6 +820,18 @@ function bindEvents() {
   $('#toggle-damage').addEventListener('click', () => toggleService('damage'));
   $('#toggle-translator').addEventListener('click', () => toggleService('translator'));
   $('#translation-toggle').addEventListener('click', () => toggleService('translator'));
+  $('#xiaoya-toggle').addEventListener('click', toggleXiaoya);
+  $('#xiaoya-toggle-ss').addEventListener('click', toggleXiaoyaSs);
+  $('#xiaoya-toggle-visibility').addEventListener('click', toggleXiaoyaVisibility);
+  $('#xiaoya-reload-config').addEventListener('click', reloadXiaoyaConfig);
+  $('#xiaoya-open-folder').addEventListener('click', async () => {
+    const result = await window.eco.openXiaoyaFolder();
+    if (!result.ok) showToast(result.error || '无法打开小雅目录');
+  });
+  $('#xiaoya-config').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await saveXiaoyaConfig();
+  });
   $('#refresh-game-processes').addEventListener('click', async (event) => {
     const button = event.currentTarget;
     button.classList.add('refreshing');
@@ -557,6 +861,12 @@ function bindEvents() {
   $('#damage-reset').addEventListener('click', async () => { await window.eco.resetDamage(); showToast('伤害统计已清空'); });
   $('#edit-overlay').addEventListener('click', setOverlayEditing);
   $('#buff-edit-overlay').addEventListener('click', setOverlayEditing);
+
+  $('#buff-page-custom-save')?.addEventListener('click', () => saveCustomBuffDurationsFromUi('#buff-page-custom-list'));
+  $('#settings-custom-buff-save')?.addEventListener('click', () => saveCustomBuffDurationsFromUi('#settings-custom-buff-list'));
+  $('#buff-page-custom-add')?.addEventListener('click', () => addCustomBuffDurationRow('#buff-page-custom-list'));
+  $('#settings-custom-buff-add')?.addEventListener('click', () => addCustomBuffDurationRow('#settings-custom-buff-list'));
+
   $('#settings-edit-overlay').addEventListener('click', setOverlayEditing);
   $('#open-logs').addEventListener('click', () => window.eco.openLogs());
   $('#check-updates').addEventListener('click', checkForUpdates);
@@ -600,7 +910,7 @@ function bindEvents() {
   $$('[data-log-filter]').forEach((button) => button.addEventListener('click', () => {
     logFilter = button.dataset.logFilter;
     $$('[data-log-filter]').forEach((item) => item.classList.toggle('active', item === button));
-    renderLogs();
+    scheduleRenderLogs(true);
   }));
   $$('[data-settings-tab]').forEach((button) => button.addEventListener('click', () => {
     const tab = button.dataset.settingsTab;
@@ -679,29 +989,55 @@ async function init() {
   createIcons();
   bindEvents();
   state = await window.eco.getState();
+  const xiaoyaConfig = await window.eco.getXiaoyaConfig();
+  if (xiaoyaConfig.ok) {
+    applyXiaoyaSkills(xiaoyaConfig.skills);
+    state.xiaoya = xiaoyaConfig.state || state.xiaoya;
+  } else if (xiaoyaConfig.error) {
+    $('#xiaoya-message').textContent = xiaoyaConfig.error;
+  }
   syncIconProcess();
   snapshot = state.snapshot;
   applySettingsToForm();
   renderServices();
+  renderXiaoya();
   renderSnapshot();
-  renderLogs();
+  state.custom_durations = normalizeCustomDurations(state.custom_durations);
+  renderCustomBuffConfig(true);
+  scheduleRenderLogs(true);
   renderUpdate(state.update);
 
   window.eco.onState((next) => {
+    const prevLogLen = (state.logs || []).length;
+    const prevCustom = JSON.stringify(state.custom_durations || {});
     state = { ...state, ...next };
+    if (next.custom_durations) {
+      state.custom_durations = normalizeCustomDurations(next.custom_durations);
+    }
     syncIconProcess();
     if (next.snapshot) snapshot = next.snapshot;
     applySettingsToForm();
     renderServices();
-    renderLogs();
+    renderXiaoya();
+    // Only re-render logs when the log buffer actually changed.
+    if ((state.logs || []).length !== prevLogLen || next.logs) {
+      scheduleRenderLogs();
+    }
+    if (JSON.stringify(state.custom_durations || {}) !== prevCustom) {
+      renderCustomBuffConfig();
+    }
   });
   window.eco.onSnapshot((next) => {
     snapshot = next;
     renderSnapshot();
   });
   window.eco.onLog((entry) => {
-    state.logs = [...(state.logs || []), entry].slice(-1000);
-    renderLogs();
+    const logs = state.logs || [];
+    logs.push(entry);
+    if (logs.length > 1000) logs.splice(0, logs.length - 1000);
+    state.logs = logs;
+    // Batch rapid log lines into one paint frame.
+    scheduleRenderLogs();
   });
   window.eco.onUpdate((update) => renderUpdate(update, true));
   setInterval(() => {

@@ -1,5 +1,16 @@
 # ECO 工具箱：NPC 实时翻译 + 战斗与状态监控
 
+**整理后的目录结构**（已优化根目录清晰度）：
+- **batch/**：所有启动和配置的批处理文件（.cmd）
+- **data/**：数据文件（技能/怪物名称词库、采集结果、配置等）
+- **src/**：所有 Python 脚本和 Frida 挂钩脚本
+- **archive/**：旧版本实验和参考代码
+- **electron/**：图形界面桌面应用（推荐）
+- **tests/**：单元测试
+- **logs/**：运行日志
+- **docs/**：说明文档
+- 其他根目录文件：README.md、目录说明.md 等
+
 这是一个面向《Emil Chronicle Online》(ECO) 客户端的本地工具箱，主要包含三类功能：
 
 - **NPC 实时翻译**：把 NPC 对话和选项菜单替换成中文，并显示在游戏原生对话框里。
@@ -25,6 +36,7 @@ electron/release/ECO-Toolbox-Setup-0.2.4.exe
 - `状态监控`：显示自己角色当前的增益、减益、异常状态及变化记录。状态采集与伤害统计共用“伤害采集”服务。
 - 顶部游戏进程选择器会列出全部 `eco.exe`。多开游戏时，先停止采集与翻译，刷新列表并选择目标 PID，再启动服务；伤害采集和 NPC 翻译会连接到同一个所选进程。
 - `NPC 翻译`：查看翻译运行状态和实时日志。
+- `小雅助手`：在工具箱内配置 F1–F6 的技能间隔、鼠标开关和技能后延迟。自研的 x86 原生核心会按配置向明确选中的 ECO 进程发送后台窗口消息，不会自动扫描或连接其他进程。
 - `运行日志`：集中查看两个后端的输出。
 - `设置`：配置翻译服务、Overlay 样式、位置、自动启动行为和软件更新。
 
@@ -32,7 +44,7 @@ electron/release/ECO-Toolbox-Setup-0.2.4.exe
 
 程序会从当前选择的 ECO 客户端读取并缓存原版技能图标；没有对应技能图标的环境状态会显示通用状态图标。在`设置 → 悬浮窗`中可以设置到期闪烁提醒时间（1–300 秒），所有具有明确结束时间的增益、减益和异常状态都会在剩余时间进入阈值后闪烁；持续时间未知的状态不会触发提醒。
 
-安装版已经内置 Python 运行环境和 Frida 后端，使用者不需要另外安装 Python 或 Node.js。翻译 API Key 和运行配置保存在当前 Windows 用户的应用数据目录，不会写入安装目录。
+安装版已经内置 Python 运行环境、Frida 后端和自包含的 `XiaoyaCore.exe`，使用者不需要另外安装 Python、Node.js 或 .NET Runtime。翻译 API Key 和运行配置保存在当前 Windows 用户的应用数据目录，不会写入安装目录。原版小雅暂时仅作为行为对照和回退资源保留，工具箱不会主动执行它。
 
 ### 软件更新
 
@@ -42,12 +54,14 @@ electron/release/ECO-Toolbox-Setup-0.2.4.exe
 
 ### 旧版脚本
 
+**注意**：批处理文件（.cmd）已移动到 `batch/` 文件夹下，双击时请从根目录或 `batch/` 文件夹运行。
+
 先启动游戏并登录角色，再根据用途双击对应脚本。
 
 | 脚本 | 用途 |
 |---|---|
-| `配置翻译.cmd` | 配置翻译服务、API Key、语言、热键和共享词库 |
-| `启动NPC翻译.cmd` | 启动 NPC 原生对话框翻译 |
+| `batch/配置翻译.cmd` | 配置翻译服务、API Key、语言、热键和共享词库 |
+| `batch/启动NPC翻译.cmd` | 启动 NPC 原生对话框翻译 |
 | `采集NPC.cmd` | 只读采集 NPC 英文文本和 eventid |
 | `对齐词库.cmd` | 将采集文本对齐到中文缓存/共享词库 |
 | `启动伤害Overlay.cmd` | 启动透明悬浮窗和控制台伤害统计 |
@@ -141,20 +155,25 @@ NPC 相关：
 
 ## 主要文件
 
-| 文件 | 说明 |
-|---|---|
-| `_mitm.js` | NPC 翻译用 Frida 脚本 |
-| `_harvest.js` | NPC 采集用 Frida 脚本 |
-| `_damage_capture.js` | 伤害采集/Overlay 用 Frida 脚本 |
-| `eco_npc_mitm.py` | NPC 实时翻译主程序 |
-| `eco_settings.py` | 翻译配置图形界面 |
-| `eco_damage_capture.py` | 战斗封包采集器 |
-| `eco_damage_meter.py` | 伤害统计核心 |
-| `eco_damage_overlay.py` | 透明 Overlay |
-| `skill_names.json` | 技能 ID 到中文名 |
-| `mob_names.json` | 怪物 ID 到中文名 |
-| `npc_cache.json` | NPC 原文到译文缓存 |
-| `sync_config.json` | 共享词库配置 |
+**根目录**（推荐从这里运行）：
+- `README.md` / `目录说明.md`
+
+**batch/**：
+- 所有 .cmd 批处理文件
+
+**data/**：
+- 名称词库、采集结果等数据文件
+
+**src/**：
+- `_mitm.js` / `_harvest.js` / `_damage_capture.js`（Frida 脚本）
+- `eco_npc_mitm.py` / `eco_settings.py` / `eco_damage_*.py` 等 Python 脚本
+- `import_*.py` 等导入/工具脚本
+
+**其他**：
+- `archive/`：旧代码
+- `electron/`：图形界面
+- `tests/`：测试
+- `logs/`：日志
 
 ## 从源码运行
 
@@ -164,15 +183,15 @@ NPC 相关：
 - Python 3.8+
 - `pip install frida keyboard opencc`
 
-常用命令：
+常用命令（从根目录运行）：
 
 ```powershell
-python eco_npc_mitm.py
-python eco_settings.py
-python eco_harvester.py
-python align_repo.py
-python eco_damage_overlay.py
-python eco_damage_capture.py
+python src/eco_npc_mitm.py
+python src/eco_settings.py
+python src/eco_harvester.py
+python src/align_repo.py
+python src/eco_damage_overlay.py
+python src/eco_damage_capture.py
 ```
 
 Electron 开发版：

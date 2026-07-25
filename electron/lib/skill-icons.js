@@ -42,18 +42,30 @@ class SkillIconService {
   }
 
   async extract(skillId, gamePath) {
-    if (!this.fs.existsSync(this.helperPath)) return { ok: false, reason: 'helper-missing' };
     const outputDir = path.join(this.cacheDir, cacheNamespace(gamePath));
     const outputPath = path.join(outputDir, `${skillId}.png`);
+    const namePath = path.join(outputDir, `${skillId}.txt`);
     this.fs.mkdirSync(outputDir, { recursive: true });
 
-    if (!this.fs.existsSync(outputPath)) {
-      const result = await this.runHelper([gamePath, String(skillId), outputPath]);
-      if (!result.ok || !this.fs.existsSync(outputPath)) return result;
+    let extraction = { ok: true };
+    if (!this.fs.existsSync(outputPath) || !this.fs.existsSync(namePath)) {
+      if (!this.fs.existsSync(this.helperPath)) extraction = { ok: false, reason: 'helper-missing' };
+      else extraction = await this.runHelper([gamePath, String(skillId), outputPath, namePath]);
     }
 
-    const data = this.fs.readFileSync(outputPath);
-    return { ok: true, dataUrl: `data:image/png;base64,${data.toString('base64')}` };
+    const hasIcon = this.fs.existsSync(outputPath);
+    const hasName = this.fs.existsSync(namePath);
+    if (!hasIcon && !hasName) return extraction;
+
+    const result = { ok: true };
+    if (hasIcon) {
+      const data = this.fs.readFileSync(outputPath);
+      result.dataUrl = `data:image/png;base64,${data.toString('base64')}`;
+    }
+    if (hasName) {
+      result.name = this.fs.readFileSync(namePath).toString('utf8').replace(/\0/g, '').trim();
+    }
+    return result;
   }
 
   runHelper(args) {

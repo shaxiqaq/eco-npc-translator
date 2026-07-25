@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "skills": [
+    {
+      "enabled": true,
+      "skillTime": 30,
+      "mouse": false,
+      "delay": 600
+    },
+    {
+      "enabled": false,
+      "skillTime": 15,
+      "mouse": true,
+      "delay": 2300
+    },
+    {
+      "enabled": false,
+      "skillTime": 15,
+      "mouse": true,
+      "delay": 2300
+    },
+    {
+      "enabled": false,
+      "skillTime": 50,
+      "mouse": true,
+      "delay": 3000
+    },
+    {
+      "enabled": false,
+      "skillTime": 15,
+      "mouse": true,
+      "delay": 3000
+    },
+    {
+      "enabled": false,
+      "skillTime": 15,
+      "mouse": true,
+      "delay": 3000
+    }
+  ]
+}

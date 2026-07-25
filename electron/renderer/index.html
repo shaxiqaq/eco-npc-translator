@@ -19,6 +19,7 @@
         <button class="nav-item" data-page="damage"><i data-lucide="swords"></i><span>伤害统计</span></button>
         <button class="nav-item" data-page="buffs"><i data-lucide="shield-check"></i><span>状态监控</span></button>
         <button class="nav-item" data-page="translation"><i data-lucide="languages"></i><span>NPC 翻译</span></button>
+        <button class="nav-item" data-page="xiaoya"><i data-lucide="keyboard"></i><span>小雅助手</span></button>
         <button class="nav-item" data-page="logs"><i data-lucide="scroll-text"></i><span>运行日志</span></button>
         <button class="nav-item" data-page="settings"><i data-lucide="settings-2"></i><span>设置</span></button>
       </nav>
@@ -121,30 +122,45 @@
         </section>
       </section>
 
-      <section class="page" id="page-buffs">
-        <div class="page-toolbar">
-          <div class="status-page-heading"><i data-lucide="shield-check"></i><div><strong>自己的角色状态</strong><span id="buff-actor">等待识别角色</span></div></div>
-          <button class="btn secondary" id="buff-edit-overlay"><i data-lucide="move"></i>调整状态悬浮窗</button>
-        </div>
-        <div class="metric-grid compact-metrics buff-metrics">
-          <article class="metric"><span>当前状态</span><strong id="buff-total">0</strong><small>实时读取状态包</small></article>
-          <article class="metric"><span class="green-text">增益</span><strong id="buff-positive">0</strong><small>对角色有利</small></article>
-          <article class="metric"><span class="red-text">减益</span><strong id="buff-negative">0</strong><small>属性降低效果</small></article>
-          <article class="metric"><span class="blue-text">异常</span><strong id="buff-abnormal">0</strong><small>行动异常效果</small></article>
-        </div>
-        <div class="buff-layout">
-          <section class="data-section">
-            <div class="section-heading compact"><div><h2>当前生效</h2><span id="buff-active-count">0 项</span></div><span class="live-indicator"><i></i>实时更新</span></div>
-            <div class="buff-active-list" id="buff-active-list"><div class="empty-state">尚未检测到角色状态</div></div>
-          </section>
-          <section class="data-section">
-            <div class="section-heading compact"><div><h2>状态变化</h2><span id="buff-history-count">0 条</span></div></div>
-            <div class="buff-history-list" id="buff-history-list"><div class="empty-state">尚无状态变化记录</div></div>
-          </section>
-        </div>
-      </section>
+       <section class="page" id="page-buffs">
+         <div class="page-toolbar">
+           <div class="status-page-heading"><i data-lucide="shield-check"></i><div><strong>自己的角色状态</strong><span id="buff-actor">等待识别角色</span></div></div>
+           <button class="btn secondary" id="buff-edit-overlay"><i data-lucide="move"></i>调整状态悬浮窗</button>
+         </div>
 
-      <section class="page" id="page-translation">
+         <!-- 自定义 buff 持续时间面板 -->
+         <section class="data-section">
+           <div class="section-heading compact"><h2>自定义 buff 持续时间</h2><p>key 可用状态位（如 2:0x00000002）或组合名（如 magic_shield）</p></div>
+           <div class="buff-config">
+             <div id="buff-page-custom-list" class="custom-buff-list"></div>
+             <div class="buff-config-actions">
+               <button type="button" id="buff-page-custom-add" class="btn secondary">添加一条</button>
+               <button type="button" id="buff-page-custom-save" class="btn primary">保存自定义持续时间</button>
+             </div>
+           </div>
+         </section>
+
+         <div class="metric-grid compact-metrics buff-metrics">
+           <article class="metric"><span>当前状态</span><strong id="buff-total">0</strong><small>实时读取状态包</small></article>
+           <article class="metric"><span class="green-text">增益</span><strong id="buff-positive">0</strong><small>对角色有利</small></article>
+           <article class="metric"><span class="red-text">减益</span><strong id="buff-negative">0</strong><small>属性降低效果</small></article>
+           <article class="metric"><span class="blue-text">异常</span><strong id="buff-abnormal">0</strong><small>行动异常效果</small></article>
+         </div>
+         <div class="buff-layout">
+           <section class="data-section">
+             <div class="section-heading compact"><div><h2>当前生效</h2><span id="buff-active-count">0 项</span></div><span class="live-indicator"><i></i>实时更新</span></div>
+             <div class="buff-active-list" id="buff-active-list"><div class="empty-state">尚未检测到角色状态</div></div>
+           </section>
+           <section class="data-section">
+             <div class="section-heading compact"><div><h2>状态变化</h2><span id="buff-history-count">0 条</span></div></div>
+             <div class="buff-history-list" id="buff-history-list"><div class="empty-state">尚无状态变化记录</div></div>
+           </section>
+         </div>
+       </section>
+
+
+       <section class="page" id="page-translation">
+
         <div class="translation-header">
           <div class="translation-state"><div class="large-service-icon"><i data-lucide="languages"></i></div><div><span>NPC 原生对话框翻译</span><h2 id="translation-heading">服务已停止</h2><p id="translation-message">完成翻译设置后即可启动</p></div></div>
           <button class="btn primary" id="translation-toggle"><i data-lucide="play"></i><span>启动翻译</span></button>
@@ -159,6 +175,46 @@
             <div class="translation-log" id="translation-log"><div class="empty-state">尚无翻译日志</div></div>
           </section>
         </div>
+      </section>
+
+      <section class="page" id="page-xiaoya">
+        <div class="xiaoya-hero">
+          <div class="xiaoya-title">
+            <div class="large-service-icon"><i data-lucide="keyboard"></i></div>
+            <div>
+              <span>ECO 后台技能辅助</span>
+              <h2>小雅助手</h2>
+              <p id="xiaoya-message">正在读取程序和配置</p>
+            </div>
+          </div>
+          <div class="xiaoya-actions">
+            <span class="xiaoya-state" id="xiaoya-state"><i data-lucide="circle-off"></i>已停止</span>
+            <button class="btn secondary" id="xiaoya-toggle-ss" type="button"><i data-lucide="repeat-2"></i>切换 SS</button>
+            <button class="btn secondary" id="xiaoya-toggle-visibility" type="button"><i data-lucide="eye"></i>显示/隐藏 ECO</button>
+            <button class="btn secondary" id="xiaoya-open-folder" type="button"><i data-lucide="folder-open"></i>打开目录</button>
+            <button class="btn primary" id="xiaoya-toggle" type="button"><i data-lucide="play"></i><span>启动小雅</span></button>
+          </div>
+        </div>
+
+        <form class="xiaoya-config" id="xiaoya-config">
+          <div class="section-heading compact">
+            <div><h2>F1–F6 自动技能配置</h2><p>按设定周期向选中的 ECO 窗口后台发送技能键；配置保存在工具箱用户数据目录。</p></div>
+            <div class="xiaoya-config-actions">
+              <button class="btn secondary" id="xiaoya-reload-config" type="button"><i data-lucide="refresh-cw"></i>读取上次设置</button>
+              <button class="btn primary" type="submit"><i data-lucide="save"></i>保存配置</button>
+            </div>
+          </div>
+          <div class="xiaoya-skill-grid">
+            <div class="xiaoya-grid-heading"><span>按键</span><span>技能开关</span><span>技能间隔（秒）</span><span>鼠标点击</span><span>技能后延迟（毫秒）</span></div>
+            <label class="xiaoya-skill-row" data-skill-index="0"><b>F1</b><span class="switch"><input type="checkbox" data-field="enabled"><span></span></span><input type="number" data-field="skillTime" min="0" max="86400"><span class="switch"><input type="checkbox" data-field="mouse"><span></span></span><input type="number" data-field="delay" min="0" max="60000"></label>
+            <label class="xiaoya-skill-row" data-skill-index="1"><b>F2</b><span class="switch"><input type="checkbox" data-field="enabled"><span></span></span><input type="number" data-field="skillTime" min="0" max="86400"><span class="switch"><input type="checkbox" data-field="mouse"><span></span></span><input type="number" data-field="delay" min="0" max="60000"></label>
+            <label class="xiaoya-skill-row" data-skill-index="2"><b>F3</b><span class="switch"><input type="checkbox" data-field="enabled"><span></span></span><input type="number" data-field="skillTime" min="0" max="86400"><span class="switch"><input type="checkbox" data-field="mouse"><span></span></span><input type="number" data-field="delay" min="0" max="60000"></label>
+            <label class="xiaoya-skill-row" data-skill-index="3"><b>F4</b><span class="switch"><input type="checkbox" data-field="enabled"><span></span></span><input type="number" data-field="skillTime" min="0" max="86400"><span class="switch"><input type="checkbox" data-field="mouse"><span></span></span><input type="number" data-field="delay" min="0" max="60000"></label>
+            <label class="xiaoya-skill-row" data-skill-index="4"><b>F5</b><span class="switch"><input type="checkbox" data-field="enabled"><span></span></span><input type="number" data-field="skillTime" min="0" max="86400"><span class="switch"><input type="checkbox" data-field="mouse"><span></span></span><input type="number" data-field="delay" min="0" max="60000"></label>
+            <label class="xiaoya-skill-row" data-skill-index="5"><b>F6</b><span class="switch"><input type="checkbox" data-field="enabled"><span></span></span><input type="number" data-field="skillTime" min="0" max="86400"><span class="switch"><input type="checkbox" data-field="mouse"><span></span></span><input type="number" data-field="delay" min="0" max="60000"></label>
+          </div>
+          <div class="xiaoya-notice"><i data-lucide="shield-check"></i><span>原生核心已通过无害窗口探针对照。启动后会向当前选中的 ECO 进程发送后台技能键和可选鼠标点击，请先确认目标进程选择正确。</span></div>
+        </form>
       </section>
 
       <section class="page" id="page-logs">
@@ -199,6 +255,15 @@
               <label class="range-row"><div><strong>透明度</strong><span id="opacity-value">95%</span></div><input id="setting-overlay-opacity" type="range" min="0.45" max="1" step="0.05"></label>
               <label class="number-row"><div><strong>到期闪烁提醒</strong><span>所有带倒计时的状态在剩余时间内闪烁</span></div><div class="number-field"><input id="setting-buff-warning-seconds" type="number" min="1" max="300" step="1"><span>秒</span></div></label>
               <div class="overlay-position-row"><div><strong>悬浮窗位置</strong><span>进入调整模式后直接拖动悬浮窗</span></div><button type="button" class="btn secondary" id="settings-edit-overlay"><i data-lucide="move"></i>调整位置</button></div>
+
+              <div class="form-divider"></div>
+              <div class="form-heading"><h2>自定义 buff 持续时间</h2><p>覆盖状态倒计时。key 可用组合名（magic_shield）或状态位（2:0x00000002）。保存后写入 data/custom_buffs.json</p></div>
+              <div id="settings-custom-buff-list" class="custom-buff-list"></div>
+              <div class="buff-config-actions">
+                <button type="button" id="settings-custom-buff-add" class="btn secondary"><i data-lucide="plus"></i>添加一条</button>
+                <button type="button" id="settings-custom-buff-save" class="btn primary"><i data-lucide="save"></i>保存自定义持续时间</button>
+              </div>
+
               <div class="form-actions"><span class="save-status" id="overlay-save-status"></span><button type="submit" class="btn primary"><i data-lucide="save"></i>保存悬浮窗设置</button></div>
             </form>
 

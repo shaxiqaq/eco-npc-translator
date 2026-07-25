@@ -18,6 +18,13 @@ internal static unsafe class EcoIconHelper
         public int UnpackedSize;
     }
 
+    private sealed class SkillInfo
+    {
+        public int Id;
+        public int Icon;
+        public string Name;
+    }
+
     private sealed class Part
     {
         public int X;
@@ -31,18 +38,23 @@ internal static unsafe class EcoIconHelper
     {
         try
         {
-            if (args.Length != 3)
-                throw new ArgumentException("usage: EcoIconHelper.exe <game-root> <skill-id> <output.png>");
+            if (args.Length != 4)
+                throw new ArgumentException("usage: EcoIconHelper.exe <game-root> <skill-id> <output.png> <output.txt>");
 
             int skillId;
             if (!int.TryParse(args[1], out skillId) || skillId <= 0 || skillId > UInt16.MaxValue)
                 throw new ArgumentException("invalid skill id");
 
             string root = FindGameRoot(args[0]);
-            int iconId = FindIconId(Path.Combine(root, "data", "effect", "effect.ssp"), skillId);
-            if (iconId <= 0)
+            SkillInfo skill = FindSkill(Path.Combine(root, "data", "effect", "effect.ssp"), skillId);
+            if (skill == null)
                 return 2;
 
+            string nameOutput = Path.GetFullPath(args[3]);
+            Directory.CreateDirectory(Path.GetDirectoryName(nameOutput));
+            File.WriteAllText(nameOutput, skill.Name ?? String.Empty, new UTF8Encoding(false));
+
+            int iconId = skill.Icon == 0 ? skill.Id : skill.Icon;
             string archive = Path.Combine(root, "data", "sprite", "skillicon", "skillicon.hed");
             byte[] texture = ExtractArchiveFile(archive, String.Format("SI_{0:D4}.TGA", iconId));
             if (texture == null)
@@ -79,7 +91,7 @@ internal static unsafe class EcoIconHelper
         throw new DirectoryNotFoundException("ECO game data was not found");
     }
 
-    private static int FindIconId(string effectPath, int skillId)
+    private static SkillInfo FindSkill(string effectPath, int skillId)
     {
         using (FileStream stream = File.OpenRead(effectPath))
         using (BinaryReader reader = new BinaryReader(stream))
@@ -90,7 +102,7 @@ internal static unsafe class EcoIconHelper
                 if (offset == 0)
                     break;
                 long tablePosition = stream.Position;
-                if (offset + 4 > stream.Length)
+                if (offset + 120 > stream.Length)
                 {
                     stream.Position = tablePosition;
                     continue;
@@ -99,11 +111,17 @@ internal static unsafe class EcoIconHelper
                 int currentSkill = reader.ReadUInt16();
                 int icon = reader.ReadUInt16();
                 if (currentSkill == skillId)
-                    return icon == 0 ? currentSkill : icon;
+                {
+                    string name = Encoding.Unicode.GetString(reader.ReadBytes(116));
+                    int terminator = name.IndexOf('\0');
+                    if (terminator >= 0)
+                        name = name.Substring(0, terminator);
+                    return new SkillInfo { Id = currentSkill, Icon = icon, Name = name };
+                }
                 stream.Position = tablePosition;
             }
         }
-        return 0;
+        return null;
     }
 
     private static byte[] ExtractArchiveFile(string headerPath, string requestedName)

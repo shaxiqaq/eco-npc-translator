@@ -1,9 +1,13 @@
+param(
+    [string]$TargetName = "win-unpacked"
+)
+
 $ErrorActionPreference = "Stop"
 
 $Electron = Split-Path -Parent $PSScriptRoot
 $Repo = Split-Path -Parent $Electron
 $Release = [IO.Path]::GetFullPath((Join-Path $Electron "release"))
-$Target = [IO.Path]::GetFullPath((Join-Path $Release "win-unpacked"))
+$Target = [IO.Path]::GetFullPath((Join-Path $Release $TargetName))
 $Stage = [IO.Path]::GetFullPath((Join-Path $Electron "build-manual\app"))
 
 $DamageExecutable = Join-Path $Electron "dist-python\damage\eco_damage_bridge\eco_damage_bridge.exe"
@@ -85,6 +89,28 @@ if (-not (Test-Path -LiteralPath (Join-Path $Electron "dist-native\icon-helper\E
     & (Join-Path $PSScriptRoot "build-icon-helper.ps1")
 }
 Copy-Item -LiteralPath (Join-Path $Electron "dist-native\icon-helper") -Destination $Resources -Recurse
+
+$XiaoyaCoreProject = Join-Path $Electron "native\XiaoyaCore\XiaoyaCore.csproj"
+$XiaoyaCoreSource = Join-Path $Electron "native\XiaoyaCore\Program.cs"
+$XiaoyaCoreExecutable = Join-Path $Electron "dist-native\xiaoya-core\XiaoyaCore.exe"
+$NeedsXiaoyaCoreBuild = -not (Test-Path -LiteralPath $XiaoyaCoreExecutable)
+if (-not $NeedsXiaoyaCoreBuild) {
+    $XiaoyaCoreBuiltAt = (Get-Item -LiteralPath $XiaoyaCoreExecutable).LastWriteTimeUtc
+    $NeedsXiaoyaCoreBuild = (Get-Item -LiteralPath $XiaoyaCoreProject).LastWriteTimeUtc -gt $XiaoyaCoreBuiltAt `
+        -or (Get-Item -LiteralPath $XiaoyaCoreSource).LastWriteTimeUtc -gt $XiaoyaCoreBuiltAt
+}
+if ($NeedsXiaoyaCoreBuild) {
+    & (Join-Path $PSScriptRoot "build-xiaoya-core.ps1")
+}
+Copy-Item -LiteralPath (Join-Path $Electron "dist-native\xiaoya-core") -Destination $Resources -Recurse
+
+$XiaoyaName = "$([char]0x5c0f)$([char]0x96c5)"
+$XiaoyaConfigName = "$XiaoyaName$([char]0x8eab)$([char]0x4f53)$([char]0x914d)$([char]0x7f6e).ini"
+$XiaoyaSource = Join-Path $Repo $XiaoyaName
+$XiaoyaTarget = Join-Path $Resources "xiaoya"
+New-Item -ItemType Directory -Path $XiaoyaTarget -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $XiaoyaSource "$XiaoyaName.exe") -Destination $XiaoyaTarget
+Copy-Item -LiteralPath (Join-Path $XiaoyaSource $XiaoyaConfigName) -Destination $XiaoyaTarget
 
 Move-Item -LiteralPath (Join-Path $Target "electron.exe") -Destination (Join-Path $Target "ECO Toolbox.exe") -Force
 Write-Host "Prepackaged application created: $Target"

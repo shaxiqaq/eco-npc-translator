@@ -1,26 +1,32 @@
 {
   "name": "eco-toolbox",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "ECO NPC 翻译与伤害统计工具箱",
   "main": "main.js",
   "private": true,
   "scripts": {
     "start": "electron .",
     "dev": "set ECO_UI_DEMO=1&& electron .",
+    "build:ts": "tsc --build",
     "test": "node --test test/*.test.js",
     "build:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-backend.ps1",
     "build:icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-icon-helper.ps1",
+    "build:xiaoya-core": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-xiaoya-core.ps1",
+    "test:xiaoya-core": "npm run build:xiaoya-core && node scripts/test-xiaoya-core.js",
     "build:prepackaged": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-prepackaged.ps1",
-    "dist": "npm run build:backend && npm run build:icons && npm run dist:ui",
+    "dist": "npm run build:backend && npm run build:icons && npm run build:xiaoya-core && npm run dist:ui",
     "dist:ui": "npm run build:prepackaged && set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/&& electron-builder --prepackaged release/win-unpacked --win nsis --publish never"
   },
   "dependencies": {
     "electron-updater": "^6.6.2",
+    "iconv-lite": "^0.6.3",
     "lucide": "^0.468.0"
   },
   "devDependencies": {
+    "@types/node": "^18.0.0",
     "electron": "^35.0.0",
-    "electron-builder": "^26.0.0"
+    "electron-builder": "^26.0.0",
+    "typescript": "^5.0.0"
   },
   "build": {
     "appId": "com.eco.toolbox",
@@ -59,6 +65,18 @@
       {
         "from": "dist-native/icon-helper",
         "to": "icon-helper"
+      },
+      {
+        "from": "../小雅",
+        "to": "xiaoya",
+        "filter": [
+          "小雅.exe",
+          "小雅身体配置.ini"
+        ]
+      },
+      {
+        "from": "dist-native/xiaoya-core",
+        "to": "xiaoya-core"
       }
     ],
     "win": {

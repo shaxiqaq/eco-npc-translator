@@ -1,0 +1,37 @@
+﻿const { spawn } = require('child_process');
+const path = require('path');
+
+class TranslatorService {
+  constructor() {
+    this.process = null;
+    this.state = 'stopped';
+  }
+
+  async start(gamePid) {
+    this.state = 'starting';
+    this.process = spawn('python', ['-u', 'src/eco_npc_mitm.py', '--pid', String(gamePid)], {
+      cwd: 'electron',
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+
+    const lines = require('readline').createInterface({ input: this.process.stdout });
+    lines.on('line', (line) => {
+      console.log('Translator service log:', line);
+      if (line.includes('attach')) this.state = 'running';
+    });
+
+    this.process.on('exit', (code) => {
+      this.state = 'stopped';
+    });
+  }
+
+  stop() {
+    if (this.process) {
+      this.process.kill();
+      this.state = 'stopped';
+    }
+  }
+}
+
+module.exports = TranslatorService;

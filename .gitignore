@@ -1,13 +1,37 @@
-# 本机私有配置 (含 API Key) - 不要分发/提交
+# 本机私有配置 (含 API Key / token) - 不要分发/提交
 translate_config.json
-# 译文缓存 - 本机运行时生成
+**/translate_config.json
+sync_config.json
+**/sync_config.json
+
+# 运行时缓存 / 采集产物
 npc_cache.json
+**/npc_cache.json
+npc_seen.json
+**/npc_seen.json
+harvest.jsonl
+**/harvest.jsonl
+harvest_dict.json
+**/harvest_dict.json
+bridge_cache.json
+**/bridge_cache.json
+sync_cursor.json
+**/sync_cursor.json
+custom_buffs.json
+**/custom_buffs.json
+damage_overlay_config.json
+**/damage_overlay_config.json
+player_names.json
+**/player_names.json
+
 # 逆向提取的 AES 密钥 / 运行日志 - 不发布
 keys.jsonl
 logs/
 __pycache__/
+**/__pycache__/
 *.pyc
-# PyInstaller 打包构建产物 (体积大, 不入库; 发布走 GitHub Release)
+
+# PyInstaller 打包构建产物
 build/
 dist/
 *.spec
@@ -19,8 +43,25 @@ electron/node_modules/
 electron/release/
 electron/dist-python/
 electron/dist-native/
+electron/native/**/bin/
+electron/native/**/obj/
 electron/build-python/
 electron/build-manual/
 electron/*-preview.png
 electron/_runtime-test/
 electron/_icon-test-cache/
+
+# 大体量参考资料 / 本机资源（不入库）
+archive/
+reverse-skill/
+小雅/
+*.lnk
+file_info.txt
+
+# 可选大 CSV 原始表
+data/monster.csv
+data/monstergroup.csv
+data/monsterpict.csv
+data/package-lock.json
+data/mob_names_ja.json
+data/mob_names_zh_cache.json

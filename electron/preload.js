@@ -17,6 +17,16 @@ contextBridge.exposeInMainWorld('eco', {
   resizeOverlayForContent: (height) => ipcRenderer.invoke('overlay:resize-content', height),
   getSkillIcon: (skillId) => ipcRenderer.invoke('skill-icon:get', skillId),
   openLogs: () => ipcRenderer.invoke('logs:open-folder'),
+  getXiaoyaConfig: () => ipcRenderer.invoke('xiaoya:get-config'),
+  saveXiaoyaConfig: (skills) => ipcRenderer.invoke('xiaoya:save-config', skills),
+  saveBuffCustomDurations: (durations) => ipcRenderer.invoke('buffs:save-custom-durations', durations),
+  getBuffCustomDurations: () => ipcRenderer.invoke('buffs:get-custom-durations'),
+  startXiaoya: () => ipcRenderer.invoke('xiaoya:start'),
+
+  stopXiaoya: () => ipcRenderer.invoke('xiaoya:stop'),
+  toggleXiaoyaSs: () => ipcRenderer.invoke('xiaoya:toggle-ss'),
+  toggleXiaoyaVisibility: () => ipcRenderer.invoke('xiaoya:toggle-visibility'),
+  openXiaoyaFolder: () => ipcRenderer.invoke('xiaoya:open-folder'),
   onState: (callback) => {
     const listener = (_event, state) => callback(state);
     ipcRenderer.on('app:state', listener);
@@ -41,5 +51,10 @@ contextBridge.exposeInMainWorld('eco', {
     const listener = (_event, editing) => callback(editing);
     ipcRenderer.on('overlay:editing', listener);
     return () => ipcRenderer.removeListener('overlay:editing', listener);
+  },
+  onXiaoyaEvent: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('xiaoya:event', listener);
+    return () => ipcRenderer.removeListener('xiaoya:event', listener);
   }
 });

@@ -15,16 +15,25 @@ Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path (Join-Path $Work "spec-damage") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $Work "spec-translator") -Force | Out-Null
 
-Push-Location $Repo
+$Src = Join-Path $Repo "src"
+$Data = Join-Path $Repo "data"
+$ScreenTranslator = Join-Path $Repo "screen_translator"
+if (-not (Test-Path $ScreenTranslator)) {
+    $ScreenTranslator = Join-Path $Src "screen_translator"
+}
+
+Push-Location $Src
 try {
     python -m PyInstaller --noconfirm --clean --onedir --name eco_damage_bridge `
         --distpath (Join-Path $Dist "damage") `
         --workpath (Join-Path $Work "damage") `
         --specpath (Join-Path $Work "spec-damage") `
-        --add-data "$Repo\_damage_capture.js;." `
-        --add-data "$Repo\skill_names.json;." `
-        --add-data "$Repo\mob_names.json;." `
-        --add-data "$Repo\buff_names.json;." `
+        --add-data "$Src\_damage_capture.js;." `
+        --add-data "$Data\skill_names.json;." `
+        --add-data "$Data\mob_names.json;." `
+        --add-data "$Data\buff_names.json;." `
+        --hidden-import eco_log `
+        --hidden-import eco_paths `
         eco_damage_bridge.py
     if ($LASTEXITCODE -ne 0) { throw "Failed to package the damage capture backend" }
 
@@ -32,9 +41,11 @@ try {
         --distpath (Join-Path $Dist "translator") `
         --workpath (Join-Path $Work "translator") `
         --specpath (Join-Path $Work "spec-translator") `
-        --add-data "$Repo\_mitm.js;." `
-        --add-data "$Repo\screen_translator;screen_translator" `
+        --add-data "$Src\_mitm.js;." `
+        --add-data "$ScreenTranslator;screen_translator" `
         --hidden-import cache_sync `
+        --hidden-import eco_log `
+        --hidden-import eco_paths `
         eco_npc_mitm.py
     if ($LASTEXITCODE -ne 0) { throw "Failed to package the NPC translation backend" }
 }

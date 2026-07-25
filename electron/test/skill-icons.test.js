@@ -29,12 +29,15 @@ test('returns cached icon data without launching the helper', async () => {
     execFileFn: () => { launches += 1; }
   });
   const iconPath = pathForTest('cache', cacheNamespace('client'), '3114.png');
+  const namePath = pathForTest('cache', cacheNamespace('client'), '3114.txt');
   files.set(iconPath, Buffer.from('png'));
+  files.set(namePath, Buffer.from('Magic Shield'));
 
   const result = await service.getIcon(3114, 'client');
 
   assert.equal(result.ok, true);
   assert.equal(result.dataUrl, 'data:image/png;base64,cG5n');
+  assert.equal(result.name, 'Magic Shield');
   assert.equal(launches, 0);
 });
 

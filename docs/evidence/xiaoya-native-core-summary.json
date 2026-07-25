@@ -1,0 +1,79 @@
+[
+  {
+    "name": "all-function-keys",
+    "probePid": 31816,
+    "f1DownTimes": [
+      805.286
+    ],
+    "f1Intervals": [],
+    "mouseMessages": 0,
+    "actionEvents": 6
+  },
+  {
+    "name": "short-delay-mouse-off",
+    "probePid": 42496,
+    "f1DownTimes": [
+      878.237,
+      2843.7671,
+      4847.3238
+    ],
+    "f1Intervals": [
+      1965.5301,
+      2003.5567
+    ],
+    "mouseMessages": 0,
+    "actionEvents": 3
+  },
+  {
+    "name": "short-delay-mouse-on",
+    "probePid": 43940,
+    "f1DownTimes": [
+      837.8142,
+      2849.7256,
+      4864.7536
+    ],
+    "f1Intervals": [
+      2011.9114000000002,
+      2015.0279999999998
+    ],
+    "mouseMessages": 12,
+    "actionEvents": 3
+  },
+  {
+    "name": "long-delay-mouse-off",
+    "probePid": 41688,
+    "f1DownTimes": [
+      916.3111,
+      3980.3051,
+      7039.9414
+    ],
+    "f1Intervals": [
+      3063.994,
+      3059.6362999999997
+    ],
+    "mouseMessages": 0,
+    "actionEvents": 3
+  },
+  {
+    "name": "long-delay-mouse-on",
+    "probePid": 51440,
+    "f1DownTimes": [
+      801.0232,
+      3921.6045,
+      7018.1516
+    ],
+    "f1Intervals": [
+      3120.5813,
+      3096.5471000000002
+    ],
+    "mouseMessages": 12,
+    "actionEvents": 3
+  },
+  {
+    "name": "manual-controls",
+    "probePid": 33684,
+    "ssToggles": 2,
+    "hiddenVisibleState": false,
+    "shownVisibleState": true
+  }
+]
