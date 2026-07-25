@@ -17,7 +17,10 @@ $BackendInputs = @(
     "eco_damage_capture.py",
     "eco_damage_meter.py",
     "eco_npc_mitm.py"
-) | ForEach-Object { Join-Path $Repo $_ }
+) | ForEach-Object {
+    $srcPath = Join-Path $Repo "src\$_"
+    if (Test-Path -LiteralPath $srcPath) { $srcPath } else { Join-Path $Repo $_ }
+}
 $NeedsBackendBuild = -not (Test-Path -LiteralPath $DamageExecutable)
 if (-not $NeedsBackendBuild) {
     $BuiltAt = (Get-Item -LiteralPath $DamageExecutable).LastWriteTimeUtc
@@ -42,7 +45,16 @@ if (-not $ElectronZip) {
 
 foreach ($Path in @($Target, $Stage)) {
     if (Test-Path -LiteralPath $Path) {
-        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+        } catch {
+            # If locked (running app), build into a fresh sibling directory.
+            $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+            $fallback = "$Path-build-$stamp"
+            Write-Host "Target locked, using fallback: $fallback"
+            if ($Path -eq $Target) { $Target = $fallback }
+            else { $Stage = $fallback }
+        }
     }
 }
 New-Item -ItemType Directory -Path $Target, $Stage -Force | Out-Null
