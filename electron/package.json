@@ -1,6 +1,6 @@
 {
   "name": "eco-toolbox",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "ECO 本地工具箱：NPC 实时翻译、伤害统计、状态悬浮窗与技能计时",
   "main": "main.js",
   "private": true,

@@ -44,7 +44,10 @@ try {
     'process-selection',
     'logs-service',
     'backend-env',
-    'wallpaper'
+    'wallpaper',
+    'battle-report',
+    'error-codes',
+    'crash-log'
   ];
   for (const name of mods) {
     require(path.join(electronRoot, 'lib', `${name}.js`));

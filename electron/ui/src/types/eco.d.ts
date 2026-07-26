@@ -5,7 +5,8 @@ export type PageId =
   | 'translation'
   | 'xiaoya'
   | 'logs'
-  | 'settings';
+  | 'settings'
+  | 'help';
 
 export type ServiceName = 'damage' | 'translator';
 
@@ -198,12 +199,23 @@ export type Snapshot = {
   self_id?: number | string | null;
 };
 
+export type BattleReportSummary = {
+  peakDps?: number;
+  peakDealt?: number;
+  samples?: number;
+  startedAt?: string;
+  last?: Record<string, unknown> | null;
+  topSkills?: Array<{ skill_id?: number; skill?: string; count?: number }>;
+};
+
 export type EcoAppState = {
   services?: {
     damage?: ServiceState;
     translator?: ServiceState;
     monitoring?: ServiceState;
   };
+  battleReport?: BattleReportSummary;
+  rememberedTitles?: { main?: string | null; xiaoya?: string | null };
   settings?: AppSettings;
   translation?: TranslationSettings;
   update?: EcoUpdateState;
@@ -228,6 +240,27 @@ export type EcoApi = {
   startService: (name: ServiceName) => Promise<{ ok: boolean; error?: string }>;
   stopService: (name: ServiceName) => Promise<{ ok: boolean; error?: string }>;
   resetDamage: () => Promise<unknown>;
+  getBattleReport: () => Promise<{ ok: boolean; report?: BattleReportSummary }>;
+  resetBattleReport: () => Promise<{ ok: boolean; report?: BattleReportSummary }>;
+  exportBattleReport: (options?: { format?: 'txt' | 'json' }) => Promise<{
+    ok: boolean;
+    cancelled?: boolean;
+    path?: string;
+    error?: string;
+  }>;
+  copyBattleReport: () => Promise<{ ok: boolean; text?: string; error?: string }>;
+  getAbout: () => Promise<{
+    ok: boolean;
+    about?: {
+      version?: string;
+      packaged?: boolean;
+      electron?: string;
+      hotkeys?: { toggleOverlay?: string; toggleWindow?: string };
+      elevated?: boolean | null;
+      rememberedTitles?: { main?: string | null; xiaoya?: string | null };
+      errorCodes?: Record<string, { title?: string; hint?: string }>;
+    };
+  }>;
   checkForUpdates: () => Promise<{ ok: boolean; error?: string }>;
   downloadUpdate: () => Promise<{ ok: boolean; error?: string }>;
   installUpdate: () => Promise<{ ok: boolean; error?: string }>;

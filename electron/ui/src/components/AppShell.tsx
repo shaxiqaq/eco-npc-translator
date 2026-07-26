@@ -13,6 +13,7 @@ import {
   CircleDot,
   Play,
   Square,
+  CircleHelp,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { PAGE_META, serviceText } from '@/lib/damage';
@@ -37,6 +38,7 @@ const NAV: Array<{ id: PageId; icon: React.ComponentType<{ className?: string }>
   { id: 'xiaoya', icon: Keyboard, label: '小雅助手' },
   { id: 'logs', icon: ScrollText, label: '运行日志' },
   { id: 'settings', icon: Settings2, label: '设置' },
+  { id: 'help', icon: CircleHelp, label: '帮助' },
 ];
 
 function StatusDot({ state }: { state?: string }) {
@@ -200,6 +202,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       ? `已选择 ${selectedPid}`
                       : '未找到游戏'}
                 </Badge>
+                {state.rememberedTitles?.main ? (
+                  <span
+                    className="hidden max-w-[140px] truncate text-[10px] text-[var(--muted-foreground)] xl:inline"
+                    title={`记忆窗口：${state.rememberedTitles.main}`}
+                  >
+                    记忆: {state.rememberedTitles.main}
+                  </span>
+                ) : null}
               </>
             )}
 

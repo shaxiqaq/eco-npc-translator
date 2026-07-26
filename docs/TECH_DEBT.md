@@ -10,15 +10,23 @@ Living notes for ECO Toolbox. Prefer small, test-backed cleanups over rewrites.
 - Local crash logs under `%APPDATA%/eco-toolbox/logs/crash/`
 - `npm run smoke` module + unit smoke without full UI
 
+## Shipped / local (post-0.2.9)
+
+- Window-title memory for main + Xiaoya PIDs
+- Session battle report (export / copy)
+- Help page with ECO_Exx table, hotkeys, version
+
 ## Still optional
 
 | Item | Why | Effort |
 |------|-----|--------|
+| Ship **v0.2.10** with title memory + report + help | Users still on 0.2.9 | Small |
+| DPS sparkline (no heavy chart lib) | Product polish | Medium |
+| Auto-apply character preset by window title | Multi-client QoL | Medium |
 | Split remaining IPC out of `main.js` | Readability | Medium |
 | Gradual TypeScript for preload/IPC contracts | Fewer wrong payloads | Medium |
 | Delete `electron/renderer-legacy` after confirmation | Repo noise | Small |
-| E2E with Spectron/Playwright against demo | Regression | Medium |
-| Chart/report features | Product, not debt | Large |
+| E2E with Playwright against demo | Regression | Medium |
 | Move `archive/` / research trees out of product clone | Clone size | Process |
 
 ## Commands

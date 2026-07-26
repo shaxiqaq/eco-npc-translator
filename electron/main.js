@@ -37,6 +37,7 @@ const {
 } = require('./lib/child-lifecycle');
 const { resolveBackendRuntime, launchLabel } = require('./lib/backend-runtime');
 const { resolveSelectedPids } = require('./lib/process-selection');
+const { createBattleReportTracker } = require('./lib/battle-report');
 const { filterLogs: filterLogsImpl, formatLogsExportBody } = require('./lib/logs-service');
 const {
   OVERLAY_MIN_WIDTH,
@@ -108,12 +109,17 @@ let elevatedCache = null;
 let selectedProcessAlive = null;
 let lastReconnectAt = 0;
 let rememberedProcessTitle = '';
+let rememberedXiaoyaTitle = '';
+const battleReport = createBattleReportTracker();
 
 const defaultAppSettings = {
   game: {
     pid: null,
     // Separate from main toolbox PID: Xiaoya is usually bound to a multi-client alt.
-    xiaoyaPid: null
+    xiaoyaPid: null,
+    // Window titles survive relaunch better than PIDs (multi-client).
+    lastTitle: '',
+    xiaoyaTitle: ''
   },
   capture: {
     skill: true,
@@ -490,7 +496,21 @@ function buildLightState() {
     xiaoya: xiaoyaPublicSnapshot(),
     update: updateService?.snapshot() || initialUpdateState(app.getVersion(), false),
     connectionHealth: currentConnectionHealth(),
-    characterPresets: characterPresets.loadAll()
+    characterPresets: characterPresets.loadAll(),
+    battleReport: (() => {
+      const r = battleReport.snapshot();
+      return {
+        peakDps: r.peakDps,
+        peakDealt: r.peakDealt,
+        samples: r.samples,
+        startedAt: r.startedAt,
+        last: r.last
+      };
+    })(),
+    rememberedTitles: {
+      main: rememberedProcessTitle || null,
+      xiaoya: rememberedXiaoyaTitle || null
+    }
   };
 }
 
@@ -514,15 +534,27 @@ const stateBus = createStateBus({
   buildFullState
 });
 
-function persistSelectedGamePid(pid) {
+function persistSelectedGamePid(pid, title) {
   const settings = appSettings();
-  settings.game = { ...(settings.game || {}), pid };
+  const nextTitle = title != null ? String(title || '').trim() : rememberedProcessTitle;
+  settings.game = {
+    ...(settings.game || {}),
+    pid,
+    lastTitle: nextTitle || settings.game?.lastTitle || ''
+  };
+  if (nextTitle) rememberedProcessTitle = nextTitle;
   persistAppSettings(settings);
 }
 
-function persistSelectedXiaoyaPid(pid) {
+function persistSelectedXiaoyaPid(pid, title) {
   const settings = appSettings();
-  settings.game = { ...(settings.game || {}), xiaoyaPid: pid };
+  const nextTitle = title != null ? String(title || '').trim() : rememberedXiaoyaTitle;
+  settings.game = {
+    ...(settings.game || {}),
+    xiaoyaPid: pid,
+    xiaoyaTitle: nextTitle || settings.game?.xiaoyaTitle || ''
+  };
+  if (nextTitle) rememberedXiaoyaTitle = nextTitle;
   persistAppSettings(settings);
 }
 
@@ -539,6 +571,12 @@ async function refreshGameProcesses() {
     const settings = appSettings();
     const configuredPid = Number(settings.game?.pid) || null;
     const configuredXiaoyaPid = Number(settings.game?.xiaoyaPid) || null;
+    if (!rememberedProcessTitle && settings.game?.lastTitle) {
+      rememberedProcessTitle = String(settings.game.lastTitle);
+    }
+    if (!rememberedXiaoyaTitle && settings.game?.xiaoyaTitle) {
+      rememberedXiaoyaTitle = String(settings.game.xiaoyaTitle);
+    }
     gameProcesses = found;
 
     ({ selectedGamePid, selectedXiaoyaPid } = resolveSelectedPids({
@@ -546,11 +584,22 @@ async function refreshGameProcesses() {
       previousMainPid: previousPid,
       previousXiaoyaPid,
       configuredMainPid: configuredPid,
-      configuredXiaoyaPid
+      configuredXiaoyaPid,
+      rememberedMainTitle: rememberedProcessTitle || settings.game?.lastTitle,
+      rememberedXiaoyaTitle: rememberedXiaoyaTitle || settings.game?.xiaoyaTitle
     }));
 
-    if (!isDemo && selectedGamePid !== configuredPid) persistSelectedGamePid(selectedGamePid);
-    if (!isDemo && selectedXiaoyaPid !== configuredXiaoyaPid) persistSelectedXiaoyaPid(selectedXiaoyaPid);
+    const mainProc = gameProcesses.find((p) => p.pid === selectedGamePid);
+    const xiaoyaProc = gameProcesses.find((p) => p.pid === selectedXiaoyaPid);
+    if (mainProc?.title) rememberedProcessTitle = mainProc.title;
+    if (xiaoyaProc?.title) rememberedXiaoyaTitle = xiaoyaProc.title;
+
+    if (!isDemo && (selectedGamePid !== configuredPid || rememberedProcessTitle !== settings.game?.lastTitle)) {
+      persistSelectedGamePid(selectedGamePid, rememberedProcessTitle);
+    }
+    if (!isDemo && (selectedXiaoyaPid !== configuredXiaoyaPid || rememberedXiaoyaTitle !== settings.game?.xiaoyaTitle)) {
+      persistSelectedXiaoyaPid(selectedXiaoyaPid, rememberedXiaoyaTitle);
+    }
     if (previousPid && selectedGamePid !== previousPid) latestSnapshot = null;
     broadcastState();
     return {
@@ -582,9 +631,9 @@ function selectGameProcess(pid) {
   const proc = gameProcesses.find((p) => p.pid === normalized);
   rememberedProcessTitle = proc?.title || rememberedProcessTitle || '';
   selectedProcessAlive = true;
-  if (!isDemo) persistSelectedGamePid(selectedGamePid);
+  if (!isDemo) persistSelectedGamePid(selectedGamePid, rememberedProcessTitle);
   broadcastState();
-  return { ok: true, selectedPid: selectedGamePid };
+  return { ok: true, selectedPid: selectedGamePid, title: rememberedProcessTitle };
 }
 
 function selectXiaoyaProcess(pid) {
@@ -593,7 +642,9 @@ function selectXiaoyaProcess(pid) {
     return { ok: false, error: '所选游戏进程已经退出，请刷新列表' };
   }
   selectedXiaoyaPid = normalized;
-  if (!isDemo) persistSelectedXiaoyaPid(selectedXiaoyaPid);
+  const proc = gameProcesses.find((p) => p.pid === normalized);
+  rememberedXiaoyaTitle = proc?.title || rememberedXiaoyaTitle || '';
+  if (!isDemo) persistSelectedXiaoyaPid(selectedXiaoyaPid, rememberedXiaoyaTitle);
 
   // Hot-swap target while Xiaoya is already running.
   if (xiaoyaService && ['running', 'starting'].includes(xiaoyaService.state)) {
@@ -686,6 +737,7 @@ function runtimeFor(name) {
 function handleDamageMessage(message) {
   if (message.type === 'snapshot') {
     latestSnapshot = message.data;
+    battleReport.ingest(latestSnapshot);
     rememberSkillsFromSnapshot(latestSnapshot);
     skillLibraryStore.invalidateListCache();
     stateBus.broadcastSnapshot(latestSnapshot);
@@ -935,7 +987,12 @@ async function stopAllBackends({ waitMs = 12000 } = {}) {
 function resetDamage() {
   const child = services.damage;
   if (child && child.stdin.writable) child.stdin.write(`${JSON.stringify({ action: 'reset' })}\n`);
-  if (isDemo) latestSnapshot = demoSnapshot(0);
+  battleReport.reset();
+  if (isDemo) {
+    latestSnapshot = demoSnapshot(0);
+    battleReport.ingest(latestSnapshot);
+  }
+  broadcastState();
   return { ok: Boolean(child || isDemo) };
 }
 
@@ -1505,6 +1562,67 @@ ipcMain.handle('game-processes:select-xiaoya', (_event, pid) => selectXiaoyaProc
 ipcMain.handle('service:start', (_event, name) => startService(name));
 ipcMain.handle('service:stop', (_event, name) => stopService(name));
 ipcMain.handle('damage:reset', () => resetDamage());
+ipcMain.handle('battle:get-report', () => ({ ok: true, report: battleReport.snapshot() }));
+ipcMain.handle('battle:reset-report', () => {
+  battleReport.reset();
+  broadcastState();
+  return { ok: true, report: battleReport.snapshot() };
+});
+ipcMain.handle('battle:export-report', async (_event, options = {}) => {
+  const format = String(options.format || 'txt').toLowerCase() === 'json' ? 'json' : 'txt';
+  const report = battleReport.snapshot();
+  if (!report.samples && !report.last) {
+    return { ok: false, error: '暂无战斗数据可导出（请先开启伤害采集一段时间）' };
+  }
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const defaultName = `eco-battle-report-${stamp}.${format}`;
+  const result = await dialog.showSaveDialog(mainWindow || undefined, {
+    title: '导出战斗报告',
+    defaultPath: path.join(app.getPath('documents'), defaultName),
+    filters: format === 'json'
+      ? [{ name: 'JSON', extensions: ['json'] }]
+      : [{ name: '文本', extensions: ['txt', 'log'] }]
+  });
+  if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+  let outPath = result.filePath;
+  if (format === 'json' && !outPath.toLowerCase().endsWith('.json')) outPath += '.json';
+  if (format === 'txt' && !/\.(txt|log)$/i.test(outPath)) outPath += '.txt';
+  const body = format === 'json'
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : battleReport.formatText(report, { characterTitle: rememberedProcessTitle });
+  fs.writeFileSync(outPath, body, 'utf8');
+  addLog('damage', 'info', `战斗报告已导出 → ${outPath}`);
+  return { ok: true, path: outPath, report };
+});
+ipcMain.handle('battle:copy-report', () => {
+  const report = battleReport.snapshot();
+  if (!report.samples && !report.last) {
+    return { ok: false, error: '暂无战斗数据可复制' };
+  }
+  const text = battleReport.formatText(report, { characterTitle: rememberedProcessTitle });
+  clipboard.writeText(text);
+  addLog('damage', 'info', '战斗报告已复制到剪贴板');
+  return { ok: true, text };
+});
+ipcMain.handle('app:get-about', () => ({
+  ok: true,
+  about: {
+    version: app.getVersion(),
+    packaged: app.isPackaged,
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+    node: process.versions.node,
+    platform: process.platform,
+    arch: process.arch,
+    elevated: elevatedCache,
+    hotkeys: appSettings().hotkeys || {},
+    rememberedTitles: {
+      main: rememberedProcessTitle || null,
+      xiaoya: rememberedXiaoyaTitle || null
+    },
+    errorCodes: require('./lib/error-codes').ERROR_CATALOG
+  }
+}));
 ipcMain.handle('update:check', () => updateService?.check() || { ok: false, error: '更新服务尚未就绪' });
 ipcMain.handle('update:download', () => updateService?.download() || { ok: false, error: '更新服务尚未就绪' });
 ipcMain.handle('update:install', async () => {

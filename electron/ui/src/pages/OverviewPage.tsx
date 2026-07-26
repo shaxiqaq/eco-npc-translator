@@ -125,7 +125,7 @@ export function OverviewPage() {
 
       <SectionHeader
         title="当前战斗"
-        description={`战斗时间 ${formatDuration(snapshot?.active)} · 采集项目请到「伤害统计」调整`}
+        description={`战斗时间 ${formatDuration(snapshot?.active)} · 会话峰值 DPS ${formatNumber(state.battleReport?.peakDps, 2)} · 采集请到「伤害统计」`}
         action={(
           <div className="flex items-center gap-1">
             <TextLink onClick={() => setPage('damage')}>伤害详情</TextLink>

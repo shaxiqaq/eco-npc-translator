@@ -10,6 +10,7 @@ import { TranslationPage } from '@/pages/TranslationPage';
 import { XiaoyaPage } from '@/pages/XiaoyaPage';
 import { LogsPage } from '@/pages/LogsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
+import { HelpPage } from '@/pages/HelpPage';
 
 function Pages() {
   const { page, ready } = useEco();
@@ -34,6 +35,8 @@ function Pages() {
       return <LogsPage />;
     case 'settings':
       return <SettingsPage />;
+    case 'help':
+      return <HelpPage />;
     case 'overview':
     default:
       return <OverviewPage />;

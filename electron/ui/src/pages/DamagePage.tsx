@@ -1,4 +1,4 @@
-import { RotateCcw, RadioTower } from 'lucide-react';
+import { RotateCcw, RadioTower, FileDown, ClipboardCopy } from 'lucide-react';
 import { useEco } from '@/context/EcoContext';
 import { formatNumber } from '@/lib/format';
 import { skillCastRoleLabel } from '@/lib/damage';
@@ -26,7 +26,9 @@ export function DamagePage() {
     state,
     saveCaptureSetting,
     resetDamage,
+    showToast,
   } = useEco();
+  const report = state.battleReport;
 
   const capture = state.settings?.capture || {};
   const items = [...(snapshot?.damage_history || [])]
@@ -53,11 +55,67 @@ export function DamagePage() {
           <ToggleGroupItem value="pet">宠物造成</ToggleGroupItem>
           <ToggleGroupItem value="taken">受到伤害</ToggleGroupItem>
         </ToggleGroup>
-        <Button type="button" variant="secondary" onClick={() => void resetDamage()}>
-          <RotateCcw />
-          清空统计
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={async () => {
+              if (!window.eco.copyBattleReport) {
+                showToast('当前版本不支持复制战斗报告');
+                return;
+              }
+              const result = await window.eco.copyBattleReport();
+              showToast(result?.ok ? '报告已复制' : result?.error || '复制失败');
+            }}
+          >
+            <ClipboardCopy />
+            复制报告
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={async () => {
+              if (!window.eco.exportBattleReport) {
+                showToast('当前版本不支持导出战斗报告');
+                return;
+              }
+              const result = await window.eco.exportBattleReport({ format: 'txt' });
+              if (result?.cancelled) return;
+              showToast(result?.ok ? '战斗报告已导出' : result?.error || '导出失败');
+            }}
+          >
+            <FileDown />
+            导出报告
+          </Button>
+          <Button type="button" variant="secondary" onClick={() => void resetDamage()}>
+            <RotateCcw />
+            清空统计
+          </Button>
+        </div>
       </PageToolbar>
+
+      {(report?.samples || report?.peakDps) ? (
+        <Card className="grid grid-cols-2 gap-2 px-3.5 py-3 sm:grid-cols-4">
+          <div className="text-xs">
+            <div className="text-[var(--muted-foreground)]">会话峰值 DPS</div>
+            <div className="text-lg font-bold tabular-nums text-[var(--amber)]">{formatNumber(report?.peakDps, 2)}</div>
+          </div>
+          <div className="text-xs">
+            <div className="text-[var(--muted-foreground)]">会话峰值总伤</div>
+            <div className="text-lg font-bold tabular-nums">{formatNumber(report?.peakDealt)}</div>
+          </div>
+          <div className="text-xs">
+            <div className="text-[var(--muted-foreground)]">采样次数</div>
+            <div className="text-lg font-bold tabular-nums">{formatNumber(report?.samples)}</div>
+          </div>
+          <div className="text-xs">
+            <div className="text-[var(--muted-foreground)]">记忆角色窗口</div>
+            <div className="truncate text-sm font-semibold" title={state.rememberedTitles?.main || ''}>
+              {state.rememberedTitles?.main || '（未记忆）'}
+            </div>
+          </div>
+        </Card>
+      ) : null}
 
       {/* 采集项目唯一入口 */}
       <Card className="flex flex-wrap items-center gap-3 px-3.5 py-3">

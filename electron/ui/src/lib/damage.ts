@@ -40,9 +40,10 @@ export const PAGE_META: Record<string, [string, string]> = {
   xiaoya: ['小雅助手', 'F1–F6 技能按键与延迟配置'],
   logs: ['运行日志', '采集器与翻译服务输出'],
   settings: ['设置', '翻译服务、悬浮窗与启动行为'],
+  help: ['帮助', '错误码、热键与版本信息'],
 };
 
-export function serviceText(service?: { state?: string } | null) {
+export function serviceText(service?: { state?: string; errorCode?: string; message?: string } | null) {
   const labels: Record<string, string> = {
     running: '运行中',
     starting: '启动中',
@@ -50,5 +51,9 @@ export function serviceText(service?: { state?: string } | null) {
     stopped: '已停止',
     error: '需要处理',
   };
-  return labels[service?.state || ''] || '已停止';
+  const base = labels[service?.state || ''] || '已停止';
+  if (service?.state === 'error' && service.errorCode) {
+    return `${base} ${service.errorCode}`;
+  }
+  return base;
 }
