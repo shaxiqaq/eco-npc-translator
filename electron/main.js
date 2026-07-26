@@ -1,6 +1,6 @@
 const { app, BrowserWindow, ipcMain, shell, screen, dialog, nativeImage, protocol, net } = require('electron');
 const { autoUpdater } = require('electron-updater');
-const { spawn, execFile } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
@@ -11,6 +11,36 @@ const { SkillIconService } = require('./lib/skill-icons');
 const { UpdateService, initialUpdateState } = require('./lib/update-service');
 const { XiaoyaCoreService } = require('./lib/xiaoya-core-service');
 const { createLogger } = require('./lib/logger');
+const { createSettingsCache } = require('./lib/settings-cache');
+const { createStateBus } = require('./lib/state-bus');
+const { collectDiagnostics } = require('./lib/diagnostics');
+const { buildBackendEnv } = require('./lib/backend-env');
+const {
+  createWallpaperService,
+  safeBackgroundRel,
+  clampDim,
+  clampBlur,
+  clampFit,
+  normalizeOverlayBgMode,
+  stripAppearanceRuntimeFields,
+  WALLPAPER_INLINE_MAX_BYTES
+} = require('./lib/wallpaper');
+const { createCustomBuffStore } = require('./lib/custom-buffs-store');
+const { createSkillLibraryStore } = require('./lib/skill-library-store');
+const {
+  stopChildGracefully: stopChildGracefullyImpl
+} = require('./lib/child-lifecycle');
+const { resolveBackendRuntime, launchLabel } = require('./lib/backend-runtime');
+const { resolveSelectedPids } = require('./lib/process-selection');
+const { filterLogs: filterLogsImpl, formatLogsExportBody } = require('./lib/logs-service');
+const {
+  OVERLAY_MIN_WIDTH,
+  OVERLAY_MIN_HEIGHT,
+  OVERLAY_DEFAULT_HEIGHT,
+  clampOverlayOpacity,
+  overlayBounds: computeOverlayBounds
+} = require('./lib/overlay-geometry');
+const { demoSnapshot } = require('./lib/demo-snapshot');
 
 const log = createLogger('main');
 
@@ -131,175 +161,47 @@ function localDataDir() {
   return backendDir();
 }
 
-function appSettings() {
-  return mergeDeep(defaultAppSettings, readJson(path.join(dataDir(), 'app_settings.json')));
+let settingsStore = null;
+function getSettingsStore() {
+  if (!settingsStore) {
+    settingsStore = createSettingsCache({ dataDir, defaults: defaultAppSettings });
+  }
+  return settingsStore;
 }
+
+function appSettings() {
+  return getSettingsStore().get();
+}
+
+function persistAppSettings(next, options) {
+  return getSettingsStore().persist(next, options);
+}
+
+const wallpaper = createWallpaperService({
+  dataDir,
+  nativeImage,
+  log
+});
+
+const customBuffStore = createCustomBuffStore({ localDataDir });
+const skillLibraryStore = createSkillLibraryStore({
+  localDataDir,
+  dataDir,
+  getSkillIconService: () => skillIconService,
+  getSelectedGamePath: () => selectedGameProcess()?.path || '',
+  getAnyGamePath: () => gameProcesses.find((item) => item.path)?.path || ''
+});
 
 function backgroundsDir() {
-  const dir = path.join(dataDir(), 'backgrounds');
-  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
-  return dir;
+  return wallpaper.backgroundsDir();
 }
 
-function mimeFromExt(ext) {
-  const value = String(ext || '').toLowerCase();
-  if (value === '.png') return 'image/png';
-  if (value === '.webp') return 'image/webp';
-  if (value === '.gif') return 'image/gif';
-  if (value === '.bmp') return 'image/bmp';
-  return 'image/jpeg';
-}
-
-const WALLPAPER_MAX_EDGE = 1920;
-const WALLPAPER_JPEG_QUALITY = 82;
-const WALLPAPER_INLINE_MAX_BYTES = 350 * 1024;
-
-function safeBackgroundRel(rel) {
-  const normalized = String(rel || '').trim().replace(/\\/g, '/');
-  if (!normalized || normalized.includes('..')) return '';
-  return normalized;
-}
-
-function backgroundProtocolUrl(rel) {
-  const clean = safeBackgroundRel(rel);
-  if (!clean) return '';
-  // eco-bg://local/backgrounds/wallpaper.jpg
-  return `eco-bg://local/${clean.split('/').map(encodeURIComponent).join('/')}`;
-}
-
-/**
- * Import a user-selected image as a compressed wallpaper under userData/backgrounds.
- * Large PNG/JPEG sources are resized and saved as JPEG so UI + IPC stay responsive.
- * @param {string} srcPath
- * @param {'main'|'overlay'} kind
- */
 function importWallpaperImage(srcPath, kind = 'main') {
-  const src = String(srcPath || '');
-  if (!src || !fs.existsSync(src)) {
-    throw new Error('源图片不存在');
-  }
-
-  const dir = backgroundsDir();
-  const prefix = kind === 'overlay' ? 'overlay-wallpaper' : 'wallpaper';
-  // Unique name avoids Windows file locks / stale renderer cache when replacing.
-  const stamp = Date.now().toString(36);
-  let destName = `${prefix}-${stamp}.jpg`;
-  let dest = path.join(dir, destName);
-
-  let image = nativeImage.createFromPath(src);
-  if (image.isEmpty()) {
-    // nativeImage may fail on some formats; fall back to raw copy with unique name.
-    const ext = path.extname(src).toLowerCase() || '.img';
-    destName = `${prefix}-${stamp}${ext}`;
-    dest = path.join(dir, destName);
-    fs.copyFileSync(src, dest);
-  } else {
-    const size = image.getSize();
-    const longest = Math.max(size.width || 0, size.height || 0);
-    if (longest > WALLPAPER_MAX_EDGE) {
-      const scale = WALLPAPER_MAX_EDGE / longest;
-      image = image.resize({
-        width: Math.max(1, Math.round(size.width * scale)),
-        height: Math.max(1, Math.round(size.height * scale)),
-        quality: 'best'
-      });
-    }
-    const jpeg = image.toJPEG(WALLPAPER_JPEG_QUALITY);
-    if (!jpeg || !jpeg.length) {
-      throw new Error('图片压缩失败');
-    }
-    fs.writeFileSync(dest, jpeg);
-  }
-
-  // Clean older wallpaper files of the same kind only.
-  try {
-    for (const file of fs.readdirSync(dir)) {
-      if (file === destName) continue;
-      const isOverlay = /^overlay-wallpaper/i.test(file);
-      const isMain = /^(custom|wallpaper)[-_.]/i.test(file) && !isOverlay;
-      if ((kind === 'overlay' && isOverlay) || (kind !== 'overlay' && isMain)) {
-        try { fs.unlinkSync(path.join(dir, file)); } catch { /* ignore */ }
-      }
-    }
-  } catch { /* ignore */ }
-
-  return path.join('backgrounds', destName).replace(/\\/g, '/');
+  return wallpaper.importWallpaperImage(srcPath, kind);
 }
-
-/** Multi-entry cache so main + overlay wallpapers can resolve in one state pass. */
-const appearanceImageCacheMap = new Map();
 
 function loadBackgroundImagePayload(rel) {
-  const normalized = safeBackgroundRel(rel);
-  if (!normalized) {
-    return { backgroundImage: '', backgroundDataUrl: '', backgroundFileUrl: '', backgroundUrl: '' };
-  }
-  const abs = path.isAbsolute(normalized) ? normalized : path.join(dataDir(), normalized);
-  // Prevent path escape outside userData when relative.
-  if (!path.isAbsolute(normalized)) {
-    const root = path.resolve(dataDir()).toLowerCase();
-    if (!path.resolve(abs).toLowerCase().startsWith(root)) {
-      return { backgroundImage: '', backgroundDataUrl: '', backgroundFileUrl: '', backgroundUrl: '' };
-    }
-  }
-  if (!fs.existsSync(abs)) {
-    return { backgroundImage: '', backgroundDataUrl: '', backgroundFileUrl: '', backgroundUrl: '' };
-  }
-  try {
-    const stat = fs.statSync(abs);
-    const mtime = stat.mtimeMs;
-    const protocolUrl = backgroundProtocolUrl(normalized);
-    const cached = appearanceImageCacheMap.get(abs);
-    if (cached && cached.mtime === mtime && cached.protocolUrl) {
-      return {
-        backgroundImage: normalized,
-        backgroundDataUrl: cached.dataUrl,
-        backgroundFileUrl: cached.fileUrl,
-        backgroundUrl: cached.protocolUrl
-      };
-    }
-
-    const fileUrl = pathToFileURL(abs).href;
-    // Only inline tiny files as data URL (preview fallback); large files use eco-bg://.
-    let dataUrl = '';
-    if (stat.size > 0 && stat.size <= WALLPAPER_INLINE_MAX_BYTES) {
-      const data = fs.readFileSync(abs);
-      dataUrl = `data:${mimeFromExt(path.extname(abs))};base64,${data.toString('base64')}`;
-    }
-    appearanceImageCacheMap.set(abs, { mtime, dataUrl, fileUrl, protocolUrl });
-    return {
-      backgroundImage: normalized,
-      backgroundDataUrl: dataUrl,
-      backgroundFileUrl: fileUrl,
-      backgroundUrl: protocolUrl
-    };
-  } catch (error) {
-    log.warn('loadBackgroundImagePayload failed', error?.message || error);
-    return { backgroundImage: '', backgroundDataUrl: '', backgroundFileUrl: '', backgroundUrl: '' };
-  }
-}
-
-function normalizeOverlayBgMode(appearance = {}) {
-  const mode = String(appearance.overlayBgMode || '').trim();
-  if (mode === 'follow' || mode === 'solid' || mode === 'custom') return mode;
-  // Migrate legacy boolean.
-  if (appearance.applyToOverlay === false) return 'solid';
-  return 'follow';
-}
-
-function clampDim(value, fallback = 0.52) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.min(0.9, Math.max(0.1, n)) : fallback;
-}
-
-function clampBlur(value, fallback = 6) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.min(24, Math.max(0, n)) : fallback;
-}
-
-function clampFit(value, fallback = 'cover') {
-  const fit = String(value || fallback);
-  return ['cover', 'contain', 'fill'].includes(fit) ? fit : fallback;
+  return wallpaper.loadBackgroundImagePayload(rel);
 }
 
 function resolveAppearanceBackground(settings = appSettings()) {
@@ -321,16 +223,6 @@ function resolveAppearanceBackground(settings = appSettings()) {
     overlayBackgroundBlur: clampBlur(appearance.overlayBackgroundBlur, 4),
     overlayBackgroundFit: clampFit(appearance.overlayBackgroundFit, 'cover')
   };
-}
-
-function stripAppearanceRuntimeFields(appearance) {
-  if (!appearance || typeof appearance !== 'object') return;
-  delete appearance.backgroundDataUrl;
-  delete appearance.backgroundFileUrl;
-  delete appearance.backgroundUrl;
-  delete appearance.overlayBackgroundDataUrl;
-  delete appearance.overlayBackgroundFileUrl;
-  delete appearance.overlayBackgroundUrl;
 }
 
 function registerBackgroundProtocol() {
@@ -374,8 +266,8 @@ function migrateLegacyWallpaperIfNeeded() {
     delete current.appearance.backgroundDataUrl;
     delete current.appearance.backgroundFileUrl;
     delete current.appearance.backgroundUrl;
-    writeJson(path.join(dataDir(), 'app_settings.json'), current);
-    appearanceImageCacheMap.clear();
+    persistAppSettings(current);
+    wallpaper.clearImageCache();
     log.info(`Migrated large wallpaper ${rel} -> ${nextRel}`);
   } catch (error) {
     log.warn('Wallpaper migrate skipped', error?.message || error);
@@ -408,319 +300,39 @@ function processSelectionLocked() {
 }
 
 function customBuffsPath() {
-  // Per-user local file only — no cross-user / cross-path migration.
-  // - installed app: %APPDATA%\eco-toolbox\custom_buffs.json
-  // - source/dev:     <repo>\data\custom_buffs.json
-  return path.join(localDataDir(), 'custom_buffs.json');
+  return customBuffStore.filePath();
 }
 
 function skillLibraryPath() {
-  return path.join(localDataDir(), 'skill_library.json');
-}
-
-function positiveSeconds(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number) || number <= 0) return null;
-  return number;
-}
-
-function skillIdFromKey(key) {
-  let text = String(key || '').trim();
-  if (!text) return null;
-  const lowered = text.toLowerCase();
-  for (const prefix of ['skill:', 'cd:']) {
-    if (lowered.startsWith(prefix)) {
-      text = text.slice(prefix.length).trim();
-      break;
-    }
-  }
-  if (!/^\d+$/.test(text)) return null;
-  const skillId = Number(text);
-  return Number.isInteger(skillId) && skillId > 0 ? skillId : null;
-}
-
-function looksLikeSkillKey(key) {
-  const text = String(key || '').trim();
-  if (!text) return false;
-  const lowered = text.toLowerCase();
-  if (lowered.startsWith('skill:') || lowered.startsWith('cd:')) return true;
-  return /^\d+$/.test(text);
-}
-
-function normalizeCustomBuffEntry(key, value) {
-  const name = String(key || '').trim();
-  if (!name) return null;
-  let duration = null;
-  let cooldown = null;
-  let skillId = null;
-  let label = null;
-  let overlay = null;
-
-  if (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value)))) {
-    const seconds = positiveSeconds(value);
-    if (seconds == null) return null;
-    // Legacy: skill-like keys stored a bare number as CD; buff keys as duration.
-    if (looksLikeSkillKey(name)) {
-      cooldown = seconds;
-      skillId = skillIdFromKey(name);
-    } else {
-      duration = seconds;
-    }
-  } else if (value && typeof value === 'object' && !Array.isArray(value)) {
-    duration = positiveSeconds(value.duration);
-    cooldown = positiveSeconds(value.cooldown ?? value.cd);
-    const rawSkill = Number(value.skill_id);
-    skillId = Number.isInteger(rawSkill) && rawSkill > 0 ? rawSkill : null;
-    label = String(value.label || value.name || '').trim() || null;
-    if (Object.prototype.hasOwnProperty.call(value, 'overlay')) {
-      overlay = Boolean(value.overlay);
-    }
-  } else {
-    return null;
-  }
-
-  if (skillId == null) skillId = skillIdFromKey(name);
-  if (duration == null && cooldown == null) return null;
-
-  const entry = {};
-  if (duration != null) entry.duration = duration;
-  if (cooldown != null) entry.cooldown = cooldown;
-  if (skillId != null) entry.skill_id = skillId;
-  if (label) entry.label = label;
-  // Skill rows default to overlay=true so existing configs keep showing until unchecked.
-  if (skillId != null) entry.overlay = overlay == null ? true : Boolean(overlay);
-  return entry;
-}
-
-function normalizeCustomBuffMap(raw) {
-  const cleaned = {};
-  for (const [key, value] of Object.entries(raw || {})) {
-    const entry = normalizeCustomBuffEntry(key, value);
-    if (!entry) continue;
-    cleaned[String(key).trim()] = entry;
-  }
-  return cleaned;
+  return skillLibraryStore.filePath();
 }
 
 function loadCustomBuffDurations() {
-  // Only this install/user's own file.
-  return normalizeCustomBuffMap(readJson(customBuffsPath(), {}));
+  return customBuffStore.load();
 }
 
 function saveCustomBuffDurations(durations) {
-  const cleaned = normalizeCustomBuffMap(durations);
-  const target = customBuffsPath();
-  writeJson(target, cleaned);
-  return { durations: cleaned, path: target };
-}
-
-function isLocalizedChineseLabel(text) {
-  return /[\u4e00-\u9fff]/.test(String(text || ''));
-}
-
-function isPlaceholderSkillLabel(text) {
-  const value = String(text || '').trim();
-  if (!value) return true;
-  if (/^技能#\d+$/.test(value)) return true;
-  if (value.startsWith('未命名') || value.startsWith('未确认')) return true;
-  return false;
-}
-
-function preferredSkillLibraryName(...candidates) {
-  const cleaned = candidates
-    .map((value) => String(value || '').trim())
-    .filter(Boolean);
-  // Prefer game-facing English/JP labels over localized Chinese dictionary names.
-  const gameLike = cleaned.find((value) => !isPlaceholderSkillLabel(value) && !isLocalizedChineseLabel(value));
-  if (gameLike) return gameLike;
-  const any = cleaned.find((value) => !isPlaceholderSkillLabel(value));
-  return any || cleaned[0] || '';
-}
-
-function skillIconCacheRoot() {
-  return path.join(dataDir(), 'skill-icons');
-}
-
-function readSkillNameFile(filePath) {
-  try {
-    if (!fs.existsSync(filePath)) return null;
-    const name = fs.readFileSync(filePath, 'utf8').replace(/\0/g, '').trim();
-    return name || null;
-  } catch {
-    return null;
-  }
-}
-
-function resolveGameSkillNameSync(skillId) {
-  const id = Number(skillId);
-  if (!Number.isInteger(id) || id <= 0) return null;
-  try {
-    // 1) In-memory extracts from current session.
-    if (skillIconService?.memory) {
-      for (const [key, cached] of skillIconService.memory.entries()) {
-        if (!key.endsWith(`|${id}`)) continue;
-        if (cached?.ok && cached.name) {
-          const name = String(cached.name).trim();
-          if (name) return name;
-        }
-      }
-    }
-    // 2) Any on-disk client name cache, independent of whether eco.exe path is known.
-    const root = skillIconCacheRoot();
-    if (fs.existsSync(root)) {
-      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        const name = readSkillNameFile(path.join(root, entry.name, `${id}.txt`));
-        if (name) return name;
-      }
-    }
-    // 3) Preferred cache namespace for current/selected game path.
-    let gamePath = selectedGameProcess()?.path || '';
-    if (!gamePath) {
-      const fallback = gameProcesses.find((item) => item.path);
-      gamePath = fallback?.path || '';
-    }
-    if (gamePath) {
-      const { cacheNamespace } = require('./lib/skill-icons');
-      const name = readSkillNameFile(path.join(root, cacheNamespace(gamePath), `${id}.txt`));
-      if (name) return name;
-    }
-  } catch {
-    // ignore cache read errors
-  }
-  return null;
-}
-
-function normalizeSkillLibrary(raw) {
-  const cleaned = {};
-  for (const [key, value] of Object.entries(raw || {})) {
-    const skillId = Number(value?.skill_id ?? key);
-    if (!Number.isInteger(skillId) || skillId <= 0) continue;
-    const gameName = resolveGameSkillNameSync(skillId);
-    const name = preferredSkillLibraryName(
-      gameName,
-      value?.name,
-      value?.skill,
-      `技能#${skillId}`
-    ) || `技能#${skillId}`;
-    const count = Math.max(0, Math.floor(Number(value?.count) || 0));
-    const lastUsed = Number(value?.last_used);
-    cleaned[String(skillId)] = {
-      skill_id: skillId,
-      name,
-      count,
-      last_used: Number.isFinite(lastUsed) ? lastUsed : 0
-    };
-  }
-  return cleaned;
+  return customBuffStore.save(durations);
 }
 
 function loadSkillLibrary() {
-  return normalizeSkillLibrary(readJson(skillLibraryPath(), {}));
+  return skillLibraryStore.load();
 }
 
 function saveSkillLibrary(library) {
-  const cleaned = normalizeSkillLibrary(library);
-  const target = skillLibraryPath();
-  writeJson(target, cleaned);
-  return cleaned;
+  return skillLibraryStore.save(library);
+}
+
+function skillLibraryListSorted() {
+  return skillLibraryStore.listSorted();
 }
 
 function rememberSkillsFromSnapshot(snapshot) {
-  if (!snapshot || typeof snapshot !== 'object') return loadSkillLibrary();
-  const library = loadSkillLibrary();
-  const now = Date.now() / 1000;
-  const upsert = (skillId, name, { count, lastUsed } = {}) => {
-    const id = Number(skillId);
-    if (!Number.isInteger(id) || id <= 0) return;
-    const prev = library[String(id)] || { skill_id: id, name: `技能#${id}`, count: 0, last_used: 0 };
-    const gameName = resolveGameSkillNameSync(id);
-    // Never let Chinese dictionary labels overwrite a known game-client name.
-    library[String(id)] = {
-      skill_id: id,
-      name: preferredSkillLibraryName(gameName, prev.name, name, `技能#${id}`) || prev.name,
-      count: Math.max(Number(prev.count) || 0, Number(count) || 0),
-      last_used: Math.max(Number(prev.last_used) || 0, Number(lastUsed) || 0)
-    };
-  };
-  for (const item of snapshot.skill_casts || []) {
-    upsert(item.skill_id, item.skill, { count: item.count, lastUsed: now });
-  }
-  for (const item of snapshot.skill_cast_history || []) {
-    upsert(item.skill_id, item.skill, { count: 1, lastUsed: Number(item.ts) || now });
-  }
-  // Cap library size to recent / frequent skills.
-  const ranked = Object.values(library).sort((a, b) => {
-    if ((b.last_used || 0) !== (a.last_used || 0)) return (b.last_used || 0) - (a.last_used || 0);
-    return (b.count || 0) - (a.count || 0);
-  }).slice(0, 200);
-  const trimmed = {};
-  for (const item of ranked) trimmed[String(item.skill_id)] = item;
-  return saveSkillLibrary(trimmed);
-}
-
-function rewriteSkillLibraryWithCachedGameNames() {
-  const library = loadSkillLibrary();
-  let changed = false;
-  for (const item of Object.values(library)) {
-    const gameName = resolveGameSkillNameSync(item.skill_id);
-    if (!gameName) continue;
-    const next = preferredSkillLibraryName(gameName, item.name);
-    if (next && next !== item.name) {
-      item.name = next;
-      changed = true;
-    }
-  }
-  if (changed) saveSkillLibrary(library);
-  return Object.values(library);
+  return skillLibraryStore.rememberFromSnapshot(snapshot);
 }
 
 async function enrichSkillLibraryNames(libraryList) {
-  const list = Array.isArray(libraryList) ? libraryList : Object.values(loadSkillLibrary());
-  // First pass: apply any already-cached client names (no game path required).
-  rewriteSkillLibraryWithCachedGameNames();
-  for (const item of list) {
-    const gameName = resolveGameSkillNameSync(item.skill_id);
-    if (gameName) item.name = preferredSkillLibraryName(gameName, item.name) || item.name;
-  }
-
-  let gamePath = selectedGameProcess()?.path || '';
-  if (!gamePath) {
-    const fallback = gameProcesses.find((item) => item.path);
-    gamePath = fallback?.path || '';
-  }
-  if (!gamePath || !skillIconService) {
-    return Object.values(loadSkillLibrary()).sort((a, b) => {
-      if ((b.last_used || 0) !== (a.last_used || 0)) return (b.last_used || 0) - (a.last_used || 0);
-      return (b.count || 0) - (a.count || 0);
-    });
-  }
-
-  const library = loadSkillLibrary();
-  let changed = false;
-  await Promise.all(list.slice(0, 80).map(async (item) => {
-    const id = Number(item?.skill_id);
-    if (!Number.isInteger(id) || id <= 0) return;
-    try {
-      const result = await skillIconService.getIcon(id, gamePath);
-      const gameName = String(result?.name || '').trim() || resolveGameSkillNameSync(id);
-      if (!gameName) return;
-      const prev = library[String(id)] || { skill_id: id, name: `技能#${id}`, count: 0, last_used: 0 };
-      const nextName = preferredSkillLibraryName(gameName, prev.name, item.name);
-      if (nextName && nextName !== prev.name) {
-        library[String(id)] = { ...prev, name: nextName };
-        changed = true;
-      }
-      item.name = nextName || item.name;
-    } catch {
-      // ignore extract failures
-    }
-  }));
-  if (changed) saveSkillLibrary(library);
-  return Object.values(loadSkillLibrary()).sort((a, b) => {
-    if ((b.last_used || 0) !== (a.last_used || 0)) return (b.last_used || 0) - (a.last_used || 0);
-    return (b.count || 0) - (a.count || 0);
-  });
+  return skillLibraryStore.enrichNames(libraryList);
 }
 
 function notifyDamageReloadCustomBuffs(durations) {
@@ -787,7 +399,28 @@ function publicServices() {
   };
 }
 
-function publicState() {
+function xiaoyaPublicSnapshot() {
+  return xiaoyaService?.snapshot() || {
+    available: false,
+    state: 'stopped',
+    message: '小雅服务尚未就绪',
+    pid: null,
+    running: false
+  };
+}
+
+function settingsPublic(settings = appSettings()) {
+  return {
+    ...settings,
+    appearance: resolveAppearanceBackground(settings)
+  };
+}
+
+/**
+ * Frequent broadcasts: no snapshot / logs (dedicated channels).
+ * custom_durations + skill_library stay here but are memory-cached.
+ */
+function buildLightState() {
   return {
     services: publicServices(),
     captureIntents: {
@@ -798,52 +431,44 @@ function publicState() {
     selectedGamePid,
     selectedXiaoyaPid,
     processSelectionLocked: processSelectionLocked(),
-    snapshot: latestSnapshot,
-    settings: (() => {
-      const settings = appSettings();
-      return {
-        ...settings,
-        appearance: resolveAppearanceBackground(settings)
-      };
-    })(),
-    translation: translationSettings(),
+    settings: settingsPublic(),
     custom_durations: loadCustomBuffDurations(),
-    skill_library: (() => {
-      rewriteSkillLibraryWithCachedGameNames();
-      return Object.values(loadSkillLibrary()).sort((a, b) => {
-        if ((b.last_used || 0) !== (a.last_used || 0)) return (b.last_used || 0) - (a.last_used || 0);
-        return (b.count || 0) - (a.count || 0);
-      });
-    })(),
-    xiaoya: xiaoyaService?.snapshot() || {
-      available: false,
-      state: 'stopped',
-      message: '小雅服务尚未就绪',
-      pid: null,
-      running: false
-    },
-    update: updateService?.snapshot() || initialUpdateState(app.getVersion(), false),
+    skill_library: skillLibraryListSorted(),
+    xiaoya: xiaoyaPublicSnapshot(),
+    update: updateService?.snapshot() || initialUpdateState(app.getVersion(), false)
+  };
+}
+
+/** Initial hydrate via app:get-state. */
+function buildFullState() {
+  return {
+    ...buildLightState(),
+    snapshot: latestSnapshot,
+    translation: translationSettings(),
     logs: logs.slice(-300)
   };
 }
 
+function publicState(options = {}) {
+  return options.full === false ? buildLightState() : buildFullState();
+}
+
+const stateBus = createStateBus({
+  getWindows: () => [mainWindow, overlayWindow],
+  buildLightState,
+  buildFullState
+});
+
 function persistSelectedGamePid(pid) {
   const settings = appSettings();
   settings.game = { ...(settings.game || {}), pid };
-  writeJson(path.join(dataDir(), 'app_settings.json'), settings);
+  persistAppSettings(settings);
 }
 
 function persistSelectedXiaoyaPid(pid) {
   const settings = appSettings();
   settings.game = { ...(settings.game || {}), xiaoyaPid: pid };
-  writeJson(path.join(dataDir(), 'app_settings.json'), settings);
-}
-
-function pickPidFromList(preferredList, processes) {
-  return preferredList
-    .map((pid) => Number(pid))
-    .find((pid) => Number.isSafeInteger(pid) && pid > 0 && processes.some((process) => process.pid === pid))
-    || null;
+  persistAppSettings(settings);
 }
 
 async function refreshGameProcesses() {
@@ -861,15 +486,13 @@ async function refreshGameProcesses() {
     const configuredXiaoyaPid = Number(settings.game?.xiaoyaPid) || null;
     gameProcesses = found;
 
-    selectedGamePid = pickPidFromList([previousPid, configuredPid], gameProcesses)
-      || gameProcesses.at(-1)?.pid
-      || null;
-
-    // Xiaoya defaults to a different client when multi-open; fall back to any available.
-    selectedXiaoyaPid = pickPidFromList([previousXiaoyaPid, configuredXiaoyaPid], gameProcesses)
-      || gameProcesses.find((process) => process.pid !== selectedGamePid)?.pid
-      || selectedGamePid
-      || null;
+    ({ selectedGamePid, selectedXiaoyaPid } = resolveSelectedPids({
+      processes: gameProcesses,
+      previousMainPid: previousPid,
+      previousXiaoyaPid,
+      configuredMainPid: configuredPid,
+      configuredXiaoyaPid
+    }));
 
     if (!isDemo && selectedGamePid !== configuredPid) persistSelectedGamePid(selectedGamePid);
     if (!isDemo && selectedXiaoyaPid !== configuredXiaoyaPid) persistSelectedXiaoyaPid(selectedXiaoyaPid);
@@ -932,12 +555,11 @@ function selectXiaoyaProcess(pid) {
 }
 
 function broadcast(channel, payload) {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
-  if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.webContents.send(channel, payload);
+  stateBus.send(channel, payload);
 }
 
-function broadcastState() {
-  broadcast('app:state', publicState());
+function broadcastState(options = {}) {
+  stateBus.broadcastState({ immediate: Boolean(options.immediate) });
 }
 
 function addLog(service, level, message, options = {}) {
@@ -956,7 +578,7 @@ function addLog(service, level, message, options = {}) {
   if (level === 'error') log.error(primary, message);
   else if (level === 'warn' || level === 'warning') log.warn(primary, message);
   else log.debug(primary, message);
-  broadcast('service:log', entry);
+  stateBus.broadcastLog(entry);
 }
 
 /** Shared capture backend can serve damage and/or monitoring — tag logs for both filters. */
@@ -969,15 +591,7 @@ function addCaptureLog(level, message) {
 }
 
 function filterLogs(filter = 'all') {
-  const key = String(filter || 'all');
-  if (!key || key === 'all') return logs.slice();
-  return logs.filter((entry) => {
-    if (entry.service === key) return true;
-    if (Array.isArray(entry.channels) && entry.channels.includes(key)) return true;
-    // Legacy / aliases
-    if (key === 'monitoring' && (entry.service === 'buffs' || entry.service === 'monitoring')) return true;
-    return false;
-  });
+  return filterLogsImpl(logs, filter);
 }
 
 function setServiceState(name, state, message, extra = {}) {
@@ -986,35 +600,22 @@ function setServiceState(name, state, message, extra = {}) {
 }
 
 function runtimeFor(name) {
-  const processArgs = selectedGamePid ? ['--pid', String(selectedGamePid)] : [];
-  if (!app.isPackaged) {
-    const scriptName = name === 'damage' ? 'eco_damage_bridge.py' : 'eco_npc_mitm.py';
-    const scriptPath = path.join(srcDir(), scriptName);
-    return {
-      command: process.env.ECO_PYTHON || 'python',
-      args: ['-u', scriptPath, ...processArgs],
-      cwd: srcDir()
-    };
-  }
-  if (name === 'damage') {
-    return {
-      command: path.join(process.resourcesPath, 'backend', 'damage', 'eco_damage_bridge', 'eco_damage_bridge.exe'),
-      args: processArgs,
-      cwd: backendDir()
-    };
-  }
-  return {
-    command: path.join(process.resourcesPath, 'backend', 'translator', 'eco_npc_mitm', 'eco_npc_mitm.exe'),
-    args: processArgs,
-    cwd: backendDir()
-  };
+  return resolveBackendRuntime({
+    name,
+    selectedGamePid,
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    srcDir: srcDir(),
+    backendDir: backendDir()
+  });
 }
 
 function handleDamageMessage(message) {
   if (message.type === 'snapshot') {
     latestSnapshot = message.data;
     rememberSkillsFromSnapshot(latestSnapshot);
-    broadcast('damage:snapshot', latestSnapshot);
+    skillLibraryStore.invalidateListCache();
+    stateBus.broadcastSnapshot(latestSnapshot);
     return;
   }
   if (message.type === 'status') {
@@ -1030,8 +631,15 @@ function handleDamageMessage(message) {
 function startCaptureBackend() {
   if (services.damage) return { ok: true };
   if (!selectedGamePid) {
-    const error = '没有可用的 eco.exe，请启动游戏并刷新进程列表';
+    const error = '没有可用的游戏进程，请启动游戏并刷新顶部进程列表';
     setServiceState('damage', 'error', error);
+    addCaptureLog('error', error);
+    return { ok: false, error };
+  }
+  if (!(gameProcesses || []).some((process) => process.pid === selectedGamePid)) {
+    const error = `所选进程 ${selectedGamePid} 已不在列表中，请刷新后重新选择`;
+    setServiceState('damage', 'error', error);
+    addCaptureLog('error', error);
     return { ok: false, error };
   }
   if (isDemo) {
@@ -1043,10 +651,8 @@ function startCaptureBackend() {
   setServiceState('damage', 'starting', isMonitoringWanted() && !damageCollectionWanted
     ? '正在启动状态监控…'
     : '正在启动伤害采集…');
-  const launchLabel = app.isPackaged
-    ? path.basename(runtime.command)
-    : path.basename(runtime.args?.[1] || runtime.command);
-  addCaptureLog('info', `启动 ${launchLabel}，连接游戏进程 ${selectedGamePid}`);
+  const label = launchLabel(runtime, app.isPackaged);
+  addCaptureLog('info', `启动 ${label}，连接游戏进程 ${selectedGamePid}`);
   try {
     if (!app.isPackaged) {
       const scriptPath = runtime.args?.[1];
@@ -1057,18 +663,14 @@ function startCaptureBackend() {
         return { ok: false, error: message };
       }
     }
-    const pythonPath = [srcDir(), backendDir(), process.env.PYTHONPATH].filter(Boolean).join(path.delimiter);
     const child = spawn(runtime.command, runtime.args, {
       cwd: runtime.cwd || srcDir(),
       windowsHide: true,
-      env: {
-        ...process.env,
-        PYTHONUTF8: '1',
-        PYTHONIOENCODING: 'utf-8',
-        PYTHONUNBUFFERED: '1',
-        PYTHONPATH: pythonPath,
-        ECO_DATA_DIR: localDataDir()
-      },
+      env: buildBackendEnv({
+        srcDir: srcDir(),
+        backendDir: backendDir(),
+        dataDir: localDataDir()
+      }),
       stdio: ['pipe', 'pipe', 'pipe']
     });
     services.damage = child;
@@ -1158,10 +760,8 @@ function startService(name) {
 
   const runtime = runtimeFor(name);
   setServiceState(name, 'starting', '正在启动');
-  const launchLabel = app.isPackaged
-    ? path.basename(runtime.command)
-    : path.basename(runtime.args?.[1] || runtime.command);
-  addLog(name, 'info', `启动 ${launchLabel}，连接游戏进程 ${selectedGamePid}`);
+  const label = launchLabel(runtime, app.isPackaged);
+  addLog(name, 'info', `启动 ${label}，连接游戏进程 ${selectedGamePid}`);
   try {
     if (!app.isPackaged) {
       const scriptPath = runtime.args?.[1];
@@ -1172,18 +772,14 @@ function startService(name) {
         return { ok: false, error: message };
       }
     }
-    const pythonPath = [srcDir(), backendDir(), process.env.PYTHONPATH].filter(Boolean).join(path.delimiter);
     const child = spawn(runtime.command, runtime.args, {
       cwd: runtime.cwd || srcDir(),
       windowsHide: true,
-      env: {
-        ...process.env,
-        PYTHONUTF8: '1',
-        PYTHONIOENCODING: 'utf-8',
-        PYTHONUNBUFFERED: '1',
-        PYTHONPATH: pythonPath,
-        ECO_DATA_DIR: localDataDir()
-      },
+      env: buildBackendEnv({
+        srcDir: srcDir(),
+        backendDir: backendDir(),
+        dataDir: localDataDir()
+      }),
       stdio: ['pipe', 'pipe', 'pipe']
     });
     services[name] = child;
@@ -1223,96 +819,15 @@ function startService(name) {
   }
 }
 
-function requestGracefulStop(name, child) {
-  // Prefer a cooperative stop so Frida can unload hooks before the agent dies.
-  // IMPORTANT on Windows: Node's child.kill() is an unconditional process kill
-  // (no POSIX SIGTERM). Never kill a Frida host mid-attach — that crashes eco.exe.
-  try {
-    if (child.stdin && child.stdin.writable) {
-      child.stdin.write(`${JSON.stringify({ action: 'stop' })}\n`);
-      // Translator also accepts a bare "stop" line.
-      if (name === 'translator') child.stdin.write('stop\n');
-      // Closing stdin also signals EOF to Python bridges (extra stop path).
-      try { child.stdin.end(); } catch { /* ignore */ }
-    }
-  } catch {
-    // ignore broken pipe
-  }
-}
-
-function forceKillChild(child) {
-  // Last resort only. On Windows this aborts Python without running Frida teardown.
-  if (!child || child.killed || child.exitCode != null) return;
-  try {
-    if (process.platform === 'win32') {
-      execFile('taskkill', ['/pid', String(child.pid), '/f'], { windowsHide: true }, () => {});
-    } else {
-      child.kill('SIGKILL');
-    }
-  } catch {
-    try { child.kill('SIGKILL'); } catch { /* ignore */ }
-  }
-}
-
-function waitForChildExit(child, waitMs = 12000) {
-  return new Promise((resolve) => {
-    if (!child || child.killed || child.exitCode != null) {
-      resolve(true);
-      return;
-    }
-    let settled = false;
-    const done = (ok) => {
-      if (settled) return;
-      settled = true;
-      clearInterval(poll);
-      clearTimeout(timer);
-      resolve(ok);
-    };
-    const onExit = () => done(true);
-    child.once('exit', onExit);
-    const poll = setInterval(() => {
-      if (!child || child.killed || child.exitCode != null) done(true);
-    }, 100);
-    const timer = setTimeout(() => {
-      try { child.removeListener('exit', onExit); } catch { /* ignore */ }
-      done(false);
-    }, waitMs);
-  });
-}
-
-async function stopChildGracefully(name, child, { waitMs = 12000 } = {}) {
-  if (!child) return { ok: true };
-  setServiceState(name, 'stopping', '正在安全卸载抓包钩子…');
+function stopChildGracefully(name, child, { waitMs = 12000 } = {}) {
   const logFn = name === 'damage' ? addCaptureLog : (level, message) => addLog(name, level, message);
-  logFn('info', '正在安全断开 Frida（Windows 上不会强杀后端，避免游戏闪退）…');
-  requestGracefulStop(name, child);
-
-  // Wait for Python to finish dispose()+unload()+detach() and exit by itself.
-  // On Windows, child.kill() === force kill and must NOT be used while attached.
-  const exited = await waitForChildExit(child, waitMs);
-  if (exited) {
-    logFn('info', '后端已安全退出，钩子应已卸载');
-    return { ok: true };
-  }
-
-  // Still alive: send stop once more via a best-effort signal only on non-Windows.
-  if (process.platform !== 'win32') {
-    logFn('info', `后端 ${waitMs}ms 内未退出，发送 SIGTERM…`);
-    try { child.kill('SIGTERM'); } catch { /* ignore */ }
-    const exitedSoft = await waitForChildExit(child, 3000);
-    if (exitedSoft) {
-      logFn('info', '后端已在 SIGTERM 后退出');
-      return { ok: true };
-    }
-  }
-
-  // Absolute last resort — may still risk the game if Frida is mid-teardown.
-  logFn('warn', '后端仍未退出；最后尝试强制结束（仅后端，不杀游戏）。若仍闪退请先点停止采集再关工具箱。');
-  forceKillChild(child);
-  await waitForChildExit(child, 2000);
-  // Extra settle so the game can recover packet IO if hooks were already detached.
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  return { ok: true };
+  return stopChildGracefullyImpl({
+    name,
+    child,
+    waitMs,
+    log: logFn,
+    setStopping: (state, message) => setServiceState(name, state, message)
+  });
 }
 
 function stopService(name, { waitMs = 12000 } = {}) {
@@ -1347,33 +862,8 @@ async function prepareForUpdateInstall() {
   if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.hide();
 }
 
-const OVERLAY_MIN_WIDTH = 240;
-const OVERLAY_MIN_HEIGHT = 90;
-const OVERLAY_DEFAULT_WIDTH = 430;
-const OVERLAY_DEFAULT_HEIGHT = 115;
-
-function clampOverlayOpacity(value) {
-  const opacity = Number(value);
-  if (!Number.isFinite(opacity)) return 1;
-  return Math.min(1, Math.max(0.2, opacity));
-}
-
 function overlayBounds(settings = {}) {
-  const display = screen.getPrimaryDisplay().workArea;
-  const scale = Math.min(1.4, Math.max(0.8, Number(settings.scale) || 1));
-  let width = Number(settings.width);
-  let height = Number(settings.height);
-  if (!Number.isFinite(width) || width < OVERLAY_MIN_WIDTH) {
-    width = Math.round(OVERLAY_DEFAULT_WIDTH * scale);
-  }
-  if (!Number.isFinite(height) || height < OVERLAY_MIN_HEIGHT) {
-    height = Math.round(OVERLAY_DEFAULT_HEIGHT * scale);
-  }
-  width = Math.min(display.width, Math.max(OVERLAY_MIN_WIDTH, Math.round(width)));
-  height = Math.min(display.height, Math.max(OVERLAY_MIN_HEIGHT, Math.round(height)));
-  const x = Number.isFinite(settings.x) ? settings.x : display.x + display.width - width - 28;
-  const y = Number.isFinite(settings.y) ? settings.y : display.y + 56;
-  return { x, y, width, height };
+  return computeOverlayBounds(settings, screen.getPrimaryDisplay().workArea);
 }
 
 function createOverlayWindow() {
@@ -1420,18 +910,25 @@ function createOverlayWindow() {
   overlayWindow.on('closed', () => { overlayWindow = null; });
 }
 
+let overlayBoundsTimer = null;
 function persistOverlayBounds() {
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  const current = appSettings();
-  const bounds = overlayWindow.getBounds();
-  current.overlay = {
-    ...current.overlay,
-    x: bounds.x,
-    y: bounds.y,
-    width: bounds.width,
-    height: bounds.height
-  };
-  writeJson(path.join(dataDir(), 'app_settings.json'), current);
+  // Drag/resize fires often — debounce disk writes via settings cache.
+  if (overlayBoundsTimer) clearTimeout(overlayBoundsTimer);
+  overlayBoundsTimer = setTimeout(() => {
+    overlayBoundsTimer = null;
+    if (!overlayWindow || overlayWindow.isDestroyed()) return;
+    const current = appSettings();
+    const bounds = overlayWindow.getBounds();
+    current.overlay = {
+      ...current.overlay,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height
+    };
+    persistAppSettings(current, { debounceMs: 120 });
+  }, 180);
 }
 
 function setOverlayEditing(editing) {
@@ -1521,101 +1018,6 @@ function createMainWindow() {
   });
 }
 
-function demoSnapshot(seed) {
-  const now = new Date();
-  const nowSeconds = Date.now() / 1000;
-  const hits = [
-    { side: 'dealt', skill_id: 3001, skill: '法箭', damage: 283, source: '自己#1699', target: '沙地爬行者#11460' },
-    { side: 'normal_dealt', skill_id: null, skill: '普通攻击', damage: 21, source: '自己#1699', target: '沙地爬行者#11434' },
-    { side: 'pet_dealt', skill_id: 7505, skill: '钝吧！', damage: 30, source: '宠物#4412', target: '沙地爬行者#11434' },
-    { side: 'taken', skill_id: null, skill: '普通攻击', damage: 7, source: '沙地爬行者#11434', target: '自己#1699' }
-  ].map((item, index) => ({
-    ...item,
-    side: item.side === 'normal_dealt' ? 'dealt' : item.side,
-    time: new Date(now - index * 1100).toLocaleTimeString('zh-CN', { hour12: false }),
-    source_kind: item.skill_id ? '技能结果包' : '伤害包'
-  }));
-  return {
-    elapsed: 72 + seed,
-    active: 48 + seed,
-    self_id: 1699,
-    dealt: 1159 + seed * 3,
-    taken: 26,
-    skill_dealt: 878 + seed * 2,
-    normal_dealt: 281 + seed,
-    skill_taken: 0,
-    normal_taken: 26,
-    pet_dealt: 146 + seed,
-    pet_skill_dealt: 90,
-    pet_normal_dealt: 56 + seed,
-    hits_skill_dealt: 4,
-    hits_normal_dealt: 23,
-    hits_skill_taken: 0,
-    hits_normal_taken: 6,
-    hits_pet_dealt: 9,
-    max_skill_dealt: 354,
-    max_normal_dealt: 23,
-    max_taken: 7,
-    max_pet_dealt: 30,
-    skill_dps: 18.29,
-    normal_dps: 5.85,
-    pet_dps: 3.04,
-    dps: 24.14,
-    tps: 0.54,
-    skills_dealt: [[3127, 354], [3001, 283], [3123, 240]],
-    skills_taken: [],
-    pet_skills: [[7505, 90]],
-    damage_history: hits,
-    buffs: [
-      { key: 'magic_shield', name: '魔法护盾', source_name: 'MAGIC_SHIELD', category: 'positive', skill_id: 3114, timing: 'estimated_observed', started_at: nowSeconds - 72, expires_at: nowSeconds + 828, elapsed: 72, remaining: 828 },
-      { key: '3:0x00000020', name: '魔法攻击力上升', source_name: 'MAGIC_ATK_UP', category: 'positive', timing: 'elapsed_only', started_at: nowSeconds - 31, expires_at: null, elapsed: 31, remaining: null },
-      { key: '4:0x00000008', name: '移动速度下降', source_name: 'SPEED_DOWN', category: 'negative', timing: 'elapsed_only', started_at: nowSeconds - 14, expires_at: null, elapsed: 14, remaining: null },
-      { key: '0:0x00000004', name: '沉默', source_name: 'SILENCE', category: 'abnormal', timing: 'estimated_learned', started_at: nowSeconds - 5, expires_at: nowSeconds + 11, elapsed: 5, remaining: 11 }
-    ],
-    buff_history: [
-      { event: 'gained', time: nowSeconds - 72, key: 'magic_shield', name: '魔法护盾', category: 'positive', skill_id: 3114 },
-      { event: 'gained', time: nowSeconds - 31, key: '3:0x00000020', name: '魔法攻击力上升', category: 'positive' },
-      { event: 'gained', time: nowSeconds - 14, key: '4:0x00000008', name: '移动速度下降', category: 'negative' },
-      { event: 'gained', time: nowSeconds - 5, key: '0:0x00000004', name: '沉默', category: 'abnormal' }
-    ],
-    buff_version: 4,
-    skill_cooldowns: [
-      {
-        key: 'skill_cd:2100',
-        skill_id: 2100,
-        skill: 'パリイ',
-        name: 'パリイ',
-        category: 'cooldown',
-        timing: 'custom',
-        started_at: nowSeconds - 8,
-        expires_at: nowSeconds + 22,
-        duration: 30,
-        elapsed: 8,
-        remaining: 22
-      }
-    ],
-    skill_effect_timers: [
-      {
-        key: 'skill_effect:2100',
-        skill_id: 2100,
-        skill: 'パリイ',
-        name: 'パリイ',
-        category: 'skill_duration',
-        timing: 'custom',
-        started_at: nowSeconds - 1,
-        expires_at: nowSeconds + 2,
-        duration: 3,
-        elapsed: 1,
-        remaining: 2
-      }
-    ],
-    skill_casts: [
-      { skill_id: 2100, skill: 'パリイ', count: 4, role: 'defensive' },
-      { skill_id: 3114, skill: '魔法护盾', count: 1, role: 'self' }
-    ]
-  };
-}
-
 function selectedGameProcess() {
   return gameProcesses.find((process) => process.pid === selectedGamePid) || null;
 }
@@ -1659,7 +1061,7 @@ ipcMain.handle('update:install', async () => {
 ipcMain.handle('overlay:set-visible', (_event, visible) => {
   const current = appSettings();
   current.overlay.visible = Boolean(visible);
-  writeJson(path.join(dataDir(), 'app_settings.json'), current);
+  persistAppSettings(current);
   if (visible) overlayWindow?.showInactive(); else overlayWindow?.hide();
   return { ok: true };
 });
@@ -1738,7 +1140,7 @@ ipcMain.handle('settings:save-app', (_event, incoming) => {
     // Never persist runtime image payloads into settings.
     stripAppearanceRuntimeFields(current.appearance);
   }
-  writeJson(path.join(dataDir(), 'app_settings.json'), current);
+  persistAppSettings(current);
   if (incoming?.capture && services.damage?.stdin?.writable) {
     services.damage.stdin.write(`${JSON.stringify({
       action: 'set-categories',
@@ -1756,7 +1158,7 @@ ipcMain.handle('settings:save-app', (_event, incoming) => {
       height: next.height
     });
     overlayWindow.setOpacity(clampOverlayOpacity(current.overlay.opacity));
-    overlayWindow.webContents.send('app:state', publicState());
+    overlayWindow.webContents.send('app:state', buildLightState());
   }
   // Status monitoring can start/stop the shared capture backend independently of damage collection.
   if (incoming?.overlay && Object.prototype.hasOwnProperty.call(incoming.overlay, 'monitoring')) {
@@ -1791,7 +1193,7 @@ ipcMain.handle('appearance:pick-background', async (_event, target = 'main') => 
   } catch (error) {
     return { ok: false, error: error.message || '导入背景图失败' };
   }
-  appearanceImageCacheMap.clear();
+  wallpaper.clearImageCache();
   const current = appSettings();
   if (kind === 'overlay') {
     current.appearance = {
@@ -1809,7 +1211,7 @@ ipcMain.handle('appearance:pick-background', async (_event, target = 'main') => 
     };
   }
   stripAppearanceRuntimeFields(current.appearance);
-  writeJson(path.join(dataDir(), 'app_settings.json'), current);
+  persistAppSettings(current);
   broadcastState();
   return {
     ok: true,
@@ -1822,7 +1224,7 @@ ipcMain.handle('appearance:pick-background', async (_event, target = 'main') => 
 
 ipcMain.handle('appearance:clear-background', (_event, target = 'main') => {
   const kind = target === 'overlay' ? 'overlay' : 'main';
-  appearanceImageCacheMap.clear();
+  wallpaper.clearImageCache();
   const current = appSettings();
   if (kind === 'overlay') {
     current.appearance = {
@@ -1842,17 +1244,8 @@ ipcMain.handle('appearance:clear-background', (_event, target = 'main') => {
     };
   }
   stripAppearanceRuntimeFields(current.appearance);
-  writeJson(path.join(dataDir(), 'app_settings.json'), current);
-  // Best-effort cleanup of previous custom files of this kind.
-  try {
-    for (const file of fs.readdirSync(backgroundsDir())) {
-      const isOverlay = /^overlay-wallpaper/i.test(file);
-      const isMain = /^(custom|wallpaper)/i.test(file) && !isOverlay;
-      if ((kind === 'overlay' && isOverlay) || (kind !== 'overlay' && isMain)) {
-        try { fs.unlinkSync(path.join(backgroundsDir(), file)); } catch { /* ignore */ }
-      }
-    }
-  } catch { /* ignore */ }
+  persistAppSettings(current);
+  wallpaper.cleanupWallpaperFiles(kind);
   broadcastState();
   return {
     ok: true,
@@ -1925,41 +1318,33 @@ ipcMain.handle('logs:export', async (_event, options = {}) => {
   if (format === 'txt' && !/\.(txt|log)$/i.test(outPath)) outPath += '.txt';
 
   try {
-    const serviceLabel = (service) => ({
-      damage: '伤害采集',
-      monitoring: '状态监控',
-      translator: 'NPC 翻译',
-      xiaoya: '小雅助手',
-      buffs: '状态监控',
-      app: '应用',
-      update: '更新'
-    }[service] || service || '未知');
-
-    let body = '';
-    if (outPath.toLowerCase().endsWith('.json')) {
-      body = `${JSON.stringify({
-        exportedAt: new Date().toISOString(),
-        filter,
-        count: selected.length,
-        logs: selected
-      }, null, 2)}\n`;
-    } else {
-      const header = [
-        '# ECO 工具箱运行日志导出',
-        `# 时间: ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
-        `# 筛选: ${filter}`,
-        `# 条数: ${selected.length}`,
-        ''
-      ].join('\n');
-      body = header + selected.map((entry) => {
-        const level = entry.level || 'info';
-        const service = serviceLabel(entry.service);
-        return `[${entry.time || '--:--:--'}] [${service}] [${level}] ${entry.message || ''}`;
-      }).join('\n') + '\n';
-    }
+    const exportFormat = outPath.toLowerCase().endsWith('.json') ? 'json' : 'txt';
+    const body = formatLogsExportBody(selected, { filter, format: exportFormat });
     fs.writeFileSync(outPath, body, 'utf8');
-    addLog('app', 'info', `已导出 ${selected.length} 条日志 → ${outPath}`);
-    return { ok: true, path: outPath, count: selected.length };
+
+    // Also write a companion diagnostic sidecar for remote support.
+    try {
+      const diag = collectDiagnostics({
+        appVersion: app.getVersion(),
+        isPackaged: app.isPackaged,
+        selectedGamePid,
+        selectedXiaoyaPid,
+        gameProcesses,
+        captureIntents: {
+          damage: damageCollectionWanted,
+          monitoring: isMonitoringWanted()
+        },
+        services: publicServices(),
+        logs: selected
+      });
+      const diagPath = outPath.replace(/\.(txt|log|json)$/i, '') + '.diag.json';
+      fs.writeFileSync(diagPath, `${JSON.stringify(diag, null, 2)}\n`, 'utf8');
+      addLog('app', 'info', `已导出 ${selected.length} 条日志 → ${outPath}`);
+      return { ok: true, path: outPath, diagPath, count: selected.length };
+    } catch {
+      addLog('app', 'info', `已导出 ${selected.length} 条日志 → ${outPath}`);
+      return { ok: true, path: outPath, count: selected.length };
+    }
   } catch (error) {
     return { ok: false, error: error.message || '导出日志失败' };
   }
@@ -2103,7 +1488,7 @@ app.whenReady().then(async () => {
   if (settings.startup.monitoring === false && settings.overlay?.monitoring !== false) {
     // Auto-start disabled: leave monitoring off until the user turns the switch on.
     const next = mergeDeep(settings, { overlay: { monitoring: false } });
-    writeJson(path.join(dataDir(), 'app_settings.json'), next);
+    persistAppSettings(next);
   }
   reconcileCaptureBackend();
   if (!isDemo) {
@@ -2131,6 +1516,12 @@ function beginGracefulShutdown(reason = 'quit') {
   }
   if (gracefulQuitStarted) return;
   gracefulQuitStarted = true;
+
+  try {
+    getSettingsStore().flush();
+  } catch {
+    // ignore
+  }
 
   // Hide immediately so the user sees the app "close", while we still own the process
   // long enough to unload ws2_32 hooks from eco.exe.

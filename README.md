@@ -1,6 +1,6 @@
 # ECO 工具箱
 
-面向《Emil Chronicle Online》(ECO) 的 **本地 Windows 工具箱**（当前版本 **v0.2.6**）。
+面向《Emil Chronicle Online》(ECO) 的 **本地 Windows 工具箱**（当前版本 **v0.2.8**）。
 
 | 功能 | 说明 |
 |---|---|
@@ -18,8 +18,8 @@
 
 从 GitHub Releases 下载安装包：
 
-**[ECO Toolbox v0.2.6](https://github.com/shaxiqaq/eco-npc-translator/releases/tag/v0.2.6)**  
-安装文件：`ECO-Toolbox-Setup-0.2.6.exe`
+**[ECO Toolbox v0.2.8](https://github.com/shaxiqaq/eco-npc-translator/releases/tag/v0.2.8)**  
+安装文件：`ECO-Toolbox-Setup-0.2.8.exe`
 
 安装版已内置 Python/Frida 后端与 `XiaoyaCore.exe`，**无需**再装 Python、Node.js 或 .NET Runtime。
 
@@ -134,12 +134,12 @@ npm.cmd run dist
 2. 打同名标签并推送：
 
 ```powershell
-git tag v0.2.6
+git tag v0.2.8
 git push origin main
-git push origin v0.2.6
+git push origin v0.2.8
 ```
 
-`.github/workflows/release.yml` 会在 Windows Runner 上测试、构建，并创建 Release（标签必须与 `package.json` 版本一致，例如 `v0.2.6`）。
+`.github/workflows/release.yml` 会在 Windows Runner 上测试、构建，并创建 Release（标签必须与 `package.json` 版本一致，例如 `v0.2.8`）。
 
 ---
 

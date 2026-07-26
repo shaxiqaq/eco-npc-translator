@@ -5,17 +5,7 @@ import { Button } from '@/components/ui/button';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Card } from '@/components/ui/card';
 import { PageStack, PageToolbar, EmptyState } from '@/components/layout';
-import { cn } from '@/lib/utils';
-
-const SERVICE_LABELS: Record<string, string> = {
-  damage: '伤害采集',
-  monitoring: '状态监控',
-  translator: 'NPC 翻译',
-  xiaoya: '小雅助手',
-  buffs: '状态监控',
-  app: '应用',
-  update: '更新',
-};
+import { VirtualLogList } from '@/components/VirtualLogList';
 
 function matchesLogFilter(entry: { service?: string; channels?: string[] }, filter: string) {
   if (!filter || filter === 'all') return true;
@@ -72,19 +62,13 @@ export function LogsPage() {
         </div>
       </PageToolbar>
 
-      <Card className="log-console min-h-[420px] overflow-auto p-2">
+      <Card className="overflow-hidden p-0">
         {!filtered.length ? (
-          <EmptyState className="min-h-[380px]">
+          <EmptyState className="min-h-[420px]">
             {logFilter === 'all' ? '暂无运行日志' : '当前分类下暂无日志'}
           </EmptyState>
         ) : (
-          filtered.slice(-500).map((entry, index) => (
-            <div key={`${entry.time}-${entry.service}-${index}`} className={cn('console-line', entry.level || 'info')}>
-              <time>{entry.time}</time>
-              <b>{SERVICE_LABELS[entry.service || ''] || entry.service || '未知'}</b>
-              <span>{entry.message}</span>
-            </div>
-          ))
+          <VirtualLogList entries={filtered} />
         )}
       </Card>
     </PageStack>

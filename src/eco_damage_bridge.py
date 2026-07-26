@@ -122,24 +122,18 @@ def main():
 
     emit("status", service="damage", state="starting", message="正在查找游戏进程")
     device = frida.get_local_device()
-    games = [process for process in device.enumerate_processes() if process.name.lower() == "eco.exe"]
-    if not games:
-        emit("status", service="damage", state="error", message="没有找到 eco.exe，请先进入游戏")
-        return 2
+    try:
+        from eco_process import resolve_attach_pid
 
-    if args.pid is not None:
-        selected = next((process for process in games if process.pid == args.pid), None)
-        if selected is None:
-            emit(
-                "status",
-                service="damage",
-                state="error",
-                message=f"指定的 eco.exe 进程不存在（进程 {args.pid}）",
-            )
-            return 2
-        pid = selected.pid
-    else:
-        pid = max(games, key=lambda process: process.pid).pid
+        pid, how = resolve_attach_pid(device, args.pid)
+        emit(
+            "notice",
+            level="info",
+            message=f"目标进程 {pid}（{how}）",
+        )
+    except Exception as exc:
+        emit("status", service="damage", state="error", message=str(exc))
+        return 2
     meter = DamageMeter(out_path=log_path, self_id=args.self_id, game_chat=False)
     source = open(os.path.join(HERE, "_damage_capture.js"), encoding="utf-8").read()
     source = source.replace("__MAP_PORT__", str(MAP_PORT))
@@ -194,18 +188,25 @@ def main():
             state="running",
             pid=pid,
             log=log_path,
-            message=f"已连接 eco.exe（进程 {pid}）",
+            message=f"已连接游戏进程 {pid}",
         )
 
         reader = threading.Thread(target=command_loop, args=(meter, stop_event), daemon=True)
         reader.start()
+        # Keep history modest — UI shows recent rows; full dumps bloat IPC.
+        history_limit = max(20, min(200, int(os.environ.get("ECO_SNAPSHOT_HISTORY", "80"))))
         while not stop_event.wait(max(0.1, args.interval)):
-            snapshot = meter.snapshot(history_limit=500)
+            snapshot = meter.snapshot(history_limit=history_limit)
             emit("snapshot", data=snapshot)
     except KeyboardInterrupt:
         cleanup("keyboard-interrupt")
     except Exception as exc:
-        emit("status", service="damage", state="error", message=str(exc))
+        text = str(exc)
+        if "access" in text.lower() or "denied" in text.lower() or "权限" in text:
+            text = f"连接进程 {pid} 失败：{exc}。请尝试以管理员身份运行 ECO 工具箱。"
+        else:
+            text = f"连接进程 {pid} 失败：{exc}"
+        emit("status", service="damage", state="error", message=text)
         cleanup("error")
         return 1
     finally:

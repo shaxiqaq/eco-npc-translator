@@ -1335,18 +1335,14 @@ def main():
     out_path = os.path.join(LOGDIR, f"damage_meter_{stamp}.jsonl")
 
     dev = frida.get_local_device()
-    ecos = [p for p in dev.enumerate_processes() if p.name.lower() == "eco.exe"]
-    if not ecos:
-        logger.error("eco.exe is not running")
+    try:
+        from eco_process import resolve_attach_pid
+
+        pid, how = resolve_attach_pid(dev, args.pid)
+        logger.info("目标进程 %s（%s）", pid, how)
+    except Exception as exc:
+        logger.error("%s", exc)
         return 1
-    if args.pid is not None:
-        selected = next((process for process in ecos if process.pid == args.pid), None)
-        if selected is None:
-            logger.error(f"指定的 eco.exe 进程不存在（进程 {args.pid}）")
-            return 2
-        pid = selected.pid
-    else:
-        pid = max(ecos, key=lambda x: x.pid).pid
 
     js = open(os.path.join(HERE, "_damage_capture.js"), encoding="utf-8").read()
     js = js.replace("__MAP_PORT__", str(MAP_PORT))

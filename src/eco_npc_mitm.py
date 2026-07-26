@@ -543,18 +543,14 @@ def main():
             logger.error("打开配置工具失败，请手动双击 配置翻译.cmd: %s", e)
         return
     dev = frida.get_local_device()
-    ecos = [p for p in dev.enumerate_processes() if p.name.lower() == "eco.exe"]
-    if not ecos:
-        logger.error("没有运行中的 eco.exe")
-        return
-    if args.pid is not None:
-        selected = next((process for process in ecos if process.pid == args.pid), None)
-        if selected is None:
-            logger.error(f"指定的 eco.exe 进程不存在（进程 {args.pid}）")
-            return 2
-        pid = selected.pid
-    else:
-        pid = max(ecos, key=lambda process: process.pid).pid
+    try:
+        from eco_process import resolve_attach_pid
+
+        pid, how = resolve_attach_pid(dev, args.pid)
+        logger.info("[*] 目标进程 %s（%s）", pid, how)
+    except Exception as exc:
+        logger.error("%s", exc)
+        return 2
 
     threading.Thread(target=warmup, daemon=True).start()
     threading.Thread(target=_harvest_worker, daemon=True).start()   # 内置采集器(后台)

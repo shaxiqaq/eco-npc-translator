@@ -34,6 +34,7 @@ try {
         --add-data "$Data\buff_names.json;." `
         --hidden-import eco_log `
         --hidden-import eco_paths `
+        --hidden-import eco_process `
         eco_damage_bridge.py
     if ($LASTEXITCODE -ne 0) { throw "Failed to package the damage capture backend" }
 
@@ -46,6 +47,7 @@ try {
         --hidden-import cache_sync `
         --hidden-import eco_log `
         --hidden-import eco_paths `
+        --hidden-import eco_process `
         eco_npc_mitm.py
     if ($LASTEXITCODE -ne 0) { throw "Failed to package the NPC translation backend" }
 }
