@@ -209,6 +209,69 @@ export function useSettingsActions(options: {
 
   const providerPreset = useCallback((provider: string) => PROVIDERS[provider] || null, []);
 
+  const copyDiagnostics = useCallback(async () => {
+    if (!window.eco.copyDiagnostics) return { ok: false, error: '当前版本不支持复制诊断' };
+    return window.eco.copyDiagnostics();
+  }, []);
+
+  const reconnectGame = useCallback(async () => {
+    if (!window.eco.reconnectGame) return { ok: false, error: '当前版本不支持重连' };
+    return window.eco.reconnectGame();
+  }, []);
+
+  const setOnboardingSeen = useCallback(async (seen = true) => {
+    if (!window.eco.setOnboardingSeen) return { ok: true };
+    const result = await window.eco.setOnboardingSeen(seen);
+    if (result.settings) setState((prev) => ({ ...prev, settings: result.settings }));
+    return result;
+  }, [setState]);
+
+  const exportConfig = useCallback(async (includeSecrets = false) => {
+    if (!window.eco.exportConfig) return { ok: false, error: '当前版本不支持导出配置' };
+    return window.eco.exportConfig({ includeSecrets });
+  }, []);
+
+  const importConfig = useCallback(async () => {
+    if (!window.eco.importConfig) return { ok: false, error: '当前版本不支持导入配置' };
+    const result = await window.eco.importConfig();
+    if (result.ok && result.settings) {
+      setState((prev) => ({ ...prev, settings: result.settings }));
+      if (result.settings?.appearance) applyAppearanceToDocument(result.settings.appearance);
+    }
+    return result;
+  }, [setState]);
+
+  const saveCharacterPreset = useCallback(async (name: string) => {
+    if (!window.eco.savePreset) return { ok: false, error: '当前版本不支持预设' };
+    return window.eco.savePreset({
+      name,
+      capture: state.settings?.capture,
+      custom_durations: state.custom_durations as Record<string, never>,
+      overlay: {
+        density: state.settings?.overlay?.density,
+        expiryWarningSeconds: state.settings?.overlay?.expiryWarningSeconds,
+      },
+    });
+  }, [state.settings, state.custom_durations]);
+
+  const applyCharacterPreset = useCallback(async (id: string) => {
+    if (!window.eco.applyPreset) return { ok: false, error: '当前版本不支持预设' };
+    const result = await window.eco.applyPreset(id);
+    if (result.ok) {
+      if (result.settings) setState((prev) => ({ ...prev, settings: result.settings }));
+      if (result.custom_durations) {
+        setCustomBuffRows(entriesToEditable(normalizeCustomDurations(result.custom_durations)));
+        setState((prev) => ({ ...prev, custom_durations: result.custom_durations }));
+      }
+    }
+    return result;
+  }, [setState, setCustomBuffRows]);
+
+  const deleteCharacterPreset = useCallback(async (id: string) => {
+    if (!window.eco.deletePreset) return { ok: false, error: '当前版本不支持预设' };
+    return window.eco.deletePreset(id);
+  }, []);
+
   return {
     setOverlayVisible,
     toggleOverlayEditing,
@@ -229,5 +292,13 @@ export function useSettingsActions(options: {
     openLogs,
     exportLogs,
     providerPreset,
+    copyDiagnostics,
+    reconnectGame,
+    setOnboardingSeen,
+    exportConfig,
+    importConfig,
+    saveCharacterPreset,
+    applyCharacterPreset,
+    deleteCharacterPreset,
   };
 }

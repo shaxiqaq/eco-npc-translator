@@ -16,6 +16,11 @@
 | `diagnostics.js` | Support diagnostic bundle |
 | `overlay-geometry.js` | Overlay bounds/opacity |
 | `demo-snapshot.js` | `ECO_UI_DEMO` fake meter data |
+| `error-codes.js` | Stable `ECO_Exx` codes for support |
+| `crash-log.js` | uncaughtException / rejection dumps |
+| `system-health.js` | Elevated + connection health summary |
+| `character-presets.js` | Multi-character preset store |
+| `config-bundle.js` | Portable settings import/export |
 | `game-processes.js` | PowerShell eco.exe enumeration |
 | `skill-icons.js` | Icon helper + cache |
 | `update-service.js` | electron-updater façade |

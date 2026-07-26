@@ -46,6 +46,7 @@ const TABS = [
   { id: 'translation', label: '翻译服务', icon: Languages },
   { id: 'overlay', label: '悬浮窗', icon: PictureInPicture2 },
   { id: 'startup', label: '启动行为', icon: Power },
+  { id: 'data', label: '配置与预设', icon: Save },
   { id: 'updates', label: '软件更新', icon: Download },
 ] as const;
 
@@ -78,6 +79,12 @@ export function SettingsPage() {
     downloadUpdate,
     installUpdate,
     showToast,
+    exportConfig,
+    importConfig,
+    saveCharacterPreset,
+    applyCharacterPreset,
+    deleteCharacterPreset,
+    copyDiagnostics,
   } = useEco();
 
   const appearance = useMemo(
@@ -106,13 +113,22 @@ export function SettingsPage() {
     scale: 1,
     opacity: 1,
     expiryWarningSeconds: 10,
+    density: 'comfortable',
   });
   const [startupForm, setStartupForm] = useState({
     damage: false,
     monitoring: true,
     translator: false,
     overlay: true,
+    tray: true,
+    minimizeToTray: true,
+    autoReconnect: true,
   });
+  const [hotkeysForm, setHotkeysForm] = useState({
+    toggleOverlay: 'CommandOrControl+Shift+O',
+    toggleWindow: 'CommandOrControl+Shift+E',
+  });
+  const [presetName, setPresetName] = useState('');
   const [checkOnStartup, setCheckOnStartup] = useState(true);
   const [statusText, setStatusText] = useState<Record<string, string>>({});
 
@@ -139,6 +155,7 @@ export function SettingsPage() {
       scale: o.scale || 1,
       opacity: o.opacity ?? 1,
       expiryWarningSeconds: normalizeWarningSeconds(o.expiryWarningSeconds),
+      density: String(o.density || 'comfortable'),
     });
     const s = state.settings?.startup || {};
     setStartupForm({
@@ -146,6 +163,14 @@ export function SettingsPage() {
       monitoring: s.monitoring !== false,
       translator: Boolean(s.translator),
       overlay: s.overlay !== false,
+      tray: s.tray !== false,
+      minimizeToTray: s.minimizeToTray !== false,
+      autoReconnect: s.autoReconnect !== false,
+    });
+    const h = state.settings?.hotkeys || {};
+    setHotkeysForm({
+      toggleOverlay: h.toggleOverlay || 'CommandOrControl+Shift+O',
+      toggleWindow: h.toggleWindow || 'CommandOrControl+Shift+E',
     });
     setCheckOnStartup(state.settings?.updates?.checkOnStartup !== false);
   }, [state.translation, state.settings]);
@@ -480,6 +505,7 @@ export function SettingsPage() {
                   scale: overlayForm.scale,
                   opacity: overlayForm.opacity,
                   expiryWarningSeconds: overlayForm.expiryWarningSeconds,
+                  density: overlayForm.density,
                 }, appearance).then(() => {
                   setStatusText((s) => ({ ...s, overlay: '已保存' }));
                 });
@@ -510,6 +536,22 @@ export function SettingsPage() {
                   <span>秒</span>
                 </div>
               </label>
+              <div className="space-y-2">
+                <div className="text-xs font-semibold">可读性预设</div>
+                <ToggleGroup
+                  fullWidth
+                  value={overlayForm.density}
+                  onValueChange={(density) => setOverlayForm((f) => ({ ...f, density }))}
+                >
+                  <ToggleGroupItem value="comfortable">标准</ToggleGroupItem>
+                  <ToggleGroupItem value="compact">紧凑</ToggleGroupItem>
+                  <ToggleGroupItem value="large">大字</ToggleGroupItem>
+                  <ToggleGroupItem value="expiring">仅即将到期</ToggleGroupItem>
+                </ToggleGroup>
+                <p className="m-0 text-[11px] text-[var(--muted-foreground)]">
+                  「仅即将到期」只显示剩余时间进入闪烁窗口的状态/技能计时。
+                </p>
+              </div>
               <div className="overlay-position-row">
                 <div><strong>位置与大小</strong><span>进入调整模式后拖动移动，拖右下角改长宽</span></div>
                 <Button type="button" variant="secondary" onClick={() => void toggleOverlayEditing()}>
@@ -601,9 +643,12 @@ export function SettingsPage() {
             className="settings-pane active"
             onSubmit={(event) => {
               event.preventDefault();
-              void saveStartupSettings(startupForm).then(() => {
+              void (async () => {
+                await saveStartupSettings(startupForm);
+                await window.eco.saveAppSettings({ hotkeys: hotkeysForm });
                 setStatusText((s) => ({ ...s, startup: '已保存' }));
-              });
+                showToast('启动与热键设置已保存');
+              })();
             }}
           >
             <div className="settings-block space-y-3">
@@ -616,6 +661,9 @@ export function SettingsPage() {
                 ['monitoring', '自动启动状态监控', '与伤害采集独立，开启后读取 buff / 技能 CD'],
                 ['translator', '自动启动 NPC 翻译', '使用已保存的翻译配置'],
                 ['overlay', '自动显示状态悬浮窗', '工具箱启动后立即显示角色状态'],
+                ['tray', '显示系统托盘图标', '双击托盘可重新打开主窗口'],
+                ['minimizeToTray', '关闭窗口时最小化到托盘', '从托盘菜单可彻底退出'],
+                ['autoReconnect', '进程掉线自动重连', 'eco.exe 退出后自动刷新并尝试重新挂接'],
               ] as const).map(([key, title, desc]) => (
                 <label key={key} className="toggle-row">
                   <div><strong>{title}</strong><span>{desc}</span></div>
@@ -625,12 +673,143 @@ export function SettingsPage() {
                   />
                 </label>
               ))}
+              <div className="form-grid mt-2">
+                <label className="wide">
+                  <span>显示/隐藏悬浮窗热键</span>
+                  <Input
+                    value={hotkeysForm.toggleOverlay}
+                    placeholder="例如 CommandOrControl+Shift+O，留空禁用"
+                    onChange={(e) => setHotkeysForm((f) => ({ ...f, toggleOverlay: e.target.value }))}
+                  />
+                </label>
+                <label className="wide">
+                  <span>显示/隐藏主窗口热键</span>
+                  <Input
+                    value={hotkeysForm.toggleWindow}
+                    placeholder="例如 CommandOrControl+Shift+E，留空禁用"
+                    onChange={(e) => setHotkeysForm((f) => ({ ...f, toggleWindow: e.target.value }))}
+                  />
+                </label>
+              </div>
               <div className="form-actions">
                 <span className="save-status">{statusText.startup || ''}</span>
-                <Button type="submit"><Save className="h-4 w-4" />保存启动设置</Button>
+                <Button type="submit">
+                  <Save className="h-4 w-4" />保存启动设置
+                </Button>
               </div>
             </div>
           </form>
+        )}
+
+        {settingsTab === 'data' && (
+          <div className="settings-pane active space-y-4">
+            <div className="settings-block space-y-3">
+              <div className="form-heading">
+                <h2>配置导入导出</h2>
+                <p>迁移外观、采集开关、倒计时与翻译设置（默认不含 API Key）</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  onClick={async () => {
+                    const result = await exportConfig(false);
+                    if (result.cancelled) return;
+                    showToast(result.ok ? '配置已导出' : result.error || '导出失败');
+                  }}
+                >
+                  导出配置
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={async () => {
+                    const result = await importConfig();
+                    if (result.cancelled) return;
+                    showToast(result.ok ? '配置已导入' : result.error || '导入失败');
+                  }}
+                >
+                  导入配置
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={async () => {
+                    const result = await copyDiagnostics();
+                    showToast(result.ok ? '诊断信息已复制' : result.error || '复制失败');
+                  }}
+                >
+                  复制诊断信息
+                </Button>
+              </div>
+            </div>
+            <div className="settings-block space-y-3">
+              <div className="form-heading">
+                <h2>多角色预设</h2>
+                <p>保存当前采集开关 + 自定义倒计时 + 悬浮窗密度，切换角色时一键应用</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  className="max-w-xs"
+                  placeholder="预设名称，如 法师主号"
+                  value={presetName}
+                  onChange={(e) => setPresetName(e.target.value)}
+                />
+                <Button
+                  type="button"
+                  onClick={async () => {
+                    const name = presetName.trim() || '未命名预设';
+                    const result = await saveCharacterPreset(name);
+                    showToast(result.ok ? `已保存预设「${name}」` : result.error || '保存失败');
+                    if (result.ok) setPresetName('');
+                  }}
+                >
+                  保存当前为预设
+                </Button>
+              </div>
+              <div className="space-y-2">
+                {(state.characterPresets || []).length === 0 ? (
+                  <p className="m-0 text-xs text-[var(--muted-foreground)]">暂无预设</p>
+                ) : (
+                  (state.characterPresets || []).map((preset) => (
+                    <div
+                      key={preset.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--line-soft)] px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold">{preset.name}</div>
+                        <div className="text-[11px] text-[var(--muted-foreground)]">
+                          {preset.updatedAt ? new Date(preset.updatedAt).toLocaleString('zh-CN', { hour12: false }) : ''}
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={async () => {
+                            const result = await applyCharacterPreset(preset.id);
+                            showToast(result.ok ? `已应用「${preset.name}」` : result.error || '应用失败');
+                          }}
+                        >
+                          应用
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          onClick={async () => {
+                            const result = await deleteCharacterPreset(preset.id);
+                            showToast(result.ok ? '预设已删除' : result.error || '删除失败');
+                          }}
+                        >
+                          删除
+                        </Button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
         )}
 
         {settingsTab === 'updates' && (

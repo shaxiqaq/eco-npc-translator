@@ -277,4 +277,11 @@ header b {
     linear-gradient(135deg, transparent 0 46%, #17130c 46% 54%, transparent 54% 62%, #17130c 62% 70%, transparent 70% 78%, #17130c 78% 86%, transparent 86%);
 }
 .overlay.editing .resize-handle { display: block; }
+.overlay.density-compact .status-item { min-height: 34px; padding: 4px 8px; gap: 6px; }
+.overlay.density-compact .status-name { font-size: 11px; }
+.overlay.density-compact .time-label { font-size: 10px; }
+.overlay.density-large .status-item { min-height: 52px; padding: 8px 12px; }
+.overlay.density-large .status-name { font-size: 14px; }
+.overlay.density-large .time-label { font-size: 13px; }
+.overlay.density-expiring .empty::after { content: none; }
 @keyframes buff-expiry-blink { 0%, 49% { opacity: 1; filter: none; } 50%, 100% { opacity: .25; filter: saturate(.45); } }

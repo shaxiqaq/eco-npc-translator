@@ -1,7 +1,7 @@
 import { RotateCcw, RadioTower } from 'lucide-react';
 import { useEco } from '@/context/EcoContext';
 import { formatNumber } from '@/lib/format';
-import { historyType, skillCastRoleLabel } from '@/lib/damage';
+import { skillCastRoleLabel } from '@/lib/damage';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
@@ -15,6 +15,7 @@ import {
   DataCard,
   EmptyState,
 } from '@/components/layout';
+import { VirtualDamageList } from '@/components/VirtualDamageList';
 import { cn } from '@/lib/utils';
 
 export function DamagePage() {
@@ -162,48 +163,7 @@ export function DamagePage() {
         action={<Badge variant="secondary" className="gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[var(--green)]" />实时更新</Badge>}
         bare
       >
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>类型</th>
-                <th>来源</th>
-                <th>目标</th>
-                <th>技能</th>
-                <th className="number">伤害</th>
-              </tr>
-            </thead>
-            <tbody>
-              {!items.length ? (
-                <tr>
-                  <td colSpan={6}><EmptyState className="min-h-[100px]">暂无对应伤害数据</EmptyState></td>
-                </tr>
-              ) : (
-                items.map((item, index) => {
-                  const type = historyType(item);
-                  return (
-                    <tr key={`${item.time}-${index}`}>
-                      <td>{item.time || ''}</td>
-                      <td>
-                        <Badge variant={type.cls === '' ? 'normal' : type.cls as 'skill'}>{type.text}</Badge>
-                      </td>
-                      <td title={item.source}>{item.source}</td>
-                      <td title={item.target}>{item.target}</td>
-                      <td>
-                        <div className="skill-cell">
-                          <SkillIcon skillId={item.skill_id} fallback={item.skill_id == null ? 'sword' : 'sparkles'} />
-                          {item.skill_id == null ? <span>普通攻击</span> : <SkillName skillId={item.skill_id} />}
-                        </div>
-                      </td>
-                      <td className="number">{formatNumber(item.damage)}</td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+        <VirtualDamageList items={items} />
       </DataCard>
     </PageStack>
   );

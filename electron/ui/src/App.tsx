@@ -2,6 +2,7 @@ import { EcoProvider, useEco } from '@/context/EcoContext';
 import { AppShell } from '@/components/AppShell';
 import { Toast } from '@/components/Toast';
 import { UpdateDialog } from '@/components/UpdateDialog';
+import { OnboardingDialog } from '@/components/OnboardingDialog';
 import { OverviewPage } from '@/pages/OverviewPage';
 import { DamagePage } from '@/pages/DamagePage';
 import { BuffsPage } from '@/pages/BuffsPage';
@@ -47,6 +48,7 @@ export default function App() {
       </AppShell>
       <Toast />
       <UpdateDialog />
+      <OnboardingDialog />
     </EcoProvider>
   );
 }

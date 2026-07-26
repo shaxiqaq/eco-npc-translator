@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, screen, dialog, nativeImage, protocol, net } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, screen, dialog, nativeImage, protocol, net, Tray, Menu, globalShortcut, clipboard } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -13,8 +13,13 @@ const { XiaoyaCoreService } = require('./lib/xiaoya-core-service');
 const { createLogger } = require('./lib/logger');
 const { createSettingsCache } = require('./lib/settings-cache');
 const { createStateBus } = require('./lib/state-bus');
-const { collectDiagnostics } = require('./lib/diagnostics');
+const { collectDiagnostics, formatDiagnosticsText } = require('./lib/diagnostics');
 const { buildBackendEnv } = require('./lib/backend-env');
+const { isProcessElevated, buildConnectionHealth } = require('./lib/system-health');
+const { createCharacterPresetStore } = require('./lib/character-presets');
+const { buildConfigBundle, parseConfigBundle } = require('./lib/config-bundle');
+const { classifyError } = require('./lib/error-codes');
+const { installCrashHandlers } = require('./lib/crash-log');
 const {
   createWallpaperService,
   safeBackgroundRel,
@@ -43,6 +48,20 @@ const {
 const { demoSnapshot } = require('./lib/demo-snapshot');
 
 const log = createLogger('main');
+
+// Local crash dumps under userData/logs/crash (path resolved after app ready).
+installCrashHandlers({
+  getDataDir: () => {
+    try {
+      return app.isReady() ? app.getPath('userData') : path.join(process.cwd(), 'data');
+    } catch {
+      return path.join(process.cwd(), 'data');
+    }
+  },
+  onCrash: (kind, reason, file) => {
+    log.error('crash', `${kind}${file ? ` → ${file}` : ''}`, reason?.message || reason);
+  }
+});
 
 // Must be registered before app is ready so renderer can load wallpapers without base64 IPC.
 protocol.registerSchemesAsPrivileged([
@@ -83,6 +102,12 @@ let skillIconService = null;
 let xiaoyaService = null;
 let gracefulQuitStarted = false;
 let gracefulQuitComplete = false;
+let appTray = null;
+let processWatchTimer = null;
+let elevatedCache = null;
+let selectedProcessAlive = null;
+let lastReconnectAt = 0;
+let rememberedProcessTitle = '';
 
 const defaultAppSettings = {
   game: {
@@ -105,13 +130,25 @@ const defaultAppSettings = {
     height: 115,
     opacity: 1,
     scale: 1,
-    expiryWarningSeconds: 10
+    expiryWarningSeconds: 10,
+    // comfortable | compact | large | expiring
+    density: 'comfortable'
   },
   startup: {
     damage: false,
     translator: false,
     overlay: true,
-    monitoring: true
+    monitoring: true,
+    tray: true,
+    minimizeToTray: true,
+    autoReconnect: true
+  },
+  hotkeys: {
+    toggleOverlay: 'CommandOrControl+Shift+O',
+    toggleWindow: 'CommandOrControl+Shift+E'
+  },
+  onboarding: {
+    seenGuide: false
   },
   appearance: {
     // relative to userData; empty = solid theme
@@ -191,6 +228,7 @@ const skillLibraryStore = createSkillLibraryStore({
   getSelectedGamePath: () => selectedGameProcess()?.path || '',
   getAnyGamePath: () => gameProcesses.find((item) => item.path)?.path || ''
 });
+const characterPresets = createCharacterPresetStore({ localDataDir });
 
 function backgroundsDir() {
   return wallpaper.backgroundsDir();
@@ -388,7 +426,9 @@ function publicServices() {
     return {
       state: backend.state || 'stopped',
       message,
-      pid: backend.pid || null
+      pid: backend.pid || null,
+      errorCode: backend.errorCode || null,
+      errorHint: backend.errorHint || null
     };
   };
 
@@ -420,6 +460,19 @@ function settingsPublic(settings = appSettings()) {
  * Frequent broadcasts: no snapshot / logs (dedicated channels).
  * custom_durations + skill_library stay here but are memory-cached.
  */
+function currentConnectionHealth() {
+  return buildConnectionHealth({
+    elevated: elevatedCache,
+    selectedGamePid,
+    selectedXiaoyaPid,
+    gameProcesses,
+    processAlive: selectedProcessAlive,
+    services: publicServices(),
+    damageWanted: damageCollectionWanted,
+    monitoringWanted: isMonitoringWanted()
+  });
+}
+
 function buildLightState() {
   return {
     services: publicServices(),
@@ -435,7 +488,9 @@ function buildLightState() {
     custom_durations: loadCustomBuffDurations(),
     skill_library: skillLibraryListSorted(),
     xiaoya: xiaoyaPublicSnapshot(),
-    update: updateService?.snapshot() || initialUpdateState(app.getVersion(), false)
+    update: updateService?.snapshot() || initialUpdateState(app.getVersion(), false),
+    connectionHealth: currentConnectionHealth(),
+    characterPresets: characterPresets.loadAll()
   };
 }
 
@@ -509,7 +564,8 @@ async function refreshGameProcesses() {
     selectedGamePid = null;
     selectedXiaoyaPid = null;
     broadcastState();
-    return { ok: false, error: `读取游戏进程失败：${error.message}`, processes: [] };
+    const classified = classifyError(`读取游戏进程失败：${error.message}`, { kind: 'enumerate' });
+    return { ok: false, error: classified.message, errorCode: classified.code, processes: [] };
   }
 }
 
@@ -523,6 +579,9 @@ function selectGameProcess(pid) {
   }
   selectedGamePid = normalized;
   latestSnapshot = null;
+  const proc = gameProcesses.find((p) => p.pid === normalized);
+  rememberedProcessTitle = proc?.title || rememberedProcessTitle || '';
+  selectedProcessAlive = true;
   if (!isDemo) persistSelectedGamePid(selectedGamePid);
   broadcastState();
   return { ok: true, selectedPid: selectedGamePid };
@@ -599,6 +658,20 @@ function setServiceState(name, state, message, extra = {}) {
   broadcastState();
 }
 
+/** Attach stable ECO_Exx code to service errors for remote support. */
+function reportServiceError(name, rawMessage, context = {}) {
+  const classified = classifyError(rawMessage, context);
+  const extra = {
+    errorCode: classified.code,
+    errorHint: classified.hint,
+    ...(context.extra || {})
+  };
+  setServiceState(name, 'error', classified.message, extra);
+  if (name === 'damage') addCaptureLog('error', classified.message);
+  else addLog(name, 'error', classified.message);
+  return classified;
+}
+
 function runtimeFor(name) {
   return resolveBackendRuntime({
     name,
@@ -621,8 +694,15 @@ function handleDamageMessage(message) {
   if (message.type === 'status') {
     let statusMessage = message.message || '';
     if (message.state === 'running') statusMessage = captureRoleMessage();
+    if (message.state === 'error') {
+      reportServiceError('damage', statusMessage || message.state, {
+        kind: message.error_code === 'ECO_E03' ? 'access' : undefined,
+        extra: { pid: message.pid, log: message.log }
+      });
+      return;
+    }
     setServiceState('damage', message.state, statusMessage, { pid: message.pid, log: message.log });
-    addCaptureLog(message.state === 'error' ? 'error' : 'info', statusMessage || message.state);
+    addCaptureLog('info', statusMessage || message.state);
     return;
   }
   if (message.type === 'notice') addCaptureLog(message.level || 'info', message.message || '');
@@ -631,16 +711,20 @@ function handleDamageMessage(message) {
 function startCaptureBackend() {
   if (services.damage) return { ok: true };
   if (!selectedGamePid) {
-    const error = '没有可用的游戏进程，请启动游戏并刷新顶部进程列表';
-    setServiceState('damage', 'error', error);
-    addCaptureLog('error', error);
-    return { ok: false, error };
+    const classified = reportServiceError(
+      'damage',
+      '没有可用的游戏进程，请启动游戏并刷新顶部进程列表',
+      { kind: 'no-process' }
+    );
+    return { ok: false, error: classified.message, errorCode: classified.code };
   }
   if (!(gameProcesses || []).some((process) => process.pid === selectedGamePid)) {
-    const error = `所选进程 ${selectedGamePid} 已不在列表中，请刷新后重新选择`;
-    setServiceState('damage', 'error', error);
-    addCaptureLog('error', error);
-    return { ok: false, error };
+    const classified = reportServiceError(
+      'damage',
+      `所选进程 ${selectedGamePid} 已不在列表中，请刷新后重新选择`,
+      { kind: 'process-gone' }
+    );
+    return { ok: false, error: classified.message, errorCode: classified.code };
   }
   if (isDemo) {
     startDemo();
@@ -657,10 +741,8 @@ function startCaptureBackend() {
     if (!app.isPackaged) {
       const scriptPath = runtime.args?.[1];
       if (scriptPath && !fs.existsSync(scriptPath)) {
-        const message = `找不到后端脚本：${scriptPath}`;
-        setServiceState('damage', 'error', message);
-        addCaptureLog('error', message);
-        return { ok: false, error: message };
+        const classified = reportServiceError('damage', `找不到后端脚本：${scriptPath}`, { kind: 'script-missing' });
+        return { ok: false, error: classified.message, errorCode: classified.code };
       }
     }
     const child = spawn(runtime.command, runtime.args, {
@@ -694,8 +776,7 @@ function startCaptureBackend() {
     errors.on('line', (line) => line.trim() && addCaptureLog('error', line.trim()));
 
     child.on('error', (error) => {
-      addCaptureLog('error', error.message);
-      setServiceState('damage', 'error', error.message);
+      reportServiceError('damage', error.message, { kind: 'spawn' });
     });
     child.on('exit', (code) => {
       services.damage = null;
@@ -707,8 +788,8 @@ function startCaptureBackend() {
     return { ok: true };
   } catch (error) {
     services.damage = null;
-    setServiceState('damage', 'error', error.message);
-    return { ok: false, error: error.message };
+    const classified = reportServiceError('damage', error.message, { kind: 'spawn' });
+    return { ok: false, error: classified.message, errorCode: classified.code };
   }
 }
 
@@ -753,9 +834,8 @@ function startService(name) {
   }
   if (services[name]) return { ok: true };
   if (!selectedGamePid) {
-    const error = '没有可用的 eco.exe，请启动游戏并刷新进程列表';
-    setServiceState(name, 'error', error);
-    return { ok: false, error };
+    const classified = reportServiceError(name, '没有可用的 eco.exe，请启动游戏并刷新进程列表', { kind: 'no-process' });
+    return { ok: false, error: classified.message, errorCode: classified.code };
   }
 
   const runtime = runtimeFor(name);
@@ -766,10 +846,8 @@ function startService(name) {
     if (!app.isPackaged) {
       const scriptPath = runtime.args?.[1];
       if (scriptPath && !fs.existsSync(scriptPath)) {
-        const message = `找不到后端脚本：${scriptPath}`;
-        setServiceState(name, 'error', message);
-        addLog(name, 'error', message);
-        return { ok: false, error: message };
+        const classified = reportServiceError(name, `找不到后端脚本：${scriptPath}`, { kind: 'script-missing' });
+        return { ok: false, error: classified.message, errorCode: classified.code };
       }
     }
     const child = spawn(runtime.command, runtime.args, {
@@ -788,17 +866,22 @@ function startService(name) {
     lines.on('line', (line) => {
       if (line.trim()) addLog(name, 'info', line.trim());
       if (line.includes('attach')) setServiceState(name, 'running', `NPC 翻译正在运行（进程 ${selectedGamePid}）`, { pid: selectedGamePid });
-      if (line.includes('没有运行中的 eco.exe')) setServiceState(name, 'error', '没有找到 eco.exe，请先进入游戏');
-      if (line.includes('指定的 eco.exe 进程不存在')) setServiceState(name, 'error', '所选游戏进程已经退出，请刷新后重选');
-      if (line.includes('还没有配置翻译服务')) setServiceState(name, 'error', '请先完成翻译设置');
+      if (line.includes('没有运行中的 eco.exe')) {
+        reportServiceError(name, '没有找到 eco.exe，请先进入游戏', { kind: 'no-process' });
+      }
+      if (line.includes('指定的 eco.exe 进程不存在')) {
+        reportServiceError(name, '所选游戏进程已经退出，请刷新后重选', { kind: 'process-gone' });
+      }
+      if (line.includes('还没有配置翻译服务')) {
+        reportServiceError(name, '请先完成翻译设置', { kind: 'translator-config' });
+      }
     });
 
     const errors = readline.createInterface({ input: child.stderr });
     errors.on('line', (line) => line.trim() && addLog(name, 'error', line.trim()));
 
     child.on('error', (error) => {
-      addLog(name, 'error', error.message);
-      setServiceState(name, 'error', error.message);
+      reportServiceError(name, error.message, { kind: 'spawn' });
     });
     child.on('exit', (code) => {
       services[name] = null;
@@ -814,8 +897,8 @@ function startService(name) {
     return { ok: true };
   } catch (error) {
     services[name] = null;
-    setServiceState(name, 'error', error.message);
-    return { ok: false, error: error.message };
+    const classified = reportServiceError(name, error.message, { kind: 'spawn' });
+    return { ok: false, error: classified.message, errorCode: classified.code };
   }
 }
 
@@ -1010,6 +1093,14 @@ function createMainWindow() {
   // Closing the window without this race-kills the Python bridge and can crash eco.exe.
   mainWindow.on('close', (event) => {
     if (gracefulQuitComplete) return;
+    const minimizeToTray = appSettings().startup?.minimizeToTray !== false
+      && appSettings().startup?.tray !== false
+      && appTray;
+    if (minimizeToTray && !gracefulQuitStarted) {
+      event.preventDefault();
+      mainWindow.hide();
+      return;
+    }
     event.preventDefault();
     beginGracefulShutdown('window-close');
   });
@@ -1043,7 +1134,371 @@ function stopDemo() {
   setServiceState('damage', 'stopped', '演示数据已停止');
 }
 
+async function refreshElevation() {
+  elevatedCache = await isProcessElevated();
+  return elevatedCache;
+}
+
+async function checkSelectedProcessAlive() {
+  if (!selectedGamePid) {
+    selectedProcessAlive = null;
+    return null;
+  }
+  if (isDemo) {
+    selectedProcessAlive = true;
+    return true;
+  }
+  const inList = (gameProcesses || []).some((p) => Number(p.pid) === Number(selectedGamePid));
+  if (inList) {
+    selectedProcessAlive = true;
+    return true;
+  }
+  try {
+    const { execFile } = require('child_process');
+    const alive = await new Promise((resolve) => {
+      execFile(
+        'tasklist',
+        ['/FI', `PID eq ${selectedGamePid}`, '/FO', 'CSV', '/NH'],
+        { windowsHide: true, timeout: 5000 },
+        (err, stdout) => {
+          if (err) {
+            resolve(null);
+            return;
+          }
+          resolve(String(stdout || '').includes(String(selectedGamePid)));
+        }
+      );
+    });
+    selectedProcessAlive = alive;
+    return alive;
+  } catch {
+    selectedProcessAlive = inList;
+    return inList;
+  }
+}
+
+async function reconnectGameProcess({ reason = 'manual' } = {}) {
+  const now = Date.now();
+  if (now - lastReconnectAt < 1500) {
+    return { ok: false, error: '重连过于频繁，请稍候' };
+  }
+  lastReconnectAt = now;
+  addLog('app', 'info', `尝试重新连接游戏进程（${reason}）…`);
+  const refresh = await refreshGameProcesses();
+  if (!refresh.ok) {
+    return { ok: false, error: refresh.error || '刷新进程失败' };
+  }
+  if (rememberedProcessTitle) {
+    const match = (gameProcesses || []).find(
+      (p) => String(p.title || '') === rememberedProcessTitle
+    );
+    if (match?.pid) {
+      const selected = selectGameProcess(match.pid);
+      if (!selected.ok) return selected;
+    }
+  }
+  await checkSelectedProcessAlive();
+  if (captureBackendNeeded()) {
+    if (services.damage) {
+      await stopCaptureBackend({ waitMs: 8000 });
+    }
+    const result = await reconcileCaptureBackend();
+    if (!result?.ok) return result;
+  }
+  broadcastState({ immediate: true });
+  return {
+    ok: true,
+    selectedPid: selectedGamePid,
+    processAlive: selectedProcessAlive,
+    health: currentConnectionHealth()
+  };
+}
+
+function startProcessWatch() {
+  if (processWatchTimer) clearInterval(processWatchTimer);
+  processWatchTimer = setInterval(async () => {
+    try {
+      const prevAlive = selectedProcessAlive;
+      await checkSelectedProcessAlive();
+      const settings = appSettings();
+      const auto = settings.startup?.autoReconnect !== false;
+      const wanted = captureBackendNeeded();
+      if (selectedGamePid && selectedProcessAlive === false && wanted && auto) {
+        addLog('app', 'warn', `游戏进程 ${selectedGamePid} 已退出，正在自动重连…`);
+        await reconnectGameProcess({ reason: 'auto' });
+        return;
+      }
+      if (prevAlive !== selectedProcessAlive) {
+        broadcastState();
+      }
+    } catch (error) {
+      log.warn('process watch failed', error?.message || error);
+    }
+  }, 4000);
+}
+
+function toggleMainWindowVisible() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createMainWindow();
+    return;
+  }
+  if (mainWindow.isVisible() && !mainWindow.isMinimized()) {
+    mainWindow.hide();
+  } else {
+    mainWindow.show();
+    mainWindow.focus();
+  }
+}
+
+function toggleOverlayVisibleHotkey() {
+  const current = appSettings();
+  const next = !(current.overlay?.visible !== false);
+  current.overlay = { ...(current.overlay || {}), visible: next };
+  persistAppSettings(current);
+  if (next) overlayWindow?.showInactive();
+  else overlayWindow?.hide();
+  broadcastState({ immediate: true });
+}
+
+function registerAppHotkeys() {
+  try {
+    globalShortcut.unregisterAll();
+  } catch {
+    // ignore
+  }
+  const hotkeys = appSettings().hotkeys || {};
+  const overlayAccel = String(hotkeys.toggleOverlay || '').trim();
+  const windowAccel = String(hotkeys.toggleWindow || '').trim();
+  if (overlayAccel) {
+    try {
+      globalShortcut.register(overlayAccel, () => toggleOverlayVisibleHotkey());
+    } catch (error) {
+      addLog('app', 'warn', `注册悬浮窗热键失败：${overlayAccel}（${error.message}）`);
+    }
+  }
+  if (windowAccel) {
+    try {
+      globalShortcut.register(windowAccel, () => toggleMainWindowVisible());
+    } catch (error) {
+      addLog('app', 'warn', `注册主窗口热键失败：${windowAccel}（${error.message}）`);
+    }
+  }
+}
+
+function createAppTray() {
+  if (appTray) {
+    try { appTray.destroy(); } catch { /* ignore */ }
+    appTray = null;
+  }
+  const settings = appSettings();
+  if (settings.startup?.tray === false) return;
+  const icon = appIconPath();
+  if (!icon) return;
+  try {
+    appTray = new Tray(icon);
+    appTray.setToolTip('ECO 工具箱');
+    appTray.setContextMenu(Menu.buildFromTemplate([
+      {
+        label: '显示主窗口',
+        click: () => {
+          if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+          else {
+            mainWindow.show();
+            mainWindow.focus();
+          }
+        }
+      },
+      { label: '显示/隐藏悬浮窗', click: () => toggleOverlayVisibleHotkey() },
+      { label: '刷新游戏进程', click: () => { void refreshGameProcesses(); } },
+      { label: '重新连接', click: () => { void reconnectGameProcess({ reason: 'tray' }); } },
+      { type: 'separator' },
+      { label: '退出', click: () => beginGracefulShutdown('tray-quit') }
+    ]));
+    appTray.on('double-click', () => {
+      if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+      else {
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
+  } catch (error) {
+    log.warn('tray create failed', error?.message || error);
+  }
+}
+
+function getDiagnosticsPayload() {
+  return collectDiagnostics({
+    appVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+    selectedGamePid,
+    selectedXiaoyaPid,
+    gameProcesses,
+    captureIntents: {
+      damage: damageCollectionWanted,
+      monitoring: isMonitoringWanted()
+    },
+    services: publicServices(),
+    logs
+  });
+}
+
+function buildDiagnosticsText() {
+  const diag = getDiagnosticsPayload();
+  const health = currentConnectionHealth();
+  const lines = [
+    formatDiagnosticsText(diag),
+    '## connection health',
+    JSON.stringify(health, null, 2),
+    '',
+    '## hints'
+  ];
+  for (const hint of health.hints || []) lines.push(`- ${hint}`);
+  lines.push('');
+  return lines.join('\n');
+}
+
 ipcMain.handle('app:get-state', () => publicState());
+ipcMain.handle('app:get-diagnostics', () => ({
+  ok: true,
+  text: buildDiagnosticsText(),
+  health: currentConnectionHealth(),
+  diagnostics: getDiagnosticsPayload()
+}));
+ipcMain.handle('app:copy-diagnostics', () => {
+  const text = buildDiagnosticsText();
+  clipboard.writeText(text);
+  addLog('app', 'info', '诊断信息已复制到剪贴板');
+  return { ok: true, text };
+});
+ipcMain.handle('app:reconnect', async () => reconnectGameProcess({ reason: 'manual' }));
+ipcMain.handle('app:set-onboarding-seen', (_event, seen = true) => {
+  const current = appSettings();
+  current.onboarding = { ...(current.onboarding || {}), seenGuide: Boolean(seen) };
+  persistAppSettings(current);
+  broadcastState();
+  return { ok: true, settings: settingsPublic(current) };
+});
+ipcMain.handle('config:export', async (_event, options = {}) => {
+  const bundle = buildConfigBundle({
+    settings: appSettings(),
+    custom_durations: loadCustomBuffDurations(),
+    translation: translationSettings(),
+    includeSecrets: Boolean(options.includeSecrets),
+    appVersion: app.getVersion()
+  });
+  const result = await dialog.showSaveDialog(mainWindow || undefined, {
+    title: '导出工具箱配置',
+    defaultPath: path.join(app.getPath('documents'), `eco-toolbox-config-${Date.now()}.json`),
+    filters: [{ name: 'JSON', extensions: ['json'] }]
+  });
+  if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+  fs.writeFileSync(result.filePath, `${JSON.stringify(bundle, null, 2)}\n`, 'utf8');
+  addLog('app', 'info', `配置已导出 → ${result.filePath}`);
+  return { ok: true, path: result.filePath };
+});
+ipcMain.handle('config:import', async () => {
+  const result = await dialog.showOpenDialog(mainWindow || undefined, {
+    title: '导入工具箱配置',
+    properties: ['openFile'],
+    filters: [{ name: 'JSON', extensions: ['json'] }]
+  });
+  if (result.canceled || !result.filePaths?.[0]) return { ok: false, cancelled: true };
+  try {
+    const parsed = parseConfigBundle(fs.readFileSync(result.filePaths[0], 'utf8'));
+    if (parsed.settings && Object.keys(parsed.settings).length) {
+      const next = mergeDeep(appSettings(), parsed.settings);
+      stripAppearanceRuntimeFields(next.appearance || {});
+      persistAppSettings(next);
+    }
+    if (parsed.custom_durations && Object.keys(parsed.custom_durations).length) {
+      saveCustomBuffDurations(parsed.custom_durations);
+      notifyDamageReloadCustomBuffs(parsed.custom_durations);
+    }
+    if (parsed.translation) {
+      const root = localDataDir();
+      writeJson(path.join(root, 'translate_config.json'), {
+        provider: parsed.translation.provider || 'deepseek',
+        model: parsed.translation.model || '',
+        base_url: parsed.translation.base_url || '',
+        api_key: parsed.translation.api_key || '',
+        first_wait: Number(parsed.translation.first_wait || 0),
+        target_lang: parsed.translation.target_lang || 'zh-CN',
+        player_names: Array.isArray(parsed.translation.player_names) ? parsed.translation.player_names : [],
+        toggle_hotkey: parsed.translation.toggle_hotkey || '',
+        skip_hotkey: parsed.translation.skip_hotkey || ''
+      });
+      if (parsed.translation.sync_url != null || parsed.translation.sync_enabled != null) {
+        writeJson(path.join(root, 'sync_config.json'), {
+          enabled: Boolean(parsed.translation.sync_enabled),
+          url: parsed.translation.sync_url || '',
+          token: parsed.translation.sync_token || ''
+        });
+      }
+    }
+    registerAppHotkeys();
+    createAppTray();
+    broadcastState({ immediate: true });
+    addLog('app', 'success', '配置已导入');
+    return { ok: true, settings: settingsPublic() };
+  } catch (error) {
+    return { ok: false, error: error.message || '导入失败' };
+  }
+});
+ipcMain.handle('presets:list', () => ({ ok: true, presets: characterPresets.loadAll() }));
+ipcMain.handle('presets:save', (_event, payload = {}) => {
+  const name = String(payload.name || '').trim() || '未命名预设';
+  const result = characterPresets.upsert({
+    id: payload.id || `preset-${Date.now()}`,
+    name,
+    note: payload.note || '',
+    capture: payload.capture || appSettings().capture || {},
+    custom_durations: payload.custom_durations || loadCustomBuffDurations(),
+    overlay: {
+      density: appSettings().overlay?.density || 'comfortable',
+      expiryWarningSeconds: appSettings().overlay?.expiryWarningSeconds,
+      ...(payload.overlay || {})
+    }
+  });
+  broadcastState();
+  addLog('app', 'info', `角色预设已保存：${name}`);
+  return { ok: true, ...result };
+});
+ipcMain.handle('presets:apply', (_event, id) => {
+  const preset = characterPresets.loadAll().find((p) => p.id === id);
+  if (!preset) return { ok: false, error: '预设不存在' };
+  const current = appSettings();
+  if (preset.capture) current.capture = { ...(current.capture || {}), ...preset.capture };
+  if (preset.overlay) {
+    current.overlay = {
+      ...(current.overlay || {}),
+      density: preset.overlay.density || current.overlay?.density,
+      expiryWarningSeconds: preset.overlay.expiryWarningSeconds ?? current.overlay?.expiryWarningSeconds
+    };
+  }
+  persistAppSettings(current);
+  if (preset.custom_durations) {
+    saveCustomBuffDurations(preset.custom_durations);
+    notifyDamageReloadCustomBuffs(preset.custom_durations);
+  }
+  if (services.damage?.stdin?.writable && preset.capture) {
+    try {
+      services.damage.stdin.write(`${JSON.stringify({ action: 'set-categories', categories: current.capture })}\n`);
+    } catch { /* ignore */ }
+  }
+  broadcastState({ immediate: true });
+  addLog('app', 'info', `已应用角色预设：${preset.name}`);
+  return {
+    ok: true,
+    preset,
+    settings: settingsPublic(current),
+    custom_durations: loadCustomBuffDurations()
+  };
+});
+ipcMain.handle('presets:delete', (_event, id) => {
+  const result = characterPresets.remove(id);
+  broadcastState();
+  return { ok: true, ...result };
+});
 ipcMain.handle('game-processes:refresh', () => refreshGameProcesses());
 ipcMain.handle('game-processes:select', (_event, pid) => selectGameProcess(pid));
 ipcMain.handle('game-processes:select-xiaoya', (_event, pid) => selectXiaoyaProcess(pid));
@@ -1165,6 +1620,10 @@ ipcMain.handle('settings:save-app', (_event, incoming) => {
     reconcileCaptureBackend();
   } else {
     broadcastState();
+  }
+  if (incoming?.hotkeys || incoming?.startup) {
+    registerAppHotkeys();
+    createAppTray();
   }
   return {
     ok: true,
@@ -1481,7 +1940,11 @@ app.whenReady().then(async () => {
   });
   createMainWindow();
   createOverlayWindow();
+  createAppTray();
+  registerAppHotkeys();
+  await refreshElevation();
   await refreshGameProcesses();
+  await checkSelectedProcessAlive();
   const settings = appSettings();
   // Damage collection and status monitoring are independent intents sharing one backend.
   if (settings.startup.damage) damageCollectionWanted = true;
@@ -1491,12 +1954,14 @@ app.whenReady().then(async () => {
     persistAppSettings(next);
   }
   reconcileCaptureBackend();
+  startProcessWatch();
   if (!isDemo) {
     if (settings.startup.translator) startService('translator');
     if (settings.updates.checkOnStartup) {
       setTimeout(() => updateService.check(), 3500);
     }
   }
+  broadcastState({ immediate: true });
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
@@ -1578,6 +2043,12 @@ app.on('before-quit', (event) => {
   // Always take over quit while backends may still be attached.
   event.preventDefault();
   beginGracefulShutdown('before-quit');
+});
+
+app.on('will-quit', () => {
+  try { globalShortcut.unregisterAll(); } catch { /* ignore */ }
+  try { if (processWatchTimer) clearInterval(processWatchTimer); } catch { /* ignore */ }
+  try { if (appTray) appTray.destroy(); } catch { /* ignore */ }
 });
 
 app.on('window-all-closed', () => {

@@ -201,12 +201,24 @@ def main():
     except KeyboardInterrupt:
         cleanup("keyboard-interrupt")
     except Exception as exc:
-        text = str(exc)
-        if "access" in text.lower() or "denied" in text.lower() or "权限" in text:
+        raw = str(exc)
+        low = raw.lower()
+        if "access" in low or "denied" in low or "权限" in raw:
+            code = "ECO_E03"
             text = f"连接进程 {pid} 失败：{exc}。请尝试以管理员身份运行 ECO 工具箱。"
-        else:
+        elif "不存在" in raw or "not found" in low or "exited" in low:
+            code = "ECO_E02"
             text = f"连接进程 {pid} 失败：{exc}"
-        emit("status", service="damage", state="error", message=text)
+        else:
+            code = "ECO_E04"
+            text = f"连接进程 {pid} 失败：{exc}"
+        emit(
+            "status",
+            service="damage",
+            state="error",
+            message=f"[{code}] {text}",
+            error_code=code,
+        )
         cleanup("error")
         return 1
     finally:

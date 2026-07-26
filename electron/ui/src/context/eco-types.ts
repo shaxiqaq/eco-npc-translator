@@ -77,6 +77,14 @@ export type EcoContextValue = {
     count?: number;
   }>;
   providerPreset: (provider: string) => { model: string; url: string } | null;
+  copyDiagnostics: () => Promise<{ ok: boolean; text?: string; error?: string }>;
+  reconnectGame: () => Promise<{ ok: boolean; error?: string; selectedPid?: number | null }>;
+  setOnboardingSeen: (seen?: boolean) => Promise<{ ok: boolean }>;
+  exportConfig: (includeSecrets?: boolean) => Promise<{ ok: boolean; cancelled?: boolean; path?: string; error?: string }>;
+  importConfig: () => Promise<{ ok: boolean; cancelled?: boolean; error?: string }>;
+  saveCharacterPreset: (name: string) => Promise<{ ok: boolean; error?: string }>;
+  applyCharacterPreset: (id: string) => Promise<{ ok: boolean; error?: string }>;
+  deleteCharacterPreset: (id: string) => Promise<{ ok: boolean; error?: string }>;
 };
 
 // Re-export commonly used types for hooks

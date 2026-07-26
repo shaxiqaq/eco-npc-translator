@@ -1,6 +1,6 @@
 {
   "name": "eco-toolbox",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "ECO 本地工具箱：NPC 实时翻译、伤害统计、状态悬浮窗与技能计时",
   "main": "main.js",
   "private": true,
@@ -11,6 +11,7 @@
     "build:ui": "vite build",
     "build:ts": "tsc --build",
     "test": "node --test test/*.test.js",
+    "smoke": "node scripts/smoke.mjs",
     "build:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-backend.ps1",
     "build:icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-icon-helper.ps1",
     "build:xiaoya-core": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-xiaoya-core.ps1",

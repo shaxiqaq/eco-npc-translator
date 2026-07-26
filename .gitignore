@@ -23,6 +23,12 @@ damage_overlay_config.json
 **/damage_overlay_config.json
 player_names.json
 **/player_names.json
+# Per-user / runtime toolbox state (do not commit)
+data/skill_library.json
+**/character_presets.json
+**/app_settings.json
+.tmp_*
+.tmp_*/
 
 # 逆向提取的 AES 密钥 / 运行日志 - 不发布
 keys.jsonl

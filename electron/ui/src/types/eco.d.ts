@@ -13,6 +13,9 @@ export type ServiceState = {
   state?: string;
   message?: string;
   pid?: number | null;
+  /** Stable remote-support code, e.g. ECO_E03 */
+  errorCode?: string;
+  errorHint?: string;
 };
 
 export type XiaoyaSkill = {
@@ -88,6 +91,7 @@ export type AppSettings = {
     scale?: number;
     opacity?: number;
     expiryWarningSeconds?: number;
+    density?: 'comfortable' | 'compact' | 'large' | 'expiring' | string;
     x?: number | null;
     y?: number | null;
     width?: number;
@@ -98,9 +102,42 @@ export type AppSettings = {
     translator?: boolean;
     overlay?: boolean;
     monitoring?: boolean;
+    tray?: boolean;
+    minimizeToTray?: boolean;
+    autoReconnect?: boolean;
+  };
+  hotkeys?: {
+    toggleOverlay?: string;
+    toggleWindow?: string;
+  };
+  onboarding?: {
+    seenGuide?: boolean;
   };
   appearance?: AppearanceSettings;
   updates?: { checkOnStartup?: boolean };
+};
+
+export type ConnectionHealth = {
+  status?: string;
+  elevated?: boolean | null;
+  selectedGamePid?: number | null;
+  selectedXiaoyaPid?: number | null;
+  processAlive?: boolean | null;
+  processInList?: boolean;
+  gameProcessCount?: number;
+  hostname?: string;
+  hints?: string[];
+  serviceMessage?: string;
+};
+
+export type CharacterPreset = {
+  id: string;
+  name: string;
+  updatedAt?: string;
+  note?: string;
+  capture?: Record<string, boolean>;
+  custom_durations?: Record<string, CustomBuffEntry | number | string>;
+  overlay?: AppSettings['overlay'];
 };
 
 export type TranslationSettings = {
@@ -179,6 +216,8 @@ export type EcoAppState = {
   custom_durations?: Record<string, CustomBuffEntry | number | string>;
   skill_library?: Array<{ skill_id: number; name?: string; count?: number; last_used?: number }>;
   xiaoya?: ServiceState & { targetPid?: number | null };
+  connectionHealth?: ConnectionHealth;
+  characterPresets?: CharacterPreset[];
 };
 
 export type EcoApi = {
@@ -230,6 +269,22 @@ export type EcoApi = {
   toggleXiaoyaSs: () => Promise<{ ok: boolean; error?: string }>;
   toggleXiaoyaVisibility: () => Promise<{ ok: boolean; error?: string }>;
   openXiaoyaFolder: () => Promise<{ ok: boolean; error?: string }>;
+  getDiagnostics: () => Promise<{ ok: boolean; text?: string; health?: ConnectionHealth; error?: string }>;
+  copyDiagnostics: () => Promise<{ ok: boolean; text?: string; error?: string }>;
+  reconnectGame: () => Promise<{ ok: boolean; error?: string; selectedPid?: number | null }>;
+  setOnboardingSeen: (seen?: boolean) => Promise<{ ok: boolean; settings?: AppSettings }>;
+  exportConfig: (options?: { includeSecrets?: boolean }) => Promise<{ ok: boolean; cancelled?: boolean; path?: string; error?: string }>;
+  importConfig: () => Promise<{ ok: boolean; cancelled?: boolean; settings?: AppSettings; error?: string }>;
+  listPresets: () => Promise<{ ok: boolean; presets?: CharacterPreset[] }>;
+  savePreset: (payload: Partial<CharacterPreset> & { name?: string }) => Promise<{ ok: boolean; preset?: CharacterPreset; error?: string }>;
+  applyPreset: (id: string) => Promise<{
+    ok: boolean;
+    preset?: CharacterPreset;
+    settings?: AppSettings;
+    custom_durations?: Record<string, CustomBuffEntry>;
+    error?: string;
+  }>;
+  deletePreset: (id: string) => Promise<{ ok: boolean; error?: string }>;
   onState: (callback: (state: EcoAppState) => void) => () => void;
   onSnapshot: (callback: (snapshot: Snapshot) => void) => () => void;
   onLog: (callback: (entry: EcoLogEntry) => void) => () => void;

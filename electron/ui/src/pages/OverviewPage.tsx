@@ -24,6 +24,7 @@ import {
   EmptyState,
   TextLink,
 } from '@/components/layout';
+import { ConnectionBanner } from '@/components/ConnectionBanner';
 import { cn } from '@/lib/utils';
 
 function ServiceChip({
@@ -81,6 +82,7 @@ export function OverviewPage() {
 
   return (
     <PageStack>
+      <ConnectionBanner />
       {/* 服务总控：单行四项，不占纵向空间 */}
       <Card className="flex flex-row divide-x divide-[var(--line-soft)] overflow-hidden p-0">
         <ServiceChip

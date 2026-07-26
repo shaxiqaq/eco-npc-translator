@@ -46,6 +46,12 @@ function collectDiagnostics({
     },
     captureIntents: captureIntents || {},
     services: services || {},
+    // Surface ECO_Exx codes when present on service state.
+    errorCodes: Object.fromEntries(
+      Object.entries(services || {})
+        .filter(([, value]) => value && value.errorCode)
+        .map(([key, value]) => [key, { code: value.errorCode, message: value.message || '' }])
+    ),
     recentLogs: (logs || []).slice(-80)
   };
 }

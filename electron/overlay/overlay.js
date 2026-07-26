@@ -60,6 +60,7 @@ function activeSkillTimers(list = [], category, keyPrefix) {
 }
 
 let monitoringEnabled = true;
+let densityMode = 'comfortable';
 
 function activeOverlayItems(source = snapshot) {
   if (!monitoringEnabled) return [];
@@ -67,7 +68,11 @@ function activeOverlayItems(source = snapshot) {
   const effects = activeSkillTimers(source?.skill_effect_timers || [], 'skill_duration', 'skill_effect');
   const cooldowns = activeSkillTimers(source?.skill_cooldowns || [], 'cooldown', 'skill_cd');
   // Skill timers first: effect duration, then CD, then buffs.
-  return [...effects, ...cooldowns, ...buffs];
+  let items = [...effects, ...cooldowns, ...buffs];
+  if (densityMode === 'expiring') {
+    items = items.filter((item) => window.ecoBuffWarning.isBuffExpiring(item, warningSeconds));
+  }
+  return items;
 }
 
 function resolveOverlayBgMode(appearance = {}) {
@@ -83,10 +88,17 @@ function cssUrl(value) {
 }
 
 function applyOverlayChrome(settings = {}, appearance = {}) {
-  const scale = Math.min(1.4, Math.max(0.8, Number(settings.scale) || 1));
+  let scale = Math.min(1.4, Math.max(0.8, Number(settings.scale) || 1));
+  densityMode = String(settings.density || 'comfortable');
+  if (densityMode === 'compact') scale = Math.min(scale, 0.9);
+  if (densityMode === 'large') scale = Math.max(scale, 1.15);
   document.documentElement.style.setProperty('--overlay-scale', String(scale));
   monitoringEnabled = settings.monitoring !== false;
-  $('#overlay')?.classList.toggle('monitoring-off', !monitoringEnabled);
+  const root = $('#overlay');
+  root?.classList.toggle('monitoring-off', !monitoringEnabled);
+  root?.classList.toggle('density-compact', densityMode === 'compact');
+  root?.classList.toggle('density-large', densityMode === 'large');
+  root?.classList.toggle('density-expiring', densityMode === 'expiring');
 
   const mode = resolveOverlayBgMode(appearance);
   let bgUrl = '';
