@@ -1,0 +1,112 @@
+@import "tailwindcss";
+@import "./theme.css";
+@import "./app-legacy.css";
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--text);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--text);
+  --color-primary: var(--amber);
+  --color-primary-foreground: var(--accent-ink);
+  --color-secondary: var(--surface-2);
+  --color-secondary-foreground: var(--text);
+  --color-muted: var(--surface-2);
+  --color-muted-foreground: var(--muted);
+  --color-accent: var(--accent-soft);
+  --color-accent-foreground: var(--amber-hi);
+  --color-destructive: var(--red);
+  --color-border: var(--line);
+  --color-input: var(--line);
+  --color-ring: var(--accent-border);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  color-scheme: dark;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page-host {
+  display: block;
+  padding: 20px 28px 30px;
+  min-height: 0;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+[data-radix-popper-content-wrapper] {
+  z-index: 60 !important;
+}
+
+/* shadcn controls inside legacy dense rows */
+.metric .metric-heading,
+.capture-control,
+.custom-buff-overlay,
+.toggle-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.metric .metric-heading {
+  justify-content: space-between;
+}
+
+.custom-buff-overlay,
+.toggle-inline {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.skill-icon.skill-icon-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Prefer shadcn button look over legacy .btn when both apply */
+button.inline-flex {
+  letter-spacing: 0;
+}
+
+/* Softer page rhythm when using Card-based sections */
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.page-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}

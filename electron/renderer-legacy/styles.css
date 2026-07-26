@@ -1531,6 +1531,35 @@ input:focus, select:focus { border-color: var(--amber); box-shadow: 0 0 0 2px va
 .xiaoya-state { min-height: 34px; padding: 0 11px; display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); font-size: 10px; }
 .xiaoya-state.running { border-color: #386149; color: var(--green); background: #1c2b22; }
 .xiaoya-state.error { border-color: #713e40; color: var(--red); background: #2c1d1e; }
+.xiaoya-target-bar {
+  margin: -6px 0 16px;
+  padding: 14px 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) auto minmax(180px, .8fr);
+  gap: 14px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  backdrop-filter: var(--glass);
+  -webkit-backdrop-filter: var(--glass);
+}
+.xiaoya-target-copy { min-width: 0; }
+.xiaoya-target-copy strong,
+.xiaoya-target-copy span { display: block; }
+.xiaoya-target-copy strong { margin-bottom: 4px; font-size: 13px; }
+.xiaoya-target-copy span { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.xiaoya-process-picker select { width: min(260px, 36vw); }
+.xiaoya-target-hint {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: right;
+}
+.xiaoya-target-hint.is-split { color: var(--green); }
+.xiaoya-target-hint.is-same { color: var(--amber); }
 .xiaoya-config {
   padding: 20px;
   border: 1px solid var(--line);
@@ -1594,6 +1623,12 @@ input:focus, select:focus { border-color: var(--amber); box-shadow: 0 0 0 2px va
   .capture-controls-title { grid-column: 1 / -1; min-height: 42px; border-bottom: 1px solid var(--line); }
   .capture-control { min-height: 50px; border-bottom: 1px solid var(--line); }
   .xiaoya-hero { align-items: flex-start; flex-direction: column; }
+  .xiaoya-target-bar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+  .xiaoya-target-hint { text-align: left; }
+  .xiaoya-process-picker select { width: 100%; }
   .xiaoya-grid-heading, .xiaoya-skill-row { grid-template-columns: 54px 70px minmax(125px, 1fr) 70px minmax(125px, 1fr); gap: 8px; }
   .settings-layout { grid-template-columns: 1fr; }
   .settings-nav { position: static; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }

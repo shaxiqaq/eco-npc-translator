@@ -53,11 +53,13 @@ class XiaoyaCoreService {
   }
 
   snapshot() {
+    const targetPid = Number(this.getTargetPid());
     return {
       available: fs.existsSync(this.corePath),
       state: this.state,
       message: this.message,
       pid: this.child?.pid || null,
+      targetPid: Number.isSafeInteger(targetPid) && targetPid > 0 ? targetPid : null,
       running: Boolean(this.child),
       runtimeDir: this.runtimeDir,
       version: this.version,
@@ -110,8 +112,27 @@ class XiaoyaCoreService {
   targetPidOrThrow() {
     const targetPid = Number(this.getTargetPid());
     if (!Number.isSafeInteger(targetPid) || targetPid <= 0)
-      throw new Error('请先在进程管理中选择要控制的 ECO 进程');
+      throw new Error('请先在小雅页面选择要控制的 ECO 进程（可与顶部主进程不同）');
     return targetPid;
+  }
+
+  /** Re-send configure when the user switches Xiaoya target while running. */
+  async applyTargetPidChange() {
+    if (!this.child) return { ok: true, state: this.snapshot() };
+    try {
+      const targetPid = this.targetPidOrThrow();
+      await this.request('configure', this.configurationPayload());
+      if (this.state === 'running') {
+        this.emit('running', `后台技能循环正在运行（目标进程 ${targetPid}）`);
+      } else if (this.state === 'starting') {
+        this.emit('starting', `正在连接 ECO 进程 ${targetPid}`);
+      } else {
+        this.onState(this.snapshot());
+      }
+      return { ok: true, state: this.snapshot() };
+    } catch (error) {
+      return { ok: false, error: error.message, state: this.snapshot() };
+    }
   }
 
   async ensureConnected() {

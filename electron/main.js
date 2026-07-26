@@ -46,6 +46,8 @@ let overlayEditing = false;
 let demoTimer = null;
 let gameProcesses = [];
 let selectedGamePid = null;
+/** Independent target for Xiaoya (often a secondary eco.exe). */
+let selectedXiaoyaPid = null;
 let updateService = null;
 let skillIconService = null;
 let xiaoyaService = null;
@@ -54,7 +56,9 @@ let gracefulQuitComplete = false;
 
 const defaultAppSettings = {
   game: {
-    pid: null
+    pid: null,
+    // Separate from main toolbox PID: Xiaoya is usually bound to a multi-client alt.
+    xiaoyaPid: null
   },
   capture: {
     skill: true,
@@ -792,6 +796,7 @@ function publicState() {
     },
     gameProcesses,
     selectedGamePid,
+    selectedXiaoyaPid,
     processSelectionLocked: processSelectionLocked(),
     snapshot: latestSnapshot,
     settings: (() => {
@@ -824,8 +829,21 @@ function publicState() {
 
 function persistSelectedGamePid(pid) {
   const settings = appSettings();
-  settings.game.pid = pid;
+  settings.game = { ...(settings.game || {}), pid };
   writeJson(path.join(dataDir(), 'app_settings.json'), settings);
+}
+
+function persistSelectedXiaoyaPid(pid) {
+  const settings = appSettings();
+  settings.game = { ...(settings.game || {}), xiaoyaPid: pid };
+  writeJson(path.join(dataDir(), 'app_settings.json'), settings);
+}
+
+function pickPidFromList(preferredList, processes) {
+  return preferredList
+    .map((pid) => Number(pid))
+    .find((pid) => Number.isSafeInteger(pid) && pid > 0 && processes.some((process) => process.pid === pid))
+    || null;
 }
 
 async function refreshGameProcesses() {
@@ -837,20 +855,36 @@ async function refreshGameProcesses() {
         ]
       : await listGameProcesses();
     const previousPid = selectedGamePid;
-    const configuredPid = Number(appSettings().game?.pid) || null;
+    const previousXiaoyaPid = selectedXiaoyaPid;
+    const settings = appSettings();
+    const configuredPid = Number(settings.game?.pid) || null;
+    const configuredXiaoyaPid = Number(settings.game?.xiaoyaPid) || null;
     gameProcesses = found;
-    selectedGamePid = [previousPid, configuredPid]
-      .find((pid) => gameProcesses.some((process) => process.pid === pid))
+
+    selectedGamePid = pickPidFromList([previousPid, configuredPid], gameProcesses)
       || gameProcesses.at(-1)?.pid
       || null;
 
+    // Xiaoya defaults to a different client when multi-open; fall back to any available.
+    selectedXiaoyaPid = pickPidFromList([previousXiaoyaPid, configuredXiaoyaPid], gameProcesses)
+      || gameProcesses.find((process) => process.pid !== selectedGamePid)?.pid
+      || selectedGamePid
+      || null;
+
     if (!isDemo && selectedGamePid !== configuredPid) persistSelectedGamePid(selectedGamePid);
+    if (!isDemo && selectedXiaoyaPid !== configuredXiaoyaPid) persistSelectedXiaoyaPid(selectedXiaoyaPid);
     if (previousPid && selectedGamePid !== previousPid) latestSnapshot = null;
     broadcastState();
-    return { ok: true, processes: gameProcesses, selectedPid: selectedGamePid };
+    return {
+      ok: true,
+      processes: gameProcesses,
+      selectedPid: selectedGamePid,
+      selectedXiaoyaPid
+    };
   } catch (error) {
     gameProcesses = [];
     selectedGamePid = null;
+    selectedXiaoyaPid = null;
     broadcastState();
     return { ok: false, error: `读取游戏进程失败：${error.message}`, processes: [] };
   }
@@ -871,6 +905,32 @@ function selectGameProcess(pid) {
   return { ok: true, selectedPid: selectedGamePid };
 }
 
+function selectXiaoyaProcess(pid) {
+  const normalized = Number(pid);
+  if (!gameProcesses.some((process) => process.pid === normalized)) {
+    return { ok: false, error: '所选游戏进程已经退出，请刷新列表' };
+  }
+  selectedXiaoyaPid = normalized;
+  if (!isDemo) persistSelectedXiaoyaPid(selectedXiaoyaPid);
+
+  // Hot-swap target while Xiaoya is already running.
+  if (xiaoyaService && ['running', 'starting'].includes(xiaoyaService.state)) {
+    xiaoyaService.applyTargetPidChange()
+      .then((result) => {
+        if (!result?.ok) addLog('xiaoya', 'error', result?.error || '切换小雅目标进程失败');
+        else addLog('xiaoya', 'info', `小雅目标进程已切换为 ${selectedXiaoyaPid}`);
+        broadcastState();
+      })
+      .catch((error) => {
+        addLog('xiaoya', 'error', `切换小雅目标进程失败：${error.message}`);
+        broadcastState();
+      });
+  } else {
+    broadcastState();
+  }
+  return { ok: true, selectedXiaoyaPid };
+}
+
 function broadcast(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
   if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.webContents.send(channel, payload);
@@ -880,14 +940,44 @@ function broadcastState() {
   broadcast('app:state', publicState());
 }
 
-function addLog(service, level, message) {
-  const entry = { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), service, level, message };
+function addLog(service, level, message, options = {}) {
+  const primary = String(service || 'app');
+  const also = Array.isArray(options.also) ? options.also.map(String).filter(Boolean) : [];
+  const channels = [...new Set([primary, ...also])];
+  const entry = {
+    time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+    service: primary,
+    channels,
+    level,
+    message
+  };
   logs.push(entry);
   if (logs.length > 1000) logs.splice(0, logs.length - 1000);
-  if (level === 'error') log.error(service, message);
-  else if (level === 'warn' || level === 'warning') log.warn(service, message);
-  else log.debug(service, message);
+  if (level === 'error') log.error(primary, message);
+  else if (level === 'warn' || level === 'warning') log.warn(primary, message);
+  else log.debug(primary, message);
   broadcast('service:log', entry);
+}
+
+/** Shared capture backend can serve damage and/or monitoring — tag logs for both filters. */
+function addCaptureLog(level, message) {
+  const mon = isMonitoringWanted();
+  const dmg = damageCollectionWanted;
+  if (dmg && mon) return addLog('damage', level, message, { also: ['monitoring'] });
+  if (mon && !dmg) return addLog('monitoring', level, message);
+  return addLog('damage', level, message);
+}
+
+function filterLogs(filter = 'all') {
+  const key = String(filter || 'all');
+  if (!key || key === 'all') return logs.slice();
+  return logs.filter((entry) => {
+    if (entry.service === key) return true;
+    if (Array.isArray(entry.channels) && entry.channels.includes(key)) return true;
+    // Legacy / aliases
+    if (key === 'monitoring' && (entry.service === 'buffs' || entry.service === 'monitoring')) return true;
+    return false;
+  });
 }
 
 function setServiceState(name, state, message, extra = {}) {
@@ -931,10 +1021,10 @@ function handleDamageMessage(message) {
     let statusMessage = message.message || '';
     if (message.state === 'running') statusMessage = captureRoleMessage();
     setServiceState('damage', message.state, statusMessage, { pid: message.pid, log: message.log });
-    addLog('damage', message.state === 'error' ? 'error' : 'info', statusMessage || message.state);
+    addCaptureLog(message.state === 'error' ? 'error' : 'info', statusMessage || message.state);
     return;
   }
-  if (message.type === 'notice') addLog('damage', message.level || 'info', message.message || '');
+  if (message.type === 'notice') addCaptureLog(message.level || 'info', message.message || '');
 }
 
 function startCaptureBackend() {
@@ -956,14 +1046,14 @@ function startCaptureBackend() {
   const launchLabel = app.isPackaged
     ? path.basename(runtime.command)
     : path.basename(runtime.args?.[1] || runtime.command);
-  addLog('damage', 'info', `启动 ${launchLabel}，连接游戏进程 ${selectedGamePid}`);
+  addCaptureLog('info', `启动 ${launchLabel}，连接游戏进程 ${selectedGamePid}`);
   try {
     if (!app.isPackaged) {
       const scriptPath = runtime.args?.[1];
       if (scriptPath && !fs.existsSync(scriptPath)) {
         const message = `找不到后端脚本：${scriptPath}`;
         setServiceState('damage', 'error', message);
-        addLog('damage', 'error', message);
+        addCaptureLog('error', message);
         return { ok: false, error: message };
       }
     }
@@ -994,15 +1084,15 @@ function startCaptureBackend() {
       try {
         handleDamageMessage(JSON.parse(line));
       } catch {
-        if (line.trim()) addLog('damage', 'info', line.trim());
+        if (line.trim()) addCaptureLog('info', line.trim());
       }
     });
 
     const errors = readline.createInterface({ input: child.stderr });
-    errors.on('line', (line) => line.trim() && addLog('damage', 'error', line.trim()));
+    errors.on('line', (line) => line.trim() && addCaptureLog('error', line.trim()));
 
     child.on('error', (error) => {
-      addLog('damage', 'error', error.message);
+      addCaptureLog('error', error.message);
       setServiceState('damage', 'error', error.message);
     });
     child.on('exit', (code) => {
@@ -1193,30 +1283,31 @@ function waitForChildExit(child, waitMs = 12000) {
 async function stopChildGracefully(name, child, { waitMs = 12000 } = {}) {
   if (!child) return { ok: true };
   setServiceState(name, 'stopping', '正在安全卸载抓包钩子…');
-  addLog(name, 'info', '正在安全断开 Frida（Windows 上不会强杀后端，避免游戏闪退）…');
+  const logFn = name === 'damage' ? addCaptureLog : (level, message) => addLog(name, level, message);
+  logFn('info', '正在安全断开 Frida（Windows 上不会强杀后端，避免游戏闪退）…');
   requestGracefulStop(name, child);
 
   // Wait for Python to finish dispose()+unload()+detach() and exit by itself.
   // On Windows, child.kill() === force kill and must NOT be used while attached.
   const exited = await waitForChildExit(child, waitMs);
   if (exited) {
-    addLog(name, 'info', '后端已安全退出，钩子应已卸载');
+    logFn('info', '后端已安全退出，钩子应已卸载');
     return { ok: true };
   }
 
   // Still alive: send stop once more via a best-effort signal only on non-Windows.
   if (process.platform !== 'win32') {
-    addLog(name, 'info', `后端 ${waitMs}ms 内未退出，发送 SIGTERM…`);
+    logFn('info', `后端 ${waitMs}ms 内未退出，发送 SIGTERM…`);
     try { child.kill('SIGTERM'); } catch { /* ignore */ }
     const exitedSoft = await waitForChildExit(child, 3000);
     if (exitedSoft) {
-      addLog(name, 'info', '后端已在 SIGTERM 后退出');
+      logFn('info', '后端已在 SIGTERM 后退出');
       return { ok: true };
     }
   }
 
   // Absolute last resort — may still risk the game if Frida is mid-teardown.
-  addLog(name, 'warn', '后端仍未退出；最后尝试强制结束（仅后端，不杀游戏）。若仍闪退请先点停止采集再关工具箱。');
+  logFn('warn', '后端仍未退出；最后尝试强制结束（仅后端，不杀游戏）。若仍闪退请先点停止采集再关工具箱。');
   forceKillChild(child);
   await waitForChildExit(child, 2000);
   // Extra settle so the game can recover packet IO if hooks were already detached.
@@ -1362,7 +1453,17 @@ function setOverlayEditing(editing) {
   return true;
 }
 
+function appIconPath() {
+  const candidates = [
+    path.join(__dirname, 'build', 'icon.ico'),
+    path.join(__dirname, 'build', 'icon.png'),
+    path.join(__dirname, 'assets', 'icon.ico')
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || undefined;
+}
+
 function createMainWindow() {
+  const icon = appIconPath();
   mainWindow = new BrowserWindow({
     width: 1240,
     height: 790,
@@ -1372,13 +1473,22 @@ function createMainWindow() {
     title: 'ECO 工具箱',
     show: false,
     autoHideMenuBar: true,
+    ...(icon ? { icon } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false
     }
   });
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL || process.env.ELECTRON_RENDERER_URL;
+  if (devServerUrl) {
+    mainWindow.loadURL(devServerUrl);
+    if (process.env.ECO_UI_DEVTOOLS === '1') {
+      mainWindow.webContents.openDevTools({ mode: 'detach' });
+    }
+  } else {
+    mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  }
   mainWindow.once('ready-to-show', () => mainWindow.show());
   if (process.env.ECO_CAPTURE_PATH) {
     mainWindow.webContents.once('did-finish-load', () => setTimeout(async () => {
@@ -1534,6 +1644,7 @@ function stopDemo() {
 ipcMain.handle('app:get-state', () => publicState());
 ipcMain.handle('game-processes:refresh', () => refreshGameProcesses());
 ipcMain.handle('game-processes:select', (_event, pid) => selectGameProcess(pid));
+ipcMain.handle('game-processes:select-xiaoya', (_event, pid) => selectXiaoyaProcess(pid));
 ipcMain.handle('service:start', (_event, name) => startService(name));
 ipcMain.handle('service:stop', (_event, name) => stopService(name));
 ipcMain.handle('damage:reset', () => resetDamage());
@@ -1785,6 +1896,74 @@ ipcMain.handle('logs:open-folder', () => {
   shell.openPath(folder);
   return { ok: true };
 });
+
+ipcMain.handle('logs:export', async (_event, options = {}) => {
+  const filter = String(options.filter || 'all');
+  const format = String(options.format || 'txt').toLowerCase() === 'json' ? 'json' : 'txt';
+  const selected = filterLogs(filter);
+  if (!selected.length) {
+    return { ok: false, error: '当前筛选下没有可导出的日志' };
+  }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const filterSlug = filter === 'all' ? 'all' : filter;
+  const defaultName = `eco-toolbox-logs-${filterSlug}-${stamp}.${format}`;
+  const result = await dialog.showSaveDialog(mainWindow || undefined, {
+    title: '导出运行日志',
+    defaultPath: path.join(app.getPath('documents'), defaultName),
+    filters: format === 'json'
+      ? [{ name: 'JSON', extensions: ['json'] }, { name: '文本', extensions: ['txt', 'log'] }]
+      : [{ name: '文本', extensions: ['txt', 'log'] }, { name: 'JSON', extensions: ['json'] }]
+  });
+  if (result.canceled || !result.filePath) {
+    return { ok: false, cancelled: true };
+  }
+
+  let outPath = result.filePath;
+  const lower = outPath.toLowerCase();
+  if (format === 'json' && !lower.endsWith('.json')) outPath += '.json';
+  if (format === 'txt' && !/\.(txt|log)$/i.test(outPath)) outPath += '.txt';
+
+  try {
+    const serviceLabel = (service) => ({
+      damage: '伤害采集',
+      monitoring: '状态监控',
+      translator: 'NPC 翻译',
+      xiaoya: '小雅助手',
+      buffs: '状态监控',
+      app: '应用',
+      update: '更新'
+    }[service] || service || '未知');
+
+    let body = '';
+    if (outPath.toLowerCase().endsWith('.json')) {
+      body = `${JSON.stringify({
+        exportedAt: new Date().toISOString(),
+        filter,
+        count: selected.length,
+        logs: selected
+      }, null, 2)}\n`;
+    } else {
+      const header = [
+        '# ECO 工具箱运行日志导出',
+        `# 时间: ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+        `# 筛选: ${filter}`,
+        `# 条数: ${selected.length}`,
+        ''
+      ].join('\n');
+      body = header + selected.map((entry) => {
+        const level = entry.level || 'info';
+        const service = serviceLabel(entry.service);
+        return `[${entry.time || '--:--:--'}] [${service}] [${level}] ${entry.message || ''}`;
+      }).join('\n') + '\n';
+    }
+    fs.writeFileSync(outPath, body, 'utf8');
+    addLog('app', 'info', `已导出 ${selected.length} 条日志 → ${outPath}`);
+    return { ok: true, path: outPath, count: selected.length };
+  } catch (error) {
+    return { ok: false, error: error.message || '导出日志失败' };
+  }
+});
 ipcMain.handle('xiaoya:get-config', () => {
   if (!xiaoyaService) return { ok: false, error: '小雅服务尚未就绪' };
   try {
@@ -1849,7 +2028,7 @@ ipcMain.handle('buffs:save-custom-durations', (_event, durations) => {
       path: saved.path
     };
   } catch (e) {
-    addLog('buffs', 'error', `保存失败：${e.message}`);
+    addLog('monitoring', 'error', `保存自定义倒计时失败：${e.message}`);
     return { ok: false, error: String(e) };
   }
 });
@@ -1896,7 +2075,7 @@ app.whenReady().then(async () => {
       '小雅',
       '小雅身体配置.ini'
     ),
-    getTargetPid: () => selectedGamePid,
+    getTargetPid: () => selectedXiaoyaPid,
     onState: () => broadcastState(),
     onLog: (level, message) => addLog('xiaoya', level, message),
     onEvent: (event) => broadcast('xiaoya:event', event)

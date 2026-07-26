@@ -1,0 +1,120 @@
+/* Design tokens: keep current ECO amber-dark glass style, expose shadcn-friendly aliases */
+:root,
+[data-accent="amber"] {
+  color-scheme: dark;
+  --bg: #0c0a12;
+  --sidebar: rgba(16, 12, 22, .62);
+  --surface: rgba(28, 22, 36, .78);
+  --surface-2: rgba(36, 28, 48, .72);
+  --line: rgba(255, 255, 255, .10);
+  --line-soft: rgba(255, 255, 255, .06);
+  --text: #f7f4fb;
+  --muted: #a39bb0;
+  --amber: #f2b84b;
+  --amber-hi: #ffd27a;
+  --amber-lo: #e0a13a;
+  --amber-dark: rgba(62, 42, 18, .88);
+  --accent-ink: #17130c;
+  --accent-glow: rgba(242, 184, 75, .22);
+  --accent-soft: rgba(255, 210, 122, .16);
+  --accent-soft-2: rgba(255, 210, 122, .08);
+  --accent-border: rgba(242, 184, 75, .35);
+  --accent-select: rgba(242, 184, 75, .28);
+  --green: #69c58b;
+  --red: #f07872;
+  --blue: #6ba8da;
+  --teal: #65b9ad;
+  --radius: 12px;
+  --radius-sm: 9px;
+  --shadow: 0 10px 28px rgba(0, 0, 0, .28);
+  --glass: blur(14px) saturate(1.15);
+  --bg-image: none;
+  --bg-fit: cover;
+  --bg-dim: .52;
+  --bg-blur: 6px;
+
+  /* shadcn semantic aliases */
+  --background: var(--bg);
+  --foreground: var(--text);
+  --card: var(--surface);
+  --card-foreground: var(--text);
+  --popover: var(--surface);
+  --popover-foreground: var(--text);
+  --primary: var(--amber);
+  --primary-foreground: var(--accent-ink);
+  --secondary: var(--surface-2);
+  --secondary-foreground: var(--text);
+  --muted-bg: var(--surface-2);
+  --muted-foreground: var(--muted);
+  --accent: var(--accent-soft);
+  --accent-foreground: var(--amber-hi);
+  --destructive: var(--red);
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--accent-border);
+}
+
+[data-accent="teal"] {
+  --amber: #4ecfbf;
+  --amber-hi: #7ee6d8;
+  --amber-lo: #2ea99a;
+  --amber-dark: rgba(18, 54, 50, .9);
+  --accent-ink: #061614;
+  --accent-glow: rgba(78, 207, 191, .22);
+  --accent-soft: rgba(78, 207, 191, .16);
+  --accent-soft-2: rgba(78, 207, 191, .08);
+  --accent-border: rgba(78, 207, 191, .38);
+  --accent-select: rgba(78, 207, 191, .28);
+}
+
+[data-accent="violet"] {
+  --amber: #b794f6;
+  --amber-hi: #d4b8ff;
+  --amber-lo: #8b6ad4;
+  --amber-dark: rgba(42, 28, 68, .9);
+  --accent-ink: #140f1c;
+  --accent-glow: rgba(183, 148, 246, .24);
+  --accent-soft: rgba(183, 148, 246, .16);
+  --accent-soft-2: rgba(183, 148, 246, .08);
+  --accent-border: rgba(183, 148, 246, .38);
+  --accent-select: rgba(183, 148, 246, .28);
+}
+
+[data-accent="rose"] {
+  --amber: #f0a0b4;
+  --amber-hi: #ffc2d0;
+  --amber-lo: #d97a92;
+  --amber-dark: rgba(62, 28, 38, .9);
+  --accent-ink: #1a0f12;
+  --accent-glow: rgba(240, 160, 180, .24);
+  --accent-soft: rgba(240, 160, 180, .16);
+  --accent-soft-2: rgba(240, 160, 180, .08);
+  --accent-border: rgba(240, 160, 180, .38);
+  --accent-select: rgba(240, 160, 180, .28);
+}
+
+[data-accent="cyan"] {
+  --amber: #6ec8e8;
+  --amber-hi: #9adcf5;
+  --amber-lo: #3fa6cb;
+  --amber-dark: rgba(18, 42, 56, .9);
+  --accent-ink: #081218;
+  --accent-glow: rgba(110, 200, 232, .24);
+  --accent-soft: rgba(110, 200, 232, .16);
+  --accent-soft-2: rgba(110, 200, 232, .08);
+  --accent-border: rgba(110, 200, 232, .38);
+  --accent-select: rgba(110, 200, 232, .28);
+}
+
+[data-accent="slate"] {
+  --amber: #a8b4c4;
+  --amber-hi: #c5d0de;
+  --amber-lo: #8795a8;
+  --amber-dark: rgba(36, 42, 52, .92);
+  --accent-ink: #101418;
+  --accent-glow: rgba(168, 180, 196, .2);
+  --accent-soft: rgba(168, 180, 196, .14);
+  --accent-soft-2: rgba(168, 180, 196, .08);
+  --accent-border: rgba(168, 180, 196, .34);
+  --accent-select: rgba(168, 180, 196, .26);
+}

@@ -223,17 +223,65 @@ function readXiaoyaSkills() {
   }));
 }
 
+function renderXiaoyaProcessSelector() {
+  const select = $('#xiaoya-process-select');
+  if (!select) return;
+  const processes = state.gameProcesses || [];
+  const selectedPid = Number(state.selectedXiaoyaPid) || null;
+  const mainPid = Number(state.selectedGamePid) || null;
+  const previous = select.value;
+  select.replaceChildren();
+
+  if (!processes.length) {
+    select.add(new Option('没有找到 eco.exe', ''));
+  } else {
+    processes.forEach((process) => {
+      const title = process.title && process.title.toLowerCase() !== 'eco' ? ` · ${process.title}` : '';
+      const started = process.started ? ` · ${process.started}` : '';
+      const sameAsMain = mainPid && process.pid === mainPid ? ' · 主进程' : '';
+      select.add(new Option(`PID ${process.pid}${title}${started}${sameAsMain}`, String(process.pid)));
+    });
+    const preferred = selectedPid || processes.find((p) => p.pid !== mainPid)?.pid || processes.at(-1).pid;
+    select.value = String(preferred);
+    if (previous && [...select.options].some((opt) => opt.value === previous) && !selectedPid) {
+      // keep transient UI only if no state yet
+    }
+  }
+
+  select.disabled = !processes.length;
+  select.title = '小雅专用目标进程，可与顶部主进程不同';
+
+  const hint = $('#xiaoya-target-hint');
+  if (hint) {
+    if (!processes.length) {
+      hint.textContent = '未检测到游戏';
+      hint.className = 'xiaoya-target-hint';
+    } else if (selectedPid && mainPid && selectedPid === mainPid) {
+      hint.textContent = '当前与顶部主进程相同（单开可用；多开时建议选副号）';
+      hint.className = 'xiaoya-target-hint is-same';
+    } else if (selectedPid) {
+      hint.textContent = `小雅 → PID ${selectedPid}${mainPid ? ` · 主功能 → PID ${mainPid}` : ''}`;
+      hint.className = 'xiaoya-target-hint is-split';
+    } else {
+      hint.textContent = '请选择小雅目标进程';
+      hint.className = 'xiaoya-target-hint';
+    }
+  }
+}
+
 function renderXiaoya() {
   const service = state.xiaoya || {};
   const active = ['starting', 'running', 'stopping'].includes(service.state);
   const running = service.state === 'running';
+  const targetPid = Number(service.targetPid || state.selectedXiaoyaPid) || null;
   const status = $('#xiaoya-state');
   status.className = `xiaoya-state ${service.state || 'stopped'}`;
-  status.innerHTML = `<i data-lucide="${running ? 'circle-check' : service.state === 'error' ? 'triangle-alert' : active ? 'loader-circle' : 'circle-off'}"></i>${service.state === 'starting' ? '启动中' : service.state === 'stopping' ? '停止中' : running ? `运行中${service.pid ? ` · PID ${service.pid}` : ''}` : service.state === 'error' ? '启动失败' : '已停止'}`;
+  status.innerHTML = `<i data-lucide="${running ? 'circle-check' : service.state === 'error' ? 'triangle-alert' : active ? 'loader-circle' : 'circle-off'}"></i>${service.state === 'starting' ? '启动中' : service.state === 'stopping' ? '停止中' : running ? `运行中${targetPid ? ` · 目标 ${targetPid}` : ''}` : service.state === 'error' ? '启动失败' : '已停止'}`;
   $('#xiaoya-message').textContent = service.message || (service.available ? '尚未启动' : '未找到 XiaoyaCore.exe');
   const toggle = $('#xiaoya-toggle');
   toggle.disabled = service.state === 'stopping' || !service.available;
   toggle.innerHTML = `<i data-lucide="${active ? 'square' : 'play'}"></i><span>${active ? '停止小雅' : '启动小雅'}</span>`;
+  renderXiaoyaProcessSelector();
   createIcons();
 }
 
@@ -1485,6 +1533,7 @@ function bindEvents() {
     const result = await window.eco.refreshGameProcesses();
     state = { ...state, ...(await window.eco.getState()) };
     renderServices();
+    renderXiaoya();
     button.classList.remove('refreshing');
     button.disabled = false;
     showToast(result.ok ? `找到 ${result.processes.length} 个游戏进程` : result.error);
@@ -1493,7 +1542,26 @@ function bindEvents() {
     const result = await window.eco.selectGameProcess(Number(event.target.value));
     state = { ...state, ...(await window.eco.getState()) };
     renderServices();
-    showToast(result.ok ? `已选择游戏进程 ${result.selectedPid}` : result.error);
+    renderXiaoya();
+    showToast(result.ok ? `已选择主进程 ${result.selectedPid}` : result.error);
+  });
+  $('#refresh-xiaoya-processes')?.addEventListener('click', async () => {
+    const button = $('#refresh-xiaoya-processes');
+    button?.classList.add('refreshing');
+    if (button) button.disabled = true;
+    const result = await window.eco.refreshGameProcesses();
+    state = { ...state, ...(await window.eco.getState()) };
+    renderServices();
+    renderXiaoya();
+    button?.classList.remove('refreshing');
+    if (button) button.disabled = false;
+    showToast(result.ok ? `找到 ${result.processes.length} 个游戏进程` : result.error);
+  });
+  $('#xiaoya-process-select')?.addEventListener('change', async (event) => {
+    const result = await window.eco.selectXiaoyaProcess(Number(event.target.value));
+    state = { ...state, ...(await window.eco.getState()) };
+    renderXiaoya();
+    showToast(result.ok ? `小雅目标进程 ${result.selectedXiaoyaPid}` : result.error);
   });
   $('#start-all').addEventListener('click', async () => {
     const results = await Promise.all([window.eco.startService('damage'), window.eco.startService('translator')]);
