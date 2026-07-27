@@ -2,7 +2,13 @@ import re
 import time
 import unittest
 
-from eco_damage_categories import category_for_damage, SKILL, NORMAL, PET, TAKEN
+from eco_damage_categories import (
+    category_for_damage,
+    SELF_SKILL,
+    SELF_NORMAL,
+    PET_SKILL,
+    TAKEN,
+)
 
 
 # Mirror the precompiled cleaners used by eco_npc_mitm / harvester.
@@ -24,9 +30,9 @@ class HotPathCorrectnessTest(unittest.TestCase):
         self.assertEqual(clean_text(raw), "Hello\nworld\nthere")
 
     def test_category_hot_path_mapping(self):
-        self.assertEqual(category_for_damage("dealt", 3001), SKILL)
-        self.assertEqual(category_for_damage("dealt", None), NORMAL)
-        self.assertEqual(category_for_damage("pet_dealt", 1), PET)
+        self.assertEqual(category_for_damage("dealt", 3001), SELF_SKILL)
+        self.assertEqual(category_for_damage("dealt", None), SELF_NORMAL)
+        self.assertEqual(category_for_damage("pet_dealt", 1), PET_SKILL)
         self.assertEqual(category_for_damage("taken", None), TAKEN)
 
 

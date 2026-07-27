@@ -795,14 +795,18 @@ class DamageMeter:
     def skill_label(self, skill_id, fallback="普通攻击"):
         if skill_id is None:
             return fallback
+        # Prefer runtime map (includes test overrides / live renames).
+        mapped = self.skill_names.get(skill_id) if self.skill_names else None
+        if mapped:
+            return mapped
         if format_skill_display and self.skill_name_tables:
             return format_skill_display(
                 skill_id,
                 self.skill_name_tables,
                 mode=self.skill_name_mode,
-                fallback=fallback if skill_id is None else f"技能#{skill_id}",
+                fallback=f"技能#{skill_id}",
             )
-        return self.skill_names.get(skill_id) or f"技能#{skill_id}"
+        return f"技能#{skill_id}"
 
     def classify_skill_cast(self, skill_id, target):
         """Rough cast role for UI: defensive / self / other."""
