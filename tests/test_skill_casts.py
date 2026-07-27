@@ -220,6 +220,96 @@ class SkillCastTrackingTest(unittest.TestCase):
         self.assertEqual(snap["skill_dealt"], 55)
         self.assertEqual(snap["dealt"], 55)
 
+    def test_sticky_ride_aa_with_src_self_counts_as_ride_normal(self):
+        """骑宠: attack_result often still uses player id as src — must not go to self_normal."""
+        meter = DamageMeter(self_id=84, game_chat=False, out_path=None)
+        self.addCleanup(meter.close)
+        ts = time.time()
+        mount = 20257
+        meter.handle_parsed(
+            {
+                "type": "pet_appear",
+                "actor": mount,
+                "owner": 84,
+                "hp": 0,
+                "max_hp": 0,
+                "_op": 4655,
+            },
+            ts,
+        )
+        self.assertTrue(meter.is_ride_active(ts))
+        meter.handle_parsed(
+            {"type": "attack_request", "target": 13000, "_op": 3999},
+            ts + 0.05,
+        )
+        meter.handle_parsed(
+            {
+                "type": "attack_result",
+                "src": 84,
+                "dst": 13000,
+                "damage": 77,
+                "_op": 4001,
+            },
+            ts + 0.15,
+        )
+        snap = meter.snapshot()
+        self.assertEqual(snap["ride_normal_dealt"], 77)
+        self.assertEqual(snap["self_normal_dealt"], 0)
+        self.assertEqual(snap["normal_dealt"], 77)
+        self.assertEqual(snap["dealt"], 77)
+
+    def test_sticky_ride_skill_with_src_self_counts_as_ride_skill(self):
+        meter = DamageMeter(self_id=84, game_chat=False, out_path=None)
+        self.addCleanup(meter.close)
+        ts = time.time()
+        meter.enter_ride_mode(mount_id=20257, reason="test", ts=ts, quiet=True)
+        meter.handle_parsed(
+            {"type": "skill_cast_request", "skill_id": 2486, "target": 14000, "_op": 4999},
+            ts,
+        )
+        meter.handle_parsed(
+            {
+                "type": "skill_active",
+                "skill_id": 2486,
+                "caster": 84,
+                "target": 14000,
+                "affected": [14000],
+                "damages": [-120],
+                "_op": 5010,
+            },
+            ts + 0.12,
+        )
+        snap = meter.snapshot()
+        self.assertEqual(snap["ride_skill_dealt"], 120)
+        self.assertEqual(snap["self_skill_dealt"], 0)
+        self.assertEqual(snap["skill_dealt"], 120)
+
+    def test_sticky_ride_skill_via_attack_result_aoe_target_mismatch(self):
+        """Own skill C2S target may differ from attack_result hit unit (AOE)."""
+        meter = DamageMeter(self_id=84, game_chat=False, out_path=None)
+        self.addCleanup(meter.close)
+        ts = time.time()
+        meter.enter_ride_mode(mount_id=20257, reason="test", ts=ts, quiet=True)
+        meter.handle_parsed(
+            {"type": "skill_cast_request", "skill_id": 3001, "target": 15000, "_op": 4999},
+            ts,
+        )
+        # Hit a different unit than the primary C2S target.
+        meter.handle_parsed(
+            {
+                "type": "attack_result",
+                "src": 84,
+                "dst": 15001,
+                "damage": 66,
+                "_op": 4001,
+            },
+            ts + 0.2,
+        )
+        snap = meter.snapshot()
+        self.assertEqual(snap["ride_skill_dealt"], 66)
+        self.assertEqual(snap["self_normal_dealt"], 0)
+        self.assertEqual(snap["self_skill_dealt"], 0)
+
     def test_possession_skill_counts_when_caster_is_host(self):
         """依凭: C2S from player, S2C caster is host body (another PC id)."""
         meter = DamageMeter(self_id=84, game_chat=False, out_path=None)

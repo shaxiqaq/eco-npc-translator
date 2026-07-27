@@ -2104,7 +2104,29 @@ ipcMain.handle('logs:export', async (_event, options = {}) => {
 
   try {
     const exportFormat = outPath.toLowerCase().endsWith('.json') ? 'json' : 'txt';
-    const body = formatLogsExportBody(selected, { filter, format: exportFormat });
+    let body = formatLogsExportBody(selected, { filter, format: exportFormat });
+    // Append a compact combat/exp snapshot so sparse UI ring logs are still useful.
+    try {
+      const snap = latestSnapshot || null;
+      if (snap && exportFormat === 'txt') {
+        const grind = snap.grind || {};
+        const lines = [
+          '',
+          '# --- 采集快照（导出时） ---',
+          `# self_id=${snap.self_id ?? 'null'} ride_mode=${Boolean(snap.ride_mode)} ride_mount=${snap.ride_mount_id ?? 'null'} possession_host=${snap.possession_host_id ?? 'null'}`,
+          `# dealt=${snap.dealt || 0} self_skill=${snap.self_skill_dealt || 0} self_normal=${snap.self_normal_dealt || 0} ride_skill=${snap.ride_skill_dealt || 0} ride_normal=${snap.ride_normal_dealt || 0} pet=${snap.pet_dealt || 0}`,
+          `# packets=${snap.packet_count || 0} last_packet_age=${snap.last_packet_age ?? 'n/a'}`,
+          `# grind_ready=${Boolean(grind.ready)} level=${grind.level ?? 'n/a'} cexp%=${grind.cexp_pct ?? 'n/a'} jexp%=${grind.jexp_pct ?? 'n/a'} session_cexp%=${grind.session_cexp_pct ?? 0}`,
+        ];
+        const events = Array.isArray(snap.events) ? snap.events.slice(0, 12) : [];
+        for (const ev of events) {
+          if (Array.isArray(ev)) lines.push(`# event ${ev[0] || ''} ${ev[1] || ''}`);
+        }
+        body += `${lines.join('\n')}\n`;
+      }
+    } catch {
+      /* snapshot optional */
+    }
     fs.writeFileSync(outPath, body, 'utf8');
 
     // Also write a companion diagnostic sidecar for remote support.
@@ -2112,6 +2134,23 @@ ipcMain.handle('logs:export', async (_event, options = {}) => {
       const diag = getDiagnosticsPayload();
       // Prefer the filtered export log slice in the sidecar.
       diag.recentLogs = selected.slice(-80);
+      if (latestSnapshot) {
+        diag.snapshotSummary = {
+          self_id: latestSnapshot.self_id,
+          ride_mode: latestSnapshot.ride_mode,
+          ride_mount_id: latestSnapshot.ride_mount_id,
+          possession_host_id: latestSnapshot.possession_host_id,
+          dealt: latestSnapshot.dealt,
+          self_skill_dealt: latestSnapshot.self_skill_dealt,
+          self_normal_dealt: latestSnapshot.self_normal_dealt,
+          ride_skill_dealt: latestSnapshot.ride_skill_dealt,
+          ride_normal_dealt: latestSnapshot.ride_normal_dealt,
+          pet_dealt: latestSnapshot.pet_dealt,
+          packet_count: latestSnapshot.packet_count,
+          grind: latestSnapshot.grind || null,
+          events: (latestSnapshot.events || []).slice(0, 20),
+        };
+      }
       const diagPath = outPath.replace(/\.(txt|log|json)$/i, '') + '.diag.json';
       fs.writeFileSync(diagPath, `${JSON.stringify(diag, null, 2)}\n`, 'utf8');
       addLog('app', 'info', `已导出 ${selected.length} 条日志 → ${outPath}`);

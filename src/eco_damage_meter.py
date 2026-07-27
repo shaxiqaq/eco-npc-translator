@@ -150,6 +150,12 @@ class DamageMeter:
         self.pet_owner = {}
         # 依凭/憑依: host actor the local player is currently possessing through.
         self.possession_host_id = None
+        # 骑宠: sticky mode — while mounted, S2C often still names the player as src.
+        # Detect via owned pet_appear / mount proxy casts, then reclassify self→ride.
+        self.ride_mode = False
+        self.ride_mount_id = None
+        self.ride_mode_until = 0.0
+        self.ride_mode_reason = None
         self.mob_template_counts = Counter()
         self.unknown_combat_actors = Counter()
         self.skill_names = load_skill_names()
@@ -310,6 +316,8 @@ class DamageMeter:
             self.pet_actors.clear()
             self.pet_owner.clear()
             self.possession_host_id = None
+            # Keep ride sticky state across damage reset — dismount is explicit.
+            # (ride_mode / ride_mount_id / ride_mode_until retained)
             self.mob_template_counts.clear()
             self.unknown_combat_actors.clear()
             self.recent_actions.clear()
@@ -338,6 +346,8 @@ class DamageMeter:
         # Drop stale C2S evidence from the previous login so re-bind is clean.
         self.recent_targets.clear()
         self.recent_actions.clear()
+        self.exit_ride_mode(reason="reidentify", quiet=True)
+        self.possession_host_id = None
         if hard or prev is None:
             self.self_id = None
             tracker = getattr(self, "buff_tracker", None)
@@ -397,6 +407,17 @@ class DamageMeter:
         self.self_candidates[actor] += 4
         # Drop stale "self" from pet set if it was misclassified.
         self.pet_actors.discard(actor)
+        # Character switch invalidates ride/possession proxy state.
+        if prev is not None and prev != actor:
+            self.exit_ride_mode(reason="character_switch", quiet=True)
+            self.possession_host_id = None
+        # If mount packets arrived before self_id was known, promote owned pets now.
+        for pet_id, owner in list(self.pet_owner.items()):
+            if owner == actor and pet_id != actor:
+                hp = self.hp_by_actor.get(pet_id)
+                if hp in (None, 0):
+                    self.enter_ride_mode(mount_id=pet_id, reason="bind_owned_mount", quiet=True)
+                    break
         label = "切换角色" if prev is not None and prev != actor else "识别角色"
         text = f"{label} self={actor}（{reason}）" + (f" 原={prev}" if prev is not None and prev != actor else "")
         self.events.appendleft((now_label(), text))
@@ -603,6 +624,88 @@ class DamageMeter:
         except (TypeError, ValueError):
             return False
 
+    # Ride sticky TTL: mount packets are sparse; keep mode while grinding.
+    RIDE_MODE_TTL_S = 180.0
+
+    def is_ride_active(self, ts=None):
+        """True while sticky ride mode has not expired."""
+        if not self.ride_mode:
+            return False
+        now = float(ts if ts is not None else time.time())
+        if now > float(self.ride_mode_until or 0):
+            self.ride_mode = False
+            return False
+        return True
+
+    def enter_ride_mode(self, mount_id=None, reason="ride", ts=None, quiet=False):
+        """Mark local player as mounted; outgoing self damage reclassifies to ride_*."""
+        now = float(ts if ts is not None else time.time())
+        was = self.is_ride_active(now)
+        self.ride_mode = True
+        self.ride_mode_until = now + self.RIDE_MODE_TTL_S
+        self.ride_mode_reason = reason
+        if mount_id is not None:
+            try:
+                mid = int(mount_id)
+            except (TypeError, ValueError):
+                mid = None
+            if mid and mid != self.self_id:
+                self.ride_mount_id = mid
+                self.mark_pet_actor(mid, owner=self.self_id, reason=reason or "骑宠")
+        if not was and not quiet:
+            label = f"#{self.ride_mount_id}" if self.ride_mount_id else ""
+            self.events.appendleft((now_label(), f"骑宠中 {label}".strip()))
+            self.pending_notices.append({
+                "level": "info",
+                "message": "已进入骑宠状态：普攻/技能将计入骑宠渠道",
+            })
+            self.log({
+                "ts": now,
+                "kind": "ride_mode",
+                "event": "enter",
+                "mount_id": self.ride_mount_id,
+                "reason": reason,
+                "until": self.ride_mode_until,
+            })
+        return True
+
+    def refresh_ride_mode(self, ts=None):
+        if not self.ride_mode:
+            return False
+        now = float(ts if ts is not None else time.time())
+        if now > float(self.ride_mode_until or 0):
+            self.ride_mode = False
+            return False
+        self.ride_mode_until = now + self.RIDE_MODE_TTL_S
+        return True
+
+    def exit_ride_mode(self, reason="dismount", quiet=False, ts=None):
+        if not self.ride_mode and self.ride_mount_id is None:
+            return False
+        prev = self.ride_mount_id
+        self.ride_mode = False
+        self.ride_mode_until = 0.0
+        self.ride_mode_reason = None
+        self.ride_mount_id = None
+        if not quiet:
+            self.events.appendleft((now_label(), f"骑宠解除（{reason}）"))
+            self.log({
+                "ts": float(ts if ts is not None else time.time()),
+                "kind": "ride_mode",
+                "event": "exit",
+                "previous_mount": prev,
+                "reason": reason,
+            })
+        return True
+
+    def is_ride_mount(self, actor):
+        if actor is None or self.ride_mount_id is None:
+            return False
+        try:
+            return int(actor) == int(self.ride_mount_id)
+        except (TypeError, ValueError):
+            return False
+
     def local_skill_proxy_source(self, ts, src, skill_id, dst):
         """
         Ride / 依凭(憑依) / partner / marionette:
@@ -611,35 +714,51 @@ class DamageMeter:
 
         Returns 'self' | 'pet' | 'ride' | 'possession' | None.
         """
+        ride_on = self.is_ride_active(ts)
         if skill_id is not None and self.has_recent_own_skill_request(ts, skill_id, dst):
-            if src is None or src == self.self_id:
-                return "self"
             if self.is_possession_host(src):
                 return "possession"
-            # Player pressed a skill but S2C caster is non-PC (mount/ride body):
-            # always 骑宠技能 — even if actor was also marked as pet earlier.
-            if not self.is_likely_character_actor(src):
-                if self.self_id is not None:
-                    self.mark_pet_actor(src, owner=self.self_id, reason="骑宠施法代理")
+            # Mount / non-PC caster while we pressed the skill → 骑宠.
+            if src is not None and src != self.self_id and not self.is_likely_character_actor(src):
+                self.enter_ride_mode(mount_id=src, reason="骑宠施法代理", ts=ts, quiet=True)
                 return "ride"
+            if self.is_ride_mount(src):
+                self.refresh_ride_mode(ts)
+                return "ride"
+            # While mounted, server often still names the player as caster.
+            if ride_on and (src is None or src == self.self_id or self.is_owned_pet_source(src)):
+                self.refresh_ride_mode(ts)
+                return "ride"
+            if src is None or src == self.self_id:
+                return "self"
             # Other PC after our C2S skill → 依凭 host (packet not seen yet).
             if self.possession_host_id is None and self.self_id is not None:
                 self.possession_host_id = int(src)
             return "possession"
         if self.has_recent_own_attack(ts, dst, max_age=1.5):
-            if src is None or src == self.self_id:
-                return "self"
             if self.is_possession_host(src):
                 return "possession"
+            # Player pressed AA; non-PC src is the mount body (or ride proxy).
+            if src is not None and src != self.self_id and not self.is_likely_character_actor(src):
+                self.enter_ride_mode(mount_id=src, reason="骑宠普攻代理", ts=ts, quiet=True)
+                return "ride"
+            if ride_on and (src is None or src == self.self_id):
+                self.refresh_ride_mode(ts)
+                return "ride"
+            if src is None or src == self.self_id:
+                return "self"
             if self.is_owned_pet_source(src) or self.is_pet_actor(src):
                 return "pet"
             if src is not None and src != self.self_id and self.self_id is not None:
-                if not self.is_likely_character_actor(src):
-                    self.mark_pet_actor(src, owner=self.self_id, reason="骑宠普攻代理")
-                    return "ride"
                 if self.possession_host_id is None:
                     self.possession_host_id = int(src)
                 return "possession"
+        # Sticky ride: own outgoing with no fresh C2S match still reclassifies.
+        if ride_on and self.self_id is not None and (
+            src is None or src == self.self_id or self.is_ride_mount(src) or self.is_owned_pet_source(src)
+        ):
+            self.refresh_ride_mode(ts)
+            return "ride"
         return None
 
     def resolve_outgoing_channel(self, mode, skill_id):
@@ -1076,18 +1195,26 @@ class DamageMeter:
         return best_skill or best_any
 
     def find_fresh_skill_action(self, ts, src, dst, max_age=0.8):
+        """Link attack_result damage to a recent skill cast.
+
+        Prefer exact target match; fall back to any recent *own* skill (AOE /
+        ride skills often use a different primary target than the hit unit).
+        """
+        fallback = None
         for action in list(self.recent_actions):
             age = ts - action["ts"]
             if age < 0 or age > max_age:
                 continue
             if action.get("kind") != "skill" or action.get("skill_id") is None:
                 continue
-            if action.get("target") != dst:
-                continue
             if not self._action_source_matches(action, src):
                 continue
-            return action
-        return None
+            if action.get("target") == dst:
+                return action
+            # Own cast within window — usable when target differs (AOE / 骑宠).
+            if fallback is None and action.get("own"):
+                fallback = action
+        return fallback
 
     def find_pending_hp_skill_action(self, ts, dst, max_age=8.0):
         fallback = None
@@ -1330,12 +1457,14 @@ class DamageMeter:
             ):
                 self.observe_local_caster(caster, reason="skill_damage")
             proxy = self.local_skill_proxy_source(ts, caster, skill_id, dst)
-            if self.self_id is not None and caster == self.self_id:
-                channel = self.resolve_outgoing_channel("self", skill_id)
-                src = caster
-            elif proxy in ("self", "ride", "possession", "pet") and self.self_id is not None:
+            # Prefer proxy first: while riding, caster is often still the player id.
+            if proxy is None and self.self_id is not None and caster == self.self_id:
+                proxy = "ride" if self.is_ride_active(ts) else "self"
+            if proxy in ("self", "ride", "possession", "pet") and self.self_id is not None:
                 channel = self.resolve_outgoing_channel(proxy, skill_id)
                 src = self.self_id if proxy in ("self", "possession") else (caster or self.self_id)
+                if proxy == "ride":
+                    self.refresh_ride_mode(ts)
             elif self.self_id is not None and dst == self.self_id:
                 if not self.should_capture_damage("taken", skill_id):
                     continue
@@ -1421,6 +1550,10 @@ class DamageMeter:
     def handle_parsed(self, parsed, ts):
         typ = parsed.get("type")
         if typ == "player_exp":
+            was_ready = (
+                self.exp_tracker.cexp_pct_x10 is not None
+                or self.exp_tracker.jexp_pct_x10 is not None
+            )
             event = self.exp_tracker.apply_exp(
                 cexp_pct_x10=parsed.get("cexp_pct_x10"),
                 jexp_pct_x10=parsed.get("jexp_pct_x10"),
@@ -1428,6 +1561,21 @@ class DamageMeter:
                 jexp_abs=parsed.get("jexp_abs"),
                 ts=ts,
             )
+            now_ready = (
+                self.exp_tracker.cexp_pct_x10 is not None
+                or self.exp_tracker.jexp_pct_x10 is not None
+            )
+            if now_ready and not was_ready:
+                c_bar = (self.exp_tracker.cexp_pct_x10 or 0) / 10.0
+                j_bar = (self.exp_tracker.jexp_pct_x10 or 0) / 10.0
+                self.events.appendleft((
+                    now_label(),
+                    f"经验同步 基础{c_bar:.1f}% 职业{j_bar:.1f}%",
+                ))
+                self.pending_notices.append({
+                    "level": "success",
+                    "message": f"肝度统计已就绪（基础 {c_bar:.1f}% / 职业 {j_bar:.1f}%）",
+                })
             if event:
                 c_pct = (event.get("cexp_pct_x10") or 0) / 10.0
                 j_pct = (event.get("jexp_pct_x10") or 0) / 10.0
@@ -1450,10 +1598,12 @@ class DamageMeter:
                 "cexp_abs": parsed.get("cexp_abs"),
                 "jexp_abs": parsed.get("jexp_abs"),
                 "gain": event,
+                "ready": now_ready,
             })
             return
         if typ == "player_level":
             prev_lv = self.exp_tracker.level
+            first_level = prev_lv is None
             self.exp_tracker.apply_level(
                 level=parsed.get("level"),
                 job_level=parsed.get("job_level"),
@@ -1463,6 +1613,8 @@ class DamageMeter:
                 ts=ts,
             )
             new_lv = self.exp_tracker.level
+            if first_level and new_lv is not None:
+                self.events.appendleft((now_label(), f"等级同步 Lv.{new_lv}"))
             if prev_lv is not None and new_lv is not None and new_lv > prev_lv:
                 self.events.appendleft((now_label(), f"升级 → Lv.{new_lv}"))
                 self.pending_notices.append({
@@ -1592,6 +1744,14 @@ class DamageMeter:
                 and not self.is_likely_character_actor(caster)
             ):
                 self.mark_pet_actor(caster, owner=self.self_id, reason="骑宠施法者")
+                self.enter_ride_mode(mount_id=caster, reason="骑宠施法者", ts=ts, quiet=True)
+            elif (
+                self.is_ride_active(ts)
+                and caster is not None
+                and caster == self.self_id
+                and self.has_recent_own_skill_request(ts, skill_id, target)
+            ):
+                self.refresh_ride_mode(ts)
             self.remember_action(ts, caster, target, skill_id, "skill")
             # Cast counting: prefer C2S request only. Cast-time skills fire skill_active
             # 1–3s later; counting both request+active doubles the skill cast total.
@@ -1627,9 +1787,25 @@ class DamageMeter:
             if actor is not None:
                 if self.self_id is None and owner in self.self_candidates:
                     self.bind_self(owner, reason="pet_owner_candidate")
-                if self.self_id is None or owner in (self.self_id, None, 0):
-                    self.mark_pet_actor(actor, owner=owner, reason="宠物出现包")
+                own_pet = self.self_id is None or owner in (self.self_id, None, 0)
                 hp = parsed.get("hp")
+                max_hp = parsed.get("max_hp")
+                if own_pet:
+                    self.mark_pet_actor(actor, owner=owner if owner else self.self_id, reason="宠物出现包")
+                    # Ride mounts commonly appear with hp/max_hp == 0 then delete (absorbed).
+                    # Walking companion pets usually show real HP — do not force ride mode.
+                    ride_like = (
+                        self.self_id is not None
+                        and owner in (self.self_id, None, 0)
+                        and (hp in (None, 0) or max_hp in (None, 0))
+                    )
+                    if ride_like:
+                        self.enter_ride_mode(
+                            mount_id=actor,
+                            reason="宠物出现包",
+                            ts=ts,
+                            quiet=self.is_ride_active(ts),
+                        )
                 if hp is not None:
                     self.hp_by_actor[actor] = hp
                 self.log({
@@ -1639,6 +1815,7 @@ class DamageMeter:
                     "owner": owner,
                     "hp": hp,
                     "max_hp": parsed.get("max_hp"),
+                    "ride_mode": self.is_ride_active(ts),
                     "raw_op": parsed.get("_op"),
                     "raw_dir": parsed.get("_dir"),
                     "raw_sub": parsed.get("_sub"),
@@ -1647,11 +1824,16 @@ class DamageMeter:
         if typ == "pet_delete":
             actor = parsed.get("actor")
             if actor is not None:
+                # Ride mounts are deleted when absorbed into the rider visual —
+                # keep sticky ride_mode; only clear if a non-mount walk pet leaves.
+                if self.is_ride_mount(actor):
+                    self.refresh_ride_mode(ts)
                 self.log({
                     "ts": ts,
                     "kind": "pet_delete",
                     "actor": actor,
                     "was_pet": actor in self.pet_actors,
+                    "ride_mode": self.is_ride_active(ts),
                     "raw_op": parsed.get("_op"),
                     "raw_dir": parsed.get("_dir"),
                     "raw_sub": parsed.get("_sub"),
@@ -1827,9 +2009,20 @@ class DamageMeter:
         side = "other"
         proxy = self.local_skill_proxy_source(ts, src, skill_id, dst)
         if proxy is None and self.self_id is not None and src == self.self_id:
-            proxy = "self"
+            # Mounted combat still uses the player actor id on many attack_result packets.
+            proxy = "ride" if self.is_ride_active(ts) else "self"
+            if proxy == "ride":
+                self.refresh_ride_mode(ts)
+        if proxy is None and self.is_ride_mount(src):
+            proxy = "ride"
+            self.refresh_ride_mode(ts)
         if proxy is None and self.maybe_mark_pet_from_damage(ts, src, dst):
-            proxy = "pet"
+            # Prefer ride channel when sticky-mounted and the pet is our mount.
+            if self.is_ride_active(ts) and self.is_owned_pet_source(src):
+                proxy = "ride"
+                self.refresh_ride_mode(ts)
+            else:
+                proxy = "pet"
 
         if proxy in ("self", "ride", "possession", "pet") and self.self_id is not None and damage > 0:
             channel = self.resolve_outgoing_channel(proxy, skill_id)
@@ -2001,6 +2194,8 @@ class DamageMeter:
                 "packet_count": self.packet_count,
                 "last_packet_age": last_packet_age,
                 "possession_host_id": self.possession_host_id,
+                "ride_mode": self.is_ride_active(now),
+                "ride_mount_id": self.ride_mount_id,
                 "dealt": self.total_dealt,
                 "taken": self.total_taken,
                 "skill_dealt": self.skill_dealt,

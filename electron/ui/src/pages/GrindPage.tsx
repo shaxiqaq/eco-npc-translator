@@ -70,7 +70,7 @@ export function GrindPage() {
             {damageRunning
               ? ready
                 ? '正在跟踪经验（依赖伤害/状态采集）'
-                : '采集已开：打怪获得经验后会自动出现数据'
+                : '采集已开：进图或击杀掉落经验后会同步进度条（需收到服务器经验包）'
               : '请先启动伤害采集或状态监控'}
           </span>
           {grind?.table_source ? (

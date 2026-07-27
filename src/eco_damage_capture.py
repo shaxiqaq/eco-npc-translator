@@ -254,7 +254,63 @@ def parse_packet(direction, op, sub):
             "damages": damages,
             "level": sub[14] if len(sub) > 14 else None,
         }
-    if direction == "S2C" and op in {5005, 5025, 5030, 5035, 5040}:
+    if direction == "S2C" and op == 5005:
+        # SSMG_SKILL_ACTIVE_FLOOR 0x138D — ground/AOE skills with HP block.
+        # Layout (SagaECO): skill@2, combo@4, pad bytes, actor@5+combo,
+        # affected count@9+combo, ids, then dual HP ints per target.
+        combo = sub[4] if len(sub) > 4 else 0
+        if combo < 0 or combo > 32:
+            combo = 0
+        actor_off = 5 + combo
+        caster = u32be(sub, actor_off) if len(sub) >= actor_off + 4 else None
+        affected = []
+        damages = []
+        # set=1 in SagaECO → affected-count at (1+8+combo)=9+combo
+        aff_count_off = 9 + combo
+        if combo and len(sub) > aff_count_off:
+            aff_count = sub[aff_count_off]
+            if aff_count == combo and len(sub) >= aff_count_off + 1 + combo * 4:
+                affected = [
+                    u32be(sub, aff_count_off + 1 + i * 4) for i in range(combo)
+                ]
+                # After ids: X, Y (1+1), then HP count byte, then 2×int32 per target.
+                # offsets relative to aff_count_off:
+                # ids end = aff_count_off+1+combo*4
+                # X = +combo*4+1 from count?  set+9+combo*4+combo → complex.
+                # Practical: scan dual int32 HP block used by official client.
+                hp_base = aff_count_off + 1 + combo * 4 + 2 + 1  # ids + X/Y + hp_count
+                if len(sub) >= hp_base + combo * 8:
+                    damages = [
+                        int.from_bytes(
+                            sub[hp_base + i * 4: hp_base + i * 4 + 4],
+                            "big",
+                            signed=True,
+                        )
+                        for i in range(combo)
+                    ]
+                    # Prefer second HP block (visible damage) when present.
+                    hp2 = hp_base + combo * 4
+                    if len(sub) >= hp2 + combo * 4:
+                        damages = [
+                            int.from_bytes(
+                                sub[hp2 + i * 4: hp2 + i * 4 + 4],
+                                "big",
+                                signed=True,
+                            )
+                            for i in range(combo)
+                        ]
+        target = affected[0] if affected else (u32be(sub, 6) if len(sub) >= 10 else None)
+        return {
+            "type": "skill_active",
+            "skill_id": u16be(sub, 2),
+            "caster": caster,
+            "target": target,
+            "affected": affected,
+            "damages": damages,
+            "level": combo,
+            "op": op,
+        }
+    if direction == "S2C" and op in {5025, 5030, 5035, 5040}:
         return {
             "type": "skill_active",
             "skill_id": u16be(sub, 2),

@@ -264,6 +264,8 @@ export type Snapshot = {
   hits_dealt?: number;
   channels?: Record<string, number>;
   possession_host_id?: number | null;
+  ride_mode?: boolean;
+  ride_mount_id?: number | null;
   taken?: number;
   skill_dps?: number;
   normal_dps?: number;
