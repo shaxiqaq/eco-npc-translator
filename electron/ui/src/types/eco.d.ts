@@ -1,12 +1,71 @@
 export type PageId =
   | 'overview'
   | 'damage'
+  | 'grind'
   | 'buffs'
   | 'translation'
   | 'xiaoya'
   | 'logs'
   | 'settings'
   | 'help';
+
+export type GrindWindowRate = {
+  window_s?: number;
+  cexp_pct_per_hour?: number;
+  jexp_pct_per_hour?: number;
+  cexp_per_hour?: number;
+  jexp_per_hour?: number;
+  elapsed_s?: number;
+  cexp_pct_x10?: number;
+  jexp_pct_x10?: number;
+  cexp_abs?: number;
+  jexp_abs?: number;
+};
+
+export type GrindSnapshot = {
+  elapsed?: number;
+  active?: number;
+  level?: number | null;
+  job_level?: number | null;
+  job_level_2x?: number | null;
+  job_level_2t?: number | null;
+  job_level_joint?: number | null;
+  cexp_pct?: number | null;
+  jexp_pct?: number | null;
+  cexp_abs?: number | null;
+  jexp_abs?: number | null;
+  session_cexp_pct?: number;
+  session_jexp_pct?: number;
+  session_cexp_abs?: number;
+  session_jexp_abs?: number;
+  session_cexp_abs_estimated?: boolean;
+  session_jexp_abs_estimated?: boolean;
+  session_cexp_pct_per_hour?: number;
+  session_jexp_pct_per_hour?: number;
+  session_cexp_per_hour?: number;
+  session_jexp_per_hour?: number;
+  level_ups?: number;
+  job_level_ups?: number;
+  exp_update_count?: number;
+  ready?: boolean;
+  table_source?: string;
+  windows?: {
+    '5m'?: GrindWindowRate;
+    '15m'?: GrindWindowRate;
+    '1h'?: GrindWindowRate;
+    session?: GrindWindowRate;
+  };
+  recent_gains?: Array<{
+    ts?: number;
+    cexp_pct_x10?: number;
+    jexp_pct_x10?: number;
+    cexp_abs?: number;
+    jexp_abs?: number;
+    level?: number | null;
+    cexp_pct_now?: number | null;
+    jexp_pct_now?: number | null;
+  }>;
+};
 
 export type ServiceName = 'damage' | 'translator';
 
@@ -81,6 +140,8 @@ export type AppearanceSettings = {
   overlayBackgroundBlur?: number;
   overlayBackgroundFit?: string;
   accent?: string;
+  /** client = 本地表/中文；ja = 日文表；dual = 中文 / 日文 */
+  skillNameMode?: 'client' | 'ja' | 'dual' | string;
 };
 
 export type AppSettings = {
@@ -159,11 +220,15 @@ export type TranslationSettings = {
 export type DamageHistoryItem = {
   time?: string;
   side?: string;
+  /** Fine channel: self_skill | ride_normal | possession_skill | … */
+  channel?: string;
+  source_mode?: string;
   skill_id?: number | null;
   source?: string;
   target?: string;
   damage?: number;
   skill?: string;
+  source_kind?: string;
 };
 
 export type Snapshot = {
@@ -171,6 +236,34 @@ export type Snapshot = {
   skill_dealt?: number;
   normal_dealt?: number;
   pet_dealt?: number;
+  pet_skill_dealt?: number;
+  pet_normal_dealt?: number;
+  self_skill_dealt?: number;
+  self_normal_dealt?: number;
+  ride_skill_dealt?: number;
+  ride_normal_dealt?: number;
+  possession_skill_dealt?: number;
+  possession_normal_dealt?: number;
+  self_skill_dps?: number;
+  self_normal_dps?: number;
+  pet_skill_dps?: number;
+  pet_normal_dps?: number;
+  ride_skill_dps?: number;
+  ride_normal_dps?: number;
+  possession_skill_dps?: number;
+  possession_normal_dps?: number;
+  hits_self_skill_dealt?: number;
+  hits_self_normal_dealt?: number;
+  hits_ride_skill_dealt?: number;
+  hits_ride_normal_dealt?: number;
+  hits_possession_skill_dealt?: number;
+  hits_possession_normal_dealt?: number;
+  hits_pet_skill_dealt?: number;
+  hits_pet_normal_dealt?: number;
+  hits_pet_dealt?: number;
+  hits_dealt?: number;
+  channels?: Record<string, number>;
+  possession_host_id?: number | null;
   taken?: number;
   skill_dps?: number;
   normal_dps?: number;
@@ -197,6 +290,8 @@ export type Snapshot = {
   skill_cooldowns?: Array<Record<string, unknown>>;
   skill_effect_timers?: Array<Record<string, unknown>>;
   self_id?: number | string | null;
+  rebind_pending?: boolean;
+  grind?: GrindSnapshot | null;
 };
 
 export type BattleReportSummary = {
@@ -240,6 +335,7 @@ export type EcoApi = {
   startService: (name: ServiceName) => Promise<{ ok: boolean; error?: string }>;
   stopService: (name: ServiceName) => Promise<{ ok: boolean; error?: string }>;
   resetDamage: () => Promise<unknown>;
+  reidentifySelf: () => Promise<{ ok: boolean; error?: string }>;
   getBattleReport: () => Promise<{ ok: boolean; report?: BattleReportSummary }>;
   resetBattleReport: () => Promise<{ ok: boolean; report?: BattleReportSummary }>;
   exportBattleReport: (options?: { format?: 'txt' | 'json' }) => Promise<{
@@ -275,7 +371,23 @@ export type EcoApi = {
   clearBackgroundImage: (target?: string) => Promise<{ ok: boolean; error?: string; settings?: AppSettings }>;
   setOverlayVisible: (visible: boolean) => Promise<unknown>;
   setOverlayEditing: (editing: boolean) => Promise<unknown>;
-  getSkillIcon: (skillId: number) => Promise<{ ok?: boolean; dataUrl?: string; name?: string }>;
+  getSkillIcon: (skillId: number) => Promise<{
+    ok?: boolean;
+    dataUrl?: string;
+    name?: string;
+    nameClient?: string;
+    nameJa?: string;
+    wikiUrl?: string;
+  }>;
+  resolveSkillName: (skillId: number, preferName?: string) => Promise<{
+    ok: boolean;
+    name?: string;
+    nameClient?: string;
+    nameJa?: string;
+    wikiUrl?: string;
+  }>;
+  listJobPresets: () => Promise<{ ok: boolean; presets?: Array<Record<string, unknown>>; wiki?: string }>;
+  applyJobPreset: (id: string) => Promise<{ ok: boolean; error?: string; custom_durations?: Record<string, CustomBuffEntry> }>;
   openLogs: () => Promise<unknown>;
   exportLogs: (options?: { filter?: string; format?: 'txt' | 'json' }) => Promise<{
     ok: boolean;

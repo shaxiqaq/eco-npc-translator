@@ -8,6 +8,7 @@ import {
   type EditableCustomBuff,
 } from '@/lib/custom-buffs';
 import { normalizeWarningSeconds } from '@/lib/buff-warning';
+import { clearSkillIconCache } from '@/hooks/useSkillIcon';
 import type { AppearanceSettings, AppSettings, EcoAppState, TranslationSettings } from '@/types/eco';
 
 type ShowToast = (message: string) => void;
@@ -125,6 +126,8 @@ export function useSettingsActions(options: {
     const result = await window.eco.saveAppSettings({ appearance: serializableAppearance(appearance) });
     setState((prev) => ({ ...prev, settings: result.settings }));
     applyAppearanceToDocument(result.settings?.appearance || appearance);
+    // Skill labels depend on skillNameMode — drop icon/name cache so UI refreshes.
+    clearSkillIconCache();
     showToast('外观设置已保存');
   }, [showToast, setState]);
 

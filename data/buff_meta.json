@@ -1,0 +1,38 @@
+{
+  "0:0x00000001": {
+    "description": "中毒：持续损失 HP。时间结束解除。",
+    "wiki_category": "abnormal"
+  },
+  "0:0x00000002": {
+    "description": "石化：行动受限。时间结束解除。",
+    "wiki_category": "abnormal"
+  },
+  "0:0x00000004": {
+    "description": "麻痹：行动困难。时间结束解除。",
+    "wiki_category": "abnormal"
+  },
+  "0:0x00000008": {
+    "description": "睡眠：无法行动，受击可能醒来。",
+    "wiki_category": "abnormal"
+  },
+  "0:0x00000010": {
+    "description": "沉默：无法使用技能。时间结束解除。",
+    "wiki_category": "abnormal"
+  },
+  "0:0x00000020": {
+    "description": "移动速度下降（デバフ）。",
+    "wiki_category": "negative"
+  },
+  "0:0x00000040": {
+    "description": "混乱：行动异常。时间结束解除。",
+    "wiki_category": "abnormal"
+  },
+  "0:0x00000080": {
+    "description": "冻结：行动受限。时间结束解除。",
+    "wiki_category": "abnormal"
+  },
+  "0:0x00100000": {
+    "description": "坐下（Sit）：休息状态。",
+    "wiki_category": "positive"
+  }
+}

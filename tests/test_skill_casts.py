@@ -74,6 +74,44 @@ class SkillCastTrackingTest(unittest.TestCase):
         )
         self.assertEqual(meter.snapshot()["skill_cast_total"], 1)
 
+    def test_dedups_cast_time_skill_active_after_request(self):
+        """Cast-bar skills fire skill_active >1s after C2S — must not double-count."""
+        meter = DamageMeter(self_id=965, game_chat=False, out_path=None)
+        self.addCleanup(meter.close)
+        ts = time.time()
+        meter.handle_parsed(
+            {"type": "skill_cast_request", "skill_id": 6415, "target": 965, "_op": 4999, "_dir": "C2S", "_sub": ""},
+            ts,
+        )
+        meter.handle_parsed(
+            {
+                "type": "skill_cast_result",
+                "skill_id": 6415,
+                "caster": 965,
+                "target": 965,
+                "_op": 5001,
+                "_dir": "S2C",
+                "_sub": "",
+            },
+            ts + 0.2,
+        )
+        meter.handle_parsed(
+            {
+                "type": "skill_active",
+                "skill_id": 6415,
+                "caster": 965,
+                "target": 965,
+                "affected": [],
+                "damages": [],
+                "_op": 5005,
+                "_dir": "S2C",
+                "_sub": "",
+            },
+            ts + 1.2,
+        )
+        self.assertEqual(meter.snapshot()["skill_cast_total"], 1)
+        self.assertEqual(meter.snapshot()["skill_casts"][0]["count"], 1)
+
     def test_counts_second_cast_after_window(self):
         meter = DamageMeter(self_id=7, game_chat=False, out_path=None)
         self.addCleanup(meter.close)
@@ -84,10 +122,167 @@ class SkillCastTrackingTest(unittest.TestCase):
         )
         meter.handle_parsed(
             {"type": "skill_cast_request", "skill_id": 2100, "target": 7, "_op": 4999, "_dir": "C2S", "_sub": ""},
-            ts + 1.2,
+            ts + 1.6,
         )
         self.assertEqual(meter.snapshot()["skill_cast_total"], 2)
         self.assertEqual(meter.snapshot()["skill_casts"][0]["count"], 2)
+
+    def test_damage_dedups_skill_active_and_attack_result(self):
+        meter = DamageMeter(self_id=100, game_chat=False, out_path=None)
+        self.addCleanup(meter.close)
+        ts = time.time()
+        meter.handle_parsed(
+            {"type": "skill_cast_request", "skill_id": 3001, "target": 500, "_op": 4999},
+            ts,
+        )
+        meter.handle_parsed(
+            {
+                "type": "skill_active",
+                "skill_id": 3001,
+                "caster": 100,
+                "target": 500,
+                "affected": [500],
+                "damages": [-42],
+                "_op": 5010,
+            },
+            ts + 0.1,
+        )
+        # Same hit also arrives as attack_result (common dual-packet path).
+        meter.handle_parsed(
+            {
+                "type": "attack_result",
+                "src": 100,
+                "dst": 500,
+                "damage": 42,
+                "_op": 4001,
+            },
+            ts + 0.15,
+        )
+        snap = meter.snapshot()
+        self.assertEqual(snap["skill_dealt"], 42)
+        self.assertEqual(snap["dealt"], 42)
+        self.assertEqual(snap["hits_dealt"], 1)
+
+    def test_ride_mode_skill_counts_when_caster_is_mount(self):
+        """骑宠: C2S from player, S2C caster is mount actor id."""
+        meter = DamageMeter(self_id=84, game_chat=False, out_path=None)
+        self.addCleanup(meter.close)
+        ts = time.time()
+        mount = 20257
+        meter.handle_parsed(
+            {"type": "skill_cast_request", "skill_id": 2486, "target": 11000, "_op": 4999},
+            ts,
+        )
+        meter.handle_parsed(
+            {
+                "type": "skill_active",
+                "skill_id": 2486,
+                "caster": mount,
+                "target": 11000,
+                "affected": [11000],
+                "damages": [-88],
+                "_op": 5010,
+            },
+            ts + 0.12,
+        )
+        snap = meter.snapshot()
+        # Player skill while riding → ride_skill channel; never rebind self to mount.
+        self.assertEqual(meter.self_id, 84)
+        self.assertEqual(snap["ride_skill_dealt"], 88)
+        self.assertEqual(snap["skill_dealt"], 88)
+        self.assertEqual(snap["dealt"], 88)
+        self.assertEqual(snap["self_skill_dealt"], 0)
+        # Cast counted once from request.
+        self.assertEqual(snap["skill_cast_total"], 1)
+
+    def test_ride_mode_attack_result_with_own_skill_action(self):
+        meter = DamageMeter(self_id=84, game_chat=False, out_path=None)
+        self.addCleanup(meter.close)
+        ts = time.time()
+        mount = 20257
+        meter.handle_parsed(
+            {"type": "skill_cast_request", "skill_id": 3001, "target": 12000, "_op": 4999},
+            ts,
+        )
+        meter.handle_parsed(
+            {
+                "type": "attack_result",
+                "src": mount,
+                "dst": 12000,
+                "damage": 55,
+                "_op": 4001,
+            },
+            ts + 0.2,
+        )
+        snap = meter.snapshot()
+        self.assertEqual(meter.self_id, 84)
+        self.assertEqual(snap["ride_skill_dealt"], 55)
+        self.assertEqual(snap["skill_dealt"], 55)
+        self.assertEqual(snap["dealt"], 55)
+
+    def test_possession_skill_counts_when_caster_is_host(self):
+        """依凭: C2S from player, S2C caster is host body (another PC id)."""
+        meter = DamageMeter(self_id=84, game_chat=False, out_path=None)
+        self.addCleanup(meter.close)
+        ts = time.time()
+        host = 900
+        meter.handle_parsed(
+            {
+                "type": "possession_result",
+                "from_id": 84,
+                "to_id": host,
+                "result": 0,
+                "_op": 6011,
+            },
+            ts,
+        )
+        self.assertEqual(meter.possession_host_id, host)
+        meter.handle_parsed(
+            {"type": "skill_cast_request", "skill_id": 2100, "target": 15000, "_op": 4999},
+            ts + 0.1,
+        )
+        meter.handle_parsed(
+            {
+                "type": "skill_active",
+                "skill_id": 2100,
+                "caster": host,
+                "target": 15000,
+                "affected": [15000],
+                "damages": [-120],
+                "_op": 5010,
+            },
+            ts + 0.25,
+        )
+        snap = meter.snapshot()
+        self.assertEqual(meter.self_id, 84)
+        self.assertEqual(snap["possession_skill_dealt"], 120)
+        self.assertEqual(snap["skill_dealt"], 120)
+        self.assertEqual(snap["dealt"], 120)
+        self.assertEqual(snap["self_skill_dealt"], 0)
+        self.assertEqual(snap["skill_cast_total"], 1)
+
+    def test_possession_attack_via_host_body(self):
+        meter = DamageMeter(self_id=84, game_chat=False, out_path=None)
+        self.addCleanup(meter.close)
+        ts = time.time()
+        host = 901
+        meter.handle_parsed(
+            {"type": "possession_result", "from_id": 84, "to_id": host, "result": 0, "_op": 6011},
+            ts,
+        )
+        meter.handle_parsed(
+            {"type": "attack_request", "target": 16000, "_op": 3999},
+            ts + 0.1,
+        )
+        meter.handle_parsed(
+            {"type": "attack_result", "src": host, "dst": 16000, "damage": 33, "_op": 4001},
+            ts + 0.2,
+        )
+        snap = meter.snapshot()
+        self.assertEqual(meter.self_id, 84)
+        self.assertEqual(snap["dealt"], 33)
+        self.assertEqual(snap["possession_normal_dealt"], 33)
+        self.assertEqual(snap["normal_dealt"], 33)
 
     def test_skill_cooldown_only_for_configured_skills(self):
         meter = DamageMeter(self_id=7, game_chat=False, out_path=None)

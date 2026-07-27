@@ -108,10 +108,52 @@ export function HelpPage() {
             </ul>
             <div className="pt-2 text-xs leading-relaxed text-[var(--muted-foreground)]">
               关闭主窗口默认最小化到托盘；托盘菜单可彻底退出。进程掉线时可自动重连（设置可关）。
+              进图后普攻一次即可识别角色。换号/采集异常时：总览点一次「换号识别」（会自动重连采集），
+              再普攻一次即可。「清空统计」只清伤害数字，不会丢角色。
             </div>
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardContent className="space-y-2 p-4 text-sm">
+          <div className="font-semibold">名称与 Wiki 数据来源</div>
+          <ul className="m-0 list-disc space-y-1 pl-5 text-xs text-[var(--muted-foreground)]">
+            <li>
+              技能/怪物 ID 与中文表：客户端提取（
+              <code>skill_names.json</code> / <code>mob_names.json</code>）
+            </li>
+            <li>
+              日文技能名对照：
+              <code>skill_names_ja.json</code>
+              （客户端片假名 + Wiki 对齐种子名）
+            </li>
+            <li>
+              状态分类与说明：
+              <code>buff_names.json</code> + <code>buff_meta.json</code>
+              ，机制说明参考{' '}
+              <a className="text-[var(--amber)] underline" href="https://eco.lycolia.info/wiki/?StatusBuff" target="_blank" rel="noreferrer">
+                StatusBuff
+              </a>
+            </li>
+            <li>
+              技能体系浏览：
+              <a className="text-[var(--amber)] underline" href="https://eco.lycolia.info/wiki/?Skill" target="_blank" rel="noreferrer">
+                Skill
+              </a>
+              {' · '}
+              <a className="text-[var(--amber)] underline" href="https://eco.lycolia.info/wiki/?Job" target="_blank" rel="noreferrer">
+                Job
+              </a>
+              {' · '}
+              <a className="text-[var(--amber)] underline" href="https://eco.lycolia.info/wiki/?Partner" target="_blank" rel="noreferrer">
+                Partner
+              </a>
+            </li>
+            <li>Wiki 不提供精确 mask/skill_id；秒数以实战自定义倒计时为准。</li>
+          </ul>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardContent className="p-4">

@@ -38,6 +38,7 @@ const {
 const { resolveBackendRuntime, launchLabel } = require('./lib/backend-runtime');
 const { resolveSelectedPids } = require('./lib/process-selection');
 const { createBattleReportTracker } = require('./lib/battle-report');
+const { createDisplayNameService } = require('./lib/display-names');
 const { filterLogs: filterLogsImpl, formatLogsExportBody } = require('./lib/logs-service');
 const {
   OVERLAY_MIN_WIDTH,
@@ -111,6 +112,10 @@ let lastReconnectAt = 0;
 let rememberedProcessTitle = '';
 let rememberedXiaoyaTitle = '';
 const battleReport = createBattleReportTracker();
+const displayNames = createDisplayNameService({
+  dataDir: () => localDataDir(),
+  resDir: () => (app.isPackaged ? process.resourcesPath : path.resolve(__dirname, '..'))
+});
 
 const defaultAppSettings = {
   game: {
@@ -170,7 +175,9 @@ const defaultAppSettings = {
     overlayBackgroundFit: 'cover',
     // legacy (migrated into overlayBgMode)
     applyToOverlay: true,
-    accent: 'amber' // amber | teal | violet | rose | cyan | slate
+    accent: 'amber', // amber | teal | violet | rose | cyan | slate
+    // client | ja | dual — skill label preference (wiki-aligned JA table when available)
+    skillNameMode: 'client'
   },
   updates: {
     checkOnStartup: true
@@ -403,13 +410,28 @@ function captureBackendNeeded() {
   return Boolean(damageCollectionWanted || isMonitoringWanted());
 }
 
+function captureAttachedPid() {
+  const attached = serviceState.damage?.pid;
+  if (attached != null && Number(attached) > 0) return Number(attached);
+  return selectedGamePid;
+}
+
 function captureRoleMessage() {
   const mon = isMonitoringWanted();
   const dmg = damageCollectionWanted;
-  const pid = selectedGamePid;
-  if (dmg && mon) return `伤害采集与状态监控运行中（进程 ${pid}）`;
-  if (dmg) return `伤害采集运行中（进程 ${pid}）`;
-  if (mon) return `状态监控运行中（进程 ${pid}）`;
+  const attached = captureAttachedPid();
+  const selected = selectedGamePid;
+  let pidText = attached != null ? String(attached) : '—';
+  if (
+    attached != null
+    && selected != null
+    && Number(attached) !== Number(selected)
+  ) {
+    pidText = `${attached}≠选中${selected}`;
+  }
+  if (dmg && mon) return `伤害采集与状态监控运行中（进程 ${pidText}）`;
+  if (dmg) return `伤害采集运行中（进程 ${pidText}）`;
+  if (mon) return `状态监控运行中（进程 ${pidText}）`;
   return '已停止';
 }
 
@@ -814,6 +836,11 @@ function startCaptureBackend() {
         action: 'set-categories',
         categories: appSettings().capture
       })}\n`);
+      const nameMode = appSettings().appearance?.skillNameMode || 'client';
+      child.stdin.write(`${JSON.stringify({
+        action: 'set-skill-name-mode',
+        mode: nameMode
+      })}\n`);
     }
     const lines = readline.createInterface({ input: child.stdout });
     lines.on('line', (line) => {
@@ -845,27 +872,60 @@ function startCaptureBackend() {
   }
 }
 
-function stopCaptureBackend({ waitMs = 12000, force = false } = {}) {
+async function stopCaptureBackend({ waitMs = 12000, force = false } = {}) {
   if (isDemo) {
     stopDemo();
-    return Promise.resolve({ ok: true });
+    return { ok: true };
   }
   const child = services.damage;
   if (!child) {
+    services.damage = null;
     setServiceState('damage', 'stopped', '已停止');
-    return Promise.resolve({ ok: true });
+    return { ok: true };
   }
-  return stopChildGracefully('damage', child, { waitMs });
+  try {
+    await stopChildGracefully('damage', child, { waitMs });
+  } finally {
+    // Always drop the handle so the next start cannot reuse a dead/wrong PID session.
+    if (services.damage === child) services.damage = null;
+    if (serviceState.damage?.state !== 'error') {
+      setServiceState('damage', 'stopped', '已停止');
+    }
+  }
+  return { ok: true };
 }
 
-async function reconcileCaptureBackend({ waitMs = 12000 } = {}) {
+function capturePidMismatch() {
+  const attached = serviceState.damage?.pid;
+  if (!services.damage || attached == null || selectedGamePid == null) return false;
+  return Number(attached) !== Number(selectedGamePid);
+}
+
+async function reconcileCaptureBackend({ waitMs = 12000, forceRestart = false } = {}) {
   const needed = captureBackendNeeded();
   if (needed) {
+    const mismatch = capturePidMismatch();
+    if ((forceRestart || mismatch) && (services.damage || (isDemo && demoTimer))) {
+      if (mismatch) {
+        addCaptureLog(
+          'warn',
+          `采集挂接 PID ${serviceState.damage?.pid} 与当前游戏 ${selectedGamePid} 不一致，正在重新挂接…`
+        );
+      } else if (forceRestart) {
+        addCaptureLog('info', `正在按当前游戏进程 ${selectedGamePid} 重新启动采集…`);
+      }
+      await stopCaptureBackend({ waitMs });
+    }
     if (!services.damage && !(isDemo && demoTimer)) {
       return startCaptureBackend();
     }
     if (services.damage && serviceState.damage.state === 'running') {
-      setServiceState('damage', 'running', captureRoleMessage(), { pid: selectedGamePid });
+      // Keep the real attached pid from the bridge; never overwrite with a mismatched selected pid.
+      const pid = serviceState.damage.pid != null ? serviceState.damage.pid : selectedGamePid;
+      setServiceState('damage', 'running', captureRoleMessage(), {
+        pid,
+        log: serviceState.damage.log
+      });
     } else {
       broadcastState();
     }
@@ -994,6 +1054,51 @@ function resetDamage() {
   }
   broadcastState();
   return { ok: Boolean(child || isDemo) };
+}
+
+/** Soft reidentify: next local combat may rebind; keep last self_id on screen. */
+function reidentifySelf() {
+  const child = services.damage;
+  if (child && child.stdin?.writable) {
+    try {
+      child.stdin.write(`${JSON.stringify({ action: 'reidentify-self' })}\n`);
+    } catch (error) {
+      return { ok: false, error: error.message || '无法通知采集后端' };
+    }
+    const cur = latestSnapshot?.self_id;
+    addCaptureLog(
+      'info',
+      cur != null
+        ? `已请求确认角色（当前仍显示 #${cur}），请攻击或放技能一次`
+        : '已请求识别角色，请攻击或放技能一次'
+    );
+    // Do NOT wipe UI self_id — soft reidentify keeps last id until combat rebinds.
+    if (latestSnapshot && typeof latestSnapshot === 'object') {
+      latestSnapshot = { ...latestSnapshot, rebind_pending: true };
+      stateBus.broadcastSnapshot(latestSnapshot);
+    }
+    broadcastState({ immediate: true });
+    return { ok: true };
+  }
+  if (isDemo) {
+    if (latestSnapshot && typeof latestSnapshot === 'object') {
+      latestSnapshot = { ...latestSnapshot, self_id: null };
+      stateBus.broadcastSnapshot(latestSnapshot);
+    }
+    broadcastState({ immediate: true });
+    addLog('damage', 'info', '演示模式：已清除角色识别，下一帧会重新带上演示角色');
+    setTimeout(() => {
+      latestSnapshot = demoSnapshot(0);
+      battleReport.ingest(latestSnapshot);
+      stateBus.broadcastSnapshot(latestSnapshot);
+      broadcastState();
+    }, 400);
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    error: '采集后端未运行。请先开启伤害采集或状态监控，再重新识别角色。'
+  };
 }
 
 async function prepareForUpdateInstall() {
@@ -1249,17 +1354,19 @@ async function reconnectGameProcess({ reason = 'manual' } = {}) {
     const match = (gameProcesses || []).find(
       (p) => String(p.title || '') === rememberedProcessTitle
     );
-    if (match?.pid) {
-      const selected = selectGameProcess(match.pid);
-      if (!selected.ok) return selected;
+    if (match?.pid && Number(match.pid) !== Number(selectedGamePid)) {
+      // Capture may be running — allow PID retarget for reconnect only.
+      selectedGamePid = Number(match.pid);
+      latestSnapshot = null;
+      rememberedProcessTitle = match.title || rememberedProcessTitle;
+      selectedProcessAlive = true;
+      if (!isDemo) persistSelectedGamePid(selectedGamePid, rememberedProcessTitle);
     }
   }
   await checkSelectedProcessAlive();
   if (captureBackendNeeded()) {
-    if (services.damage) {
-      await stopCaptureBackend({ waitMs: 8000 });
-    }
-    const result = await reconcileCaptureBackend();
+    // Always restart capture on reconnect so Frida re-attaches to the live PID.
+    const result = await reconcileCaptureBackend({ waitMs: 8000, forceRestart: true });
     if (!result?.ok) return result;
   }
   broadcastState({ immediate: true });
@@ -1283,6 +1390,16 @@ function startProcessWatch() {
       if (selectedGamePid && selectedProcessAlive === false && wanted && auto) {
         addLog('app', 'warn', `游戏进程 ${selectedGamePid} 已退出，正在自动重连…`);
         await reconnectGameProcess({ reason: 'auto' });
+        return;
+      }
+      // Live process list may point at a new eco.exe while capture still hooks the old one.
+      if (wanted && capturePidMismatch()) {
+        addLog(
+          'app',
+          'warn',
+          `检测到采集 PID 漂移（挂接 ${serviceState.damage?.pid} / 选中 ${selectedGamePid}），自动重新挂接…`
+        );
+        await reconcileCaptureBackend({ forceRestart: true });
         return;
       }
       if (prevAlive !== selectedProcessAlive) {
@@ -1384,6 +1501,8 @@ function createAppTray() {
 }
 
 function getDiagnosticsPayload() {
+  const snap = latestSnapshot && typeof latestSnapshot === 'object' ? latestSnapshot : {};
+  const damageState = publicServices()?.damage || {};
   return collectDiagnostics({
     appVersion: app.getVersion(),
     isPackaged: app.isPackaged,
@@ -1395,21 +1514,59 @@ function getDiagnosticsPayload() {
       monitoring: isMonitoringWanted()
     },
     services: publicServices(),
-    logs
+    logs,
+    identity: {
+      self_id: snap.self_id ?? null,
+      candidates: snap.candidates ?? '',
+      captureRunning: damageState.state === 'running',
+      attached_pid: damageState.pid ?? null,
+      selected_pid: selectedGamePid,
+      pid_mismatch: Boolean(
+        damageState.pid != null
+        && selectedGamePid != null
+        && Number(damageState.pid) !== Number(selectedGamePid)
+      ),
+      total_dealt: snap.total_dealt ?? snap.dealt ?? null,
+      total_taken: snap.total_taken ?? snap.taken ?? null,
+      skill_cast_total: snap.skill_cast_total ?? null,
+      packet_count: snap.packet_count ?? null,
+      last_packet_age: snap.last_packet_age ?? null
+    },
+    connectionHealth: currentConnectionHealth()
   });
 }
 
 function buildDiagnosticsText() {
   const diag = getDiagnosticsPayload();
-  const health = currentConnectionHealth();
+  const health = diag.connectionHealth || currentConnectionHealth();
   const lines = [
     formatDiagnosticsText(diag),
-    '## connection health',
-    JSON.stringify(health, null, 2),
     '',
     '## hints'
   ];
   for (const hint of health.hints || []) lines.push(`- ${hint}`);
+  if (diag.identity?.pid_mismatch) {
+    lines.push(
+      `- 采集挂接 PID ${diag.identity.attached_pid} 与当前选中 ${diag.identity.selected_pid} 不一致，请点「重新连接」。`
+    );
+  }
+  const dealt = Number(diag.identity?.total_dealt) || 0;
+  const packets = diag.identity?.packet_count;
+  if (diag.identity?.captureRunning && diag.identity?.self_id == null && dealt <= 0) {
+    lines.push('- 采集已运行但尚未识别角色：请攻击或释放一次技能。');
+  }
+  if (diag.identity?.captureRunning && diag.identity?.self_id == null && dealt > 0) {
+    lines.push(
+      '- 有伤害数字但 self_id 为空：多半刚点过「重新识别」；请再普攻一次，勿重复点重新识别。'
+    );
+  }
+  if (
+    diag.identity?.captureRunning
+    && dealt <= 0
+    && (packets === 0 || packets == null)
+  ) {
+    lines.push('- 尚未收到战斗封包：确认已进游戏地图，并尝试以管理员身份运行工具箱。');
+  }
   lines.push('');
   return lines.join('\n');
 }
@@ -1562,6 +1719,7 @@ ipcMain.handle('game-processes:select-xiaoya', (_event, pid) => selectXiaoyaProc
 ipcMain.handle('service:start', (_event, name) => startService(name));
 ipcMain.handle('service:stop', (_event, name) => stopService(name));
 ipcMain.handle('damage:reset', () => resetDamage());
+ipcMain.handle('damage:reidentify-self', () => reidentifySelf());
 ipcMain.handle('battle:get-report', () => ({ ok: true, report: battleReport.snapshot() }));
 ipcMain.handle('battle:reset-report', () => {
   battleReport.reset();
@@ -1670,7 +1828,7 @@ ipcMain.handle('overlay:resize-delta', (_event, dx, dy) => {
   overlayWindow.setBounds({ x: bounds.x, y: bounds.y, width, height });
   return { ok: true, x: bounds.x, y: bounds.y, width, height };
 });
-ipcMain.handle('skill-icon:get', (_event, skillId) => {
+ipcMain.handle('skill-icon:get', async (_event, skillId) => {
   // Prefer the selected process path; fall back to any known eco.exe path.
   // When eco is not running, SkillIconService still serves disk cache icons.
   let gamePath = selectedGameProcess()?.path || '';
@@ -1678,7 +1836,47 @@ ipcMain.handle('skill-icon:get', (_event, skillId) => {
     const fallback = gameProcesses.find((item) => item.path);
     gamePath = fallback?.path || '';
   }
-  return skillIconService?.getIcon(skillId, gamePath) || Promise.resolve({ ok: false, reason: 'unavailable' });
+  const icon = await (skillIconService?.getIcon(skillId, gamePath)
+    || Promise.resolve({ ok: false, reason: 'unavailable' }));
+  const mode = appSettings().appearance?.skillNameMode || 'client';
+  const nameClient = displayNames.getZh(skillId) || String(icon?.name || '').trim();
+  const nameJa = displayNames.getJa(skillId) || '';
+  const name = displayNames.formatSkill(skillId, mode, icon?.name || nameClient);
+  return {
+    ...icon,
+    ok: Boolean(icon?.ok || nameClient || nameJa),
+    name,
+    nameClient,
+    nameJa,
+    wikiUrl: displayNames.wikiSearchUrl(nameJa || nameClient || name)
+  };
+});
+ipcMain.handle('names:skill', (_event, skillId, preferName = '') => {
+  const mode = appSettings().appearance?.skillNameMode || 'client';
+  const name = displayNames.formatSkill(skillId, mode, preferName);
+  return {
+    ok: true,
+    name,
+    nameClient: displayNames.getZh(skillId),
+    nameJa: displayNames.getJa(skillId),
+    wikiUrl: displayNames.wikiSearchUrl(name)
+  };
+});
+ipcMain.handle('presets:job-list', () => ({
+  ok: true,
+  presets: displayNames.loadJobPresets(),
+  wiki: 'https://eco.lycolia.info/wiki/?Skill'
+}));
+ipcMain.handle('presets:job-apply', (_event, id) => {
+  const preset = displayNames.loadJobPresets().find((p) => p.id === id);
+  if (!preset) return { ok: false, error: '职业模板不存在' };
+  const current = loadCustomBuffDurations();
+  const merged = { ...current, ...(preset.custom_durations || {}) };
+  const saved = saveCustomBuffDurations(merged);
+  notifyDamageReloadCustomBuffs(saved.durations);
+  broadcastState({ immediate: true });
+  addLog('buffs', 'success', `已导入职业倒计时模板：${preset.name}`);
+  return { ok: true, preset, custom_durations: saved.durations };
 });
 ipcMain.handle('settings:save-app', (_event, incoming) => {
   const current = mergeDeep(appSettings(), incoming || {});
@@ -1710,6 +1908,8 @@ ipcMain.handle('settings:save-app', (_event, incoming) => {
     current.appearance.accent = ['amber', 'teal', 'violet', 'rose', 'cyan', 'slate'].includes(accent)
       ? accent
       : 'amber';
+    const nameMode = String(current.appearance.skillNameMode || 'client');
+    current.appearance.skillNameMode = ['client', 'ja', 'dual'].includes(nameMode) ? nameMode : 'client';
     // Never persist runtime image payloads into settings.
     stripAppearanceRuntimeFields(current.appearance);
   }
@@ -1719,6 +1919,14 @@ ipcMain.handle('settings:save-app', (_event, incoming) => {
       action: 'set-categories',
       categories: current.capture
     })}\n`);
+  }
+  if (incoming?.appearance?.skillNameMode && services.damage?.stdin?.writable) {
+    try {
+      services.damage.stdin.write(`${JSON.stringify({
+        action: 'set-skill-name-mode',
+        mode: current.appearance.skillNameMode
+      })}\n`);
+    } catch { /* ignore */ }
   }
   if (overlayWindow && !overlayWindow.isDestroyed()) {
     const bounds = overlayWindow.getBounds();
@@ -1901,19 +2109,9 @@ ipcMain.handle('logs:export', async (_event, options = {}) => {
 
     // Also write a companion diagnostic sidecar for remote support.
     try {
-      const diag = collectDiagnostics({
-        appVersion: app.getVersion(),
-        isPackaged: app.isPackaged,
-        selectedGamePid,
-        selectedXiaoyaPid,
-        gameProcesses,
-        captureIntents: {
-          damage: damageCollectionWanted,
-          monitoring: isMonitoringWanted()
-        },
-        services: publicServices(),
-        logs: selected
-      });
+      const diag = getDiagnosticsPayload();
+      // Prefer the filtered export log slice in the sidecar.
+      diag.recentLogs = selected.slice(-80);
       const diagPath = outPath.replace(/\.(txt|log|json)$/i, '') + '.diag.json';
       fs.writeFileSync(diagPath, `${JSON.stringify(diag, null, 2)}\n`, 'utf8');
       addLog('app', 'info', `已导出 ${selected.length} 条日志 → ${outPath}`);

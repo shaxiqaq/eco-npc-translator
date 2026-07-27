@@ -129,8 +129,18 @@ export function SettingsPage() {
     toggleWindow: 'CommandOrControl+Shift+E',
   });
   const [presetName, setPresetName] = useState('');
+  const [jobPresets, setJobPresets] = useState<Array<Record<string, unknown>>>([]);
   const [checkOnStartup, setCheckOnStartup] = useState(true);
   const [statusText, setStatusText] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (settingsTab !== 'data') return;
+    void (async () => {
+      if (!window.eco.listJobPresets) return;
+      const result = await window.eco.listJobPresets();
+      if (result?.ok && Array.isArray(result.presets)) setJobPresets(result.presets);
+    })();
+  }, [settingsTab]);
 
   useEffect(() => {
     const t = state.translation || {};
@@ -252,6 +262,31 @@ export function SettingsPage() {
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="settings-block space-y-3">
+              <div className="form-heading">
+                <h2>技能名称显示</h2>
+                <p>
+                  对照客户端表与日文名称（lycolia Wiki / 客户端片假名）。
+                  数据源见帮助页。
+                </p>
+              </div>
+              <ToggleGroup
+                fullWidth
+                value={String(appearance.skillNameMode || 'client')}
+                onValueChange={(mode) => {
+                  previewAppearance({ ...appearance, skillNameMode: mode });
+                  setStatusText((s) => ({ ...s, appearance: '名称模式已预览，记得保存' }));
+                }}
+              >
+                <ToggleGroupItem value="client">客户端/中文</ToggleGroupItem>
+                <ToggleGroupItem value="ja">日文</ToggleGroupItem>
+                <ToggleGroupItem value="dual">双显</ToggleGroupItem>
+              </ToggleGroup>
+              <p className="m-0 text-[11px] text-[var(--muted-foreground)]">
+                双显示例：击援手 / アタックアシスト。采集后端在保存后会同步此模式。
+              </p>
             </div>
 
             <div className="settings-block">
@@ -742,6 +777,55 @@ export function SettingsPage() {
                 </Button>
               </div>
             </div>
+            <div className="settings-block space-y-3">
+              <div className="form-heading">
+                <h2>职业倒计时模板（Wiki 对照）</h2>
+                <p>
+                  从日文 Wiki 技能体系整理的起始模板，导入后写入自定义倒计时（可再改秒数）。
+                  来源：
+                  <a
+                    className="ml-1 text-[var(--amber)] underline"
+                    href="https://eco.lycolia.info/wiki/?Skill"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Skill
+                  </a>
+                </p>
+              </div>
+              <div className="space-y-2">
+                {(jobPresets || []).length === 0 ? (
+                  <p className="m-0 text-xs text-[var(--muted-foreground)]">未加载到职业模板</p>
+                ) : (
+                  jobPresets.map((preset) => (
+                    <div
+                      key={String(preset.id)}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--line-soft)] px-3 py-2"
+                    >
+                      <div className="min-w-0 text-xs">
+                        <div className="font-semibold">{String(preset.name)}</div>
+                        <div className="text-[var(--muted-foreground)]">{String(preset.note || '')}</div>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={async () => {
+                          if (!window.eco.applyJobPreset) {
+                            showToast('当前版本不支持职业模板');
+                            return;
+                          }
+                          const result = await window.eco.applyJobPreset(String(preset.id));
+                          showToast(result.ok ? `已导入「${preset.name}」` : result.error || '导入失败');
+                        }}
+                      >
+                        导入倒计时
+                      </Button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
             <div className="settings-block space-y-3">
               <div className="form-heading">
                 <h2>多角色预设</h2>

@@ -92,7 +92,86 @@ function demoSnapshot(seed) {
     skill_casts: [
       { skill_id: 2100, skill: 'パリイ', count: 4, role: 'defensive' },
       { skill_id: 3114, skill: '魔法护盾', count: 1, role: 'self' }
-    ]
+    ],
+    grind: {
+      elapsed: 72 + seed,
+      active: 48 + seed,
+      level: 45,
+      job_level: 28,
+      cexp_pct: 34.5 + (seed % 20) * 0.1,
+      jexp_pct: 12.0 + (seed % 10) * 0.1,
+      session_cexp_pct: 8.5 + seed * 0.05,
+      session_jexp_pct: 3.2 + seed * 0.02,
+      session_cexp_abs: 12500 + seed * 40,
+      session_jexp_abs: 4200 + seed * 15,
+      session_cexp_abs_estimated: true,
+      session_jexp_abs_estimated: true,
+      session_cexp_pct_per_hour: 12.4,
+      session_jexp_pct_per_hour: 4.6,
+      session_cexp_per_hour: 18600,
+      session_jexp_per_hour: 6200,
+      level_ups: seed > 30 ? 1 : 0,
+      job_level_ups: 0,
+      exp_update_count: 12 + seed,
+      ready: true,
+      table_source: 'demo',
+      windows: {
+        '5m': {
+          window_s: 300,
+          cexp_pct_per_hour: 15.2,
+          jexp_pct_per_hour: 5.1,
+          cexp_per_hour: 22000,
+          jexp_per_hour: 7100,
+          elapsed_s: 300
+        },
+        '15m': {
+          window_s: 900,
+          cexp_pct_per_hour: 13.0,
+          jexp_pct_per_hour: 4.8,
+          cexp_per_hour: 19800,
+          jexp_per_hour: 6800,
+          elapsed_s: 900
+        },
+        '1h': {
+          window_s: 3600,
+          cexp_pct_per_hour: 12.4,
+          jexp_pct_per_hour: 4.6,
+          cexp_per_hour: 18600,
+          jexp_per_hour: 6200,
+          elapsed_s: 3600
+        },
+        session: {
+          window_s: 72 + seed,
+          cexp_pct_per_hour: 12.4,
+          jexp_pct_per_hour: 4.6,
+          cexp_per_hour: 18600,
+          jexp_per_hour: 6200,
+          elapsed_s: 72 + seed
+        }
+      },
+      recent_gains: [
+        {
+          ts: nowSeconds - 8,
+          cexp_pct_x10: 12,
+          jexp_pct_x10: 4,
+          cexp_abs: 180,
+          jexp_abs: 60,
+          level: 45,
+          cexp_pct_now: 345,
+          jexp_pct_now: 120
+        },
+        {
+          ts: nowSeconds - 22,
+          cexp_pct_x10: 8,
+          jexp_pct_x10: 3,
+          cexp_abs: 120,
+          jexp_abs: 45,
+          level: 45,
+          cexp_pct_now: 333,
+          jexp_pct_now: 116
+        }
+      ]
+    }
   };
 }
 

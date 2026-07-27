@@ -47,7 +47,8 @@ try {
     'wallpaper',
     'battle-report',
     'error-codes',
-    'crash-log'
+    'crash-log',
+    'display-names'
   ];
   for (const name of mods) {
     require(path.join(electronRoot, 'lib', `${name}.js`));

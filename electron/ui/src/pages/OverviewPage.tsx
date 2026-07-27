@@ -5,11 +5,12 @@ import {
   PictureInPicture2,
   Play,
   Square,
-  RotateCcw,
   ArrowRight,
+  UserRoundSearch,
+  UserRound,
 } from 'lucide-react';
 import { useEco } from '@/context/EcoContext';
-import { formatDuration, formatNumber } from '@/lib/format';
+import { formatDuration, formatExpRate, formatNumber, formatPercent } from '@/lib/format';
 import { historyType, serviceText } from '@/lib/damage';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
@@ -69,7 +70,7 @@ export function OverviewPage() {
     toggleService,
     setStatusMonitoring,
     setOverlayVisible,
-    resetDamage,
+    switchCharacter,
   } = useEco();
 
   const damageRunning = ['running', 'starting'].includes(state.services?.damage?.state || '');
@@ -78,12 +79,57 @@ export function OverviewPage() {
   const overlayVisible = state.settings?.overlay?.visible !== false;
   const capture = state.settings?.capture || {};
   const recent = [...(snapshot?.damage_history || [])].reverse().slice(0, 5);
-  const recentLogs = [...(state.logs || [])].slice(-5).reverse();
+  const selfId = snapshot?.self_id;
+  const hasSelf = selfId != null && selfId !== '';
+  const rebindPending = Boolean(snapshot?.rebind_pending);
+  const captureUp = damageRunning
+    || ['running', 'starting'].includes(state.services?.monitoring?.state || '');
 
   return (
     <PageStack>
-      <ConnectionBanner />
-      {/* 服务总控：单行四项，不占纵向空间 */}
+      {/* 角色条：换号只保留一个主按钮 */}
+      <Card className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className={cn(
+            'grid h-10 w-10 shrink-0 place-items-center rounded-xl',
+            hasSelf
+              ? 'bg-[rgba(25,51,41,.9)] text-[var(--green)]'
+              : 'bg-[var(--amber-dark)] text-[var(--amber)]',
+          )}
+          >
+            <UserRound className="h-5 w-5" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-[11px] text-[var(--muted-foreground)]">当前角色</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-base font-semibold tabular-nums">
+                {hasSelf ? `#${selfId}` : (captureUp ? '等待识别' : '采集未开启')}
+              </span>
+              {rebindPending && hasSelf ? (
+                <Badge variant="warning" className="text-[10px]">待确认 · 请普攻一次</Badge>
+              ) : null}
+              {!hasSelf && captureUp ? (
+                <Badge variant="warning" className="text-[10px]">请普攻一次</Badge>
+              ) : null}
+            </div>
+            <div className="mt-0.5 text-[11px] text-[var(--muted-foreground)]">
+              战斗 {formatDuration(snapshot?.active)} · 峰值 DPS {formatNumber(state.battleReport?.peakDps, 2)}
+            </div>
+          </div>
+        </div>
+        <Button
+          type="button"
+          className="h-9 gap-1.5 px-3"
+          title="一键：重连采集 + 清空本场伤害 + 准备识别新角色，然后普攻一次即可"
+          onClick={() => void switchCharacter()}
+        >
+          <UserRoundSearch className="h-4 w-4" />
+          换号识别
+        </Button>
+      </Card>
+
+      <ConnectionBanner compact />
+
       <Card className="flex flex-row divide-x divide-[var(--line-soft)] overflow-hidden p-0">
         <ServiceChip
           tone="amber"
@@ -117,103 +163,114 @@ export function OverviewPage() {
         <ServiceChip
           tone="blue"
           icon={<PictureInPicture2 className="h-4 w-4" />}
-          label="状态悬浮窗"
-          status={overlayVisible ? '已显示' : '已隐藏'}
+          label="悬浮窗"
+          status={overlayVisible ? '显示' : '隐藏'}
           action={<Switch checked={overlayVisible} onCheckedChange={(v) => void setOverlayVisible(v)} />}
         />
       </Card>
 
       <SectionHeader
+        title="肝度速览"
+        description="本会话经验获取与效率（完整面板见「肝度统计」）"
+        action={<TextLink onClick={() => setPage('grind')}>肝度详情</TextLink>}
+      />
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <MetricCard
+          label="基础经验 %"
+          value={formatPercent(snapshot?.grind?.session_cexp_pct)}
+          hint={`${formatPercent(snapshot?.grind?.session_cexp_pct_per_hour)}/时`}
+          accent="amber"
+          disabled={!snapshot?.grind?.ready}
+        />
+        <MetricCard
+          label="职业经验 %"
+          value={formatPercent(snapshot?.grind?.session_jexp_pct)}
+          hint={`${formatPercent(snapshot?.grind?.session_jexp_pct_per_hour)}/时`}
+          disabled={!snapshot?.grind?.ready}
+        />
+        <MetricCard
+          label="基础效率"
+          value={formatExpRate(snapshot?.grind?.session_cexp_per_hour)}
+          hint={
+            snapshot?.grind?.session_cexp_abs
+              ? `累计 ${formatNumber(snapshot.grind.session_cexp_abs)}`
+              : '累计 —'
+          }
+          accent="green"
+          disabled={!snapshot?.grind?.ready}
+        />
+        <MetricCard
+          label="有效肝时"
+          value={formatDuration(snapshot?.grind?.active)}
+          hint={
+            snapshot?.grind?.level != null
+              ? `Lv.${snapshot.grind.level} · 条 ${formatPercent(snapshot.grind.cexp_pct)}`
+              : '等待经验包'
+          }
+          disabled={!snapshot?.grind?.ready}
+        />
+      </div>
+
+      <SectionHeader
         title="当前战斗"
-        description={`战斗时间 ${formatDuration(snapshot?.active)} · 会话峰值 DPS ${formatNumber(state.battleReport?.peakDps, 2)} · 采集请到「伤害统计」`}
-        action={(
-          <div className="flex items-center gap-1">
-            <TextLink onClick={() => setPage('damage')}>伤害详情</TextLink>
-            <Button type="button" variant="ghost" size="icon-sm" title="清空伤害统计" onClick={() => void resetDamage()}>
-              <RotateCcw />
-            </Button>
-          </div>
-        )}
+        description="详细列表与清空统计请到「伤害统计」"
+        action={<TextLink onClick={() => setPage('damage')}>伤害详情</TextLink>}
       />
 
-      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
         {([
-          ['skill', '技能造成', 'amber', snapshot?.skill_dealt, snapshot?.skill_dps, '秒伤'] as const,
-          ['normal', '普通攻击', 'white', snapshot?.normal_dealt, snapshot?.normal_dps, '秒伤'] as const,
-          ['pet', '宠物造成', 'green', snapshot?.pet_dealt, snapshot?.pet_dps, '秒伤'] as const,
-          ['taken', '受到伤害', 'red', snapshot?.taken, snapshot?.tps, '秒均'] as const,
-        ]).map(([key, label, accent, total, dps, unit]) => (
+          ['self_normal', '自身普攻', 'white', snapshot?.self_normal_dealt, snapshot?.self_normal_dps] as const,
+          ['self_skill', '自身技能', 'amber', snapshot?.self_skill_dealt, snapshot?.self_skill_dps] as const,
+          ['pet_normal', '宠物普攻', 'green', snapshot?.pet_normal_dealt, snapshot?.pet_normal_dps] as const,
+          ['pet_skill', '宠物技能', 'green', snapshot?.pet_skill_dealt, snapshot?.pet_skill_dps] as const,
+          ['ride_normal', '骑宠普攻', 'blue', snapshot?.ride_normal_dealt, snapshot?.ride_normal_dps] as const,
+          ['ride_skill', '骑宠技能', 'blue', snapshot?.ride_skill_dealt, snapshot?.ride_skill_dps] as const,
+          ['possession_normal', '依凭普攻', 'white', snapshot?.possession_normal_dealt, snapshot?.possession_normal_dps] as const,
+          ['possession_skill', '依凭技能', 'amber', snapshot?.possession_skill_dealt, snapshot?.possession_skill_dps] as const,
+          ['taken', '受到伤害', 'red', snapshot?.taken, snapshot?.tps] as const,
+        ]).map(([key, label, accent, total, dps]) => (
           <MetricCard
             key={key}
             label={label}
             accent={accent}
             value={formatNumber(total)}
-            hint={<><b className="font-semibold text-[#cbd0d2]">{formatNumber(dps, 2)}</b> {unit}</>}
+            hint={<><b className="font-semibold text-[#cbd0d2]">{formatNumber(dps, 2)}</b> 秒伤</>}
             disabled={capture[key] === false}
           />
         ))}
       </div>
 
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.12fr)_minmax(320px,.88fr)]">
-        <DataCard
-          title="最近伤害"
-          action={(
-            <TextLink onClick={() => setPage('damage')}>
-              查看全部 <ArrowRight className="h-3.5 w-3.5" />
-            </TextLink>
-          )}
-          bare
-        >
-          {!recent.length ? (
-            <EmptyState>暂无战斗数据</EmptyState>
-          ) : (
-            <div>
-              {recent.map((item, index) => {
-                const type = historyType(item);
-                return (
-                  <div key={`${item.time}-${index}`} className="recent-row">
-                    <time>{item.time || '--:--:--'}</time>
-                    <Badge variant={type.cls === '' ? 'normal' : type.cls as 'skill'}>{type.text}</Badge>
-                    <SkillIcon skillId={item.skill_id} fallback={item.skill_id == null ? 'sword' : 'sparkles'} />
-                    <span className="route">
-                      {item.source} → {item.target} ·{' '}
-                      {item.skill_id == null ? '普通攻击' : <SkillName skillId={item.skill_id} />}
-                    </span>
-                    <strong>{formatNumber(item.damage)}</strong>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </DataCard>
-
-        <DataCard
-          title="运行动态"
-          action={(
-            <TextLink onClick={() => setPage('logs')}>
-              查看日志 <ArrowRight className="h-3.5 w-3.5" />
-            </TextLink>
-          )}
-          bare
-        >
-          {!recentLogs.length ? (
-            <EmptyState>等待服务启动</EmptyState>
-          ) : (
-            <div>
-              {recentLogs.map((entry, index) => (
-                <div key={`${entry.time}-${index}`} className="activity-row">
-                  <i className={entry.level || 'info'} />
-                  <div>
-                    <strong>{entry.service === 'damage' ? '伤害采集' : 'NPC 翻译'}</strong>
-                    <span>{entry.message}</span>
-                  </div>
-                  <time>{entry.time}</time>
+      <DataCard
+        title="最近伤害"
+        action={(
+          <TextLink onClick={() => setPage('damage')}>
+            全部 <ArrowRight className="h-3.5 w-3.5" />
+          </TextLink>
+        )}
+        bare
+      >
+        {!recent.length ? (
+          <EmptyState>暂无战斗数据 · 进图普攻一次即可</EmptyState>
+        ) : (
+          <div>
+            {recent.map((item, index) => {
+              const type = historyType(item);
+              return (
+                <div key={`${item.time}-${index}`} className="recent-row">
+                  <time>{item.time || '--:--:--'}</time>
+                  <Badge variant={type.cls === '' ? 'normal' : type.cls as 'skill'}>{type.text}</Badge>
+                  <SkillIcon skillId={item.skill_id} fallback={item.skill_id == null ? 'sword' : 'sparkles'} />
+                  <span className="route">
+                    {item.source} → {item.target} ·{' '}
+                    {item.skill_id == null ? '普通攻击' : <SkillName skillId={item.skill_id} />}
+                  </span>
+                  <strong>{formatNumber(item.damage)}</strong>
                 </div>
-              ))}
-            </div>
-          )}
-        </DataCard>
-      </div>
+              );
+            })}
+          </div>
+        )}
+      </DataCard>
     </PageStack>
   );
 }

@@ -18,12 +18,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from eco_damage_capture import MAP_PORT, parse_packet
 from eco_damage_categories import (
+    category_for_channel,
     category_for_damage,
     default_capture_categories,
     update_capture_categories,
 )
 from eco_damage_console import render
 from eco_buffs import BuffTracker, load_custom_durations
+from eco_exp_tracker import ExpTracker, load_exp_table
 from eco_log import setup_logger
 from eco_paths import resolve_dirs, ensure_data_layout, find_data_file, log_dir
 
@@ -42,12 +44,27 @@ WATCH_OPS = [
     3999, 4001, 4002, 4006, 4999,
     5001, 5005, 5010, 5025, 5030, 5035, 5040,
     525, 540, 5500, 4640, 4645, 4655, 4660,
+    # Possession (依凭/憑依): 0x177B result, 0x1780 cancel
+    6011, 6016,
+    # EXP / level: SSMG_PLAYER_EXP 0x0235, SSMG_PLAYER_LEVEL 0x023A
+    565, 570,
 ]
 SKILL_NAMES = find_data_file(_DATA_DIR, _RES_DIR, "skill_names.json")
 MOB_NAMES = find_data_file(_DATA_DIR, _RES_DIR, "mob_names.json")
+DEFENSIVE_IDS_PATH = find_data_file(_DATA_DIR, _RES_DIR, "defensive_skill_ids.json")
+
+try:
+    from eco_display_names import format_skill_display, load_skill_name_tables
+except Exception:  # pragma: no cover
+    format_skill_display = None
+    load_skill_name_tables = None
 
 
 def load_skill_names(path=SKILL_NAMES):
+    if load_skill_name_tables:
+        tables = load_skill_name_tables(_DATA_DIR, _RES_DIR)
+        # Backward-compatible flat map: prefer client/zh names.
+        return dict(tables.get("zh") or {})
     try:
         with open(path, encoding="utf-8") as stream:
             data = json.load(stream)
@@ -64,6 +81,18 @@ def load_skill_names(path=SKILL_NAMES):
         if isinstance(value, str) and value.strip():
             names[skill_id] = value.strip()
     return names
+
+
+def load_defensive_skill_ids(path=DEFENSIVE_IDS_PATH):
+    default = {2100, 6418}
+    try:
+        with open(path, encoding="utf-8") as stream:
+            data = json.load(stream)
+        ids = data.get("ids") if isinstance(data, dict) else data
+        out = {int(x) for x in (ids or []) if int(x) > 0}
+        return out or default
+    except Exception:
+        return default
 
 
 def load_id_names(path):
@@ -98,13 +127,20 @@ class DamageMeter:
         self.chat_mode = chat_mode
         self.event_sink = event_sink
         self.lock = threading.Lock()
+        # CLI --self-id is sticky; UI/auto mode may rebind after account switch.
+        self._self_id_forced = self_id is not None
         self.self_id = self_id
         self.auto_self = self_id is None
+        # When True, next local combat may rebind even if self_id is already locked.
+        self._rebind_pending = False
         self.self_candidates = Counter()
         self.recent_targets = deque(maxlen=16)
         self.recent_actions = deque(maxlen=32)
         self.recent_damage_hits = deque(maxlen=32)
         self.events = deque(maxlen=12)
+        self.packet_count = 0
+        self.last_packet_ts = None
+        self.pending_notices = deque(maxlen=16)
         self.damage_details = deque(maxlen=12)
         self.damage_history = []
         self.hp_by_actor = {}
@@ -112,13 +148,22 @@ class DamageMeter:
         self.actor_mobs = {}
         self.pet_actors = set()
         self.pet_owner = {}
+        # 依凭/憑依: host actor the local player is currently possessing through.
+        self.possession_host_id = None
         self.mob_template_counts = Counter()
         self.unknown_combat_actors = Counter()
         self.skill_names = load_skill_names()
+        self.skill_name_tables = (
+            load_skill_name_tables(_DATA_DIR, _RES_DIR) if load_skill_name_tables else {"zh": self.skill_names, "ja": {}}
+        )
+        # client | ja | dual — overridable via ECO_SKILL_NAME_MODE
+        self.skill_name_mode = (os.environ.get("ECO_SKILL_NAME_MODE") or "client").strip().lower()
         self.mob_names = load_id_names(MOB_NAMES)
         # Non-damaging defensive skills (パリイ / SKILL_A_PARRY family).
-        self.defensive_skill_ids = {2100, 6418}
+        self.defensive_skill_ids = load_defensive_skill_ids()
         self.capture_categories = default_capture_categories()
+        exp_table_path = find_data_file(_DATA_DIR, _RES_DIR, "exp_table.json")
+        self.exp_tracker = ExpTracker(table=load_exp_table(exp_table_path))
         self.reset()
         self.actor_buff_masks = {}
         self.buff_tracker = BuffTracker(custom_durations=load_custom_durations())
@@ -151,8 +196,8 @@ class DamageMeter:
     def category_enabled(self, category):
         return self.capture_categories.get(category, True)
 
-    def should_capture_damage(self, side, skill_id=None):
-        return self.category_enabled(category_for_damage(side, skill_id))
+    def should_capture_damage(self, side, skill_id=None, channel=None):
+        return self.category_enabled(category_for_damage(side, skill_id, channel=channel))
 
     def build_public_chat_subpacket(self, text):
         actor = self.self_id or 0
@@ -206,6 +251,13 @@ class DamageMeter:
             self.pet_dealt = 0
             self.pet_skill_dealt = 0
             self.pet_normal_dealt = 0
+            # Fine channels: self / pet / ride / possession × normal / skill
+            self.self_skill_dealt = 0
+            self.self_normal_dealt = 0
+            self.ride_skill_dealt = 0
+            self.ride_normal_dealt = 0
+            self.possession_skill_dealt = 0
+            self.possession_normal_dealt = 0
             self.hits_dealt = 0
             self.hits_taken = 0
             self.hits_skill_dealt = 0
@@ -215,6 +267,12 @@ class DamageMeter:
             self.hits_pet_dealt = 0
             self.hits_pet_skill_dealt = 0
             self.hits_pet_normal_dealt = 0
+            self.hits_self_skill_dealt = 0
+            self.hits_self_normal_dealt = 0
+            self.hits_ride_skill_dealt = 0
+            self.hits_ride_normal_dealt = 0
+            self.hits_possession_skill_dealt = 0
+            self.hits_possession_normal_dealt = 0
             self.max_dealt = 0
             self.max_taken = 0
             self.max_skill_dealt = 0
@@ -224,12 +282,19 @@ class DamageMeter:
             self.max_pet_dealt = 0
             self.max_pet_skill_dealt = 0
             self.max_pet_normal_dealt = 0
+            self.max_self_skill_dealt = 0
+            self.max_self_normal_dealt = 0
+            self.max_ride_skill_dealt = 0
+            self.max_ride_normal_dealt = 0
+            self.max_possession_skill_dealt = 0
+            self.max_possession_normal_dealt = 0
             self.by_target = Counter()
             self.by_source = Counter()
             self.by_skill_dealt = Counter()
             self.by_skill_taken = Counter()
             self.by_pet = Counter()
             self.by_pet_skill = Counter()
+            self.by_channel_skill = Counter()  # (channel, skill_id) -> dmg
             self.by_skill_cast = Counter()
             self.skill_cast_total = 0
             self.skill_cast_history = deque(maxlen=200)
@@ -244,19 +309,129 @@ class DamageMeter:
             self.actor_mobs.clear()
             self.pet_actors.clear()
             self.pet_owner.clear()
+            self.possession_host_id = None
             self.mob_template_counts.clear()
             self.unknown_combat_actors.clear()
             self.recent_actions.clear()
             self.recent_damage_hits.clear()
+            # Keep self_id across stats reset. Clearing the meter between fights
+            # must not force the user to re-identify. Account switch uses
+            # observe_local_caster / reidentify-self instead.
+            if hasattr(self, "exp_tracker") and self.exp_tracker is not None:
+                self.exp_tracker.reset(keep_baseline=True)
+
+    def reset_identity(self, reason="manual", quiet=False, hard=False):
+        """
+        Allow re-learning the logged-in character.
+
+        Soft mode (default, UI「重新识别」): keep showing the last self_id until a
+        new local combat packet rebinds. This avoids the false "未识别" state that
+        appears when users reidentify after a successful bind and export diagnostics
+        before attacking again.
+
+        Hard mode: immediately clear self_id (tests / forced wipe).
+        """
+        prev = self.self_id
+        self.auto_self = True
+        self._rebind_pending = True
+        self.self_candidates.clear()
+        # Drop stale C2S evidence from the previous login so re-bind is clean.
+        self.recent_targets.clear()
+        self.recent_actions.clear()
+        if hard or prev is None:
+            self.self_id = None
+            tracker = getattr(self, "buff_tracker", None)
+            if tracker is not None:
+                try:
+                    tracker.reset_actor(None)
+                except Exception:
+                    pass
+        if not quiet:
+            if prev is not None and not hard:
+                self.events.appendleft((
+                    now_label(),
+                    f"等待重新确认角色（当前仍显示 self={prev}，请攻击或放技能一次）",
+                ))
+                self.pending_notices.append({
+                    "level": "info",
+                    "message": f"请攻击或放技能一次以确认角色（当前 #{prev}）",
+                })
+            elif prev is not None:
+                self.events.appendleft((now_label(), f"重置角色识别（原 self={prev}，原因={reason}）"))
+            else:
+                self.events.appendleft((now_label(), f"重置角色识别（原因={reason}）"))
+            self.log({
+                "ts": time.time(),
+                "kind": "self_identity",
+                "event": "reidentify_pending" if (prev is not None and not hard) else "reset",
+                "previous": prev,
+                "self_id": self.self_id,
+                "reason": reason,
+                "hard": hard,
+            })
+
+    def bind_self(self, actor, reason="auto", force=False):
+        """Lock local player actor id. force=True rebinds after account/character switch."""
+        if actor is None:
+            return False
+        try:
+            actor = int(actor)
+        except (TypeError, ValueError):
+            return False
+        if actor <= 0:
+            return False
+        if getattr(self, "_rebind_pending", False):
+            force = True
+        if self._self_id_forced and self.self_id is not None and actor != self.self_id and not force:
+            return False
+        if self.self_id == actor:
+            self.auto_self = False
+            self._rebind_pending = False
+            return False
+        if self.self_id is not None and not force and not self.auto_self:
+            return False
+        prev = self.self_id
+        self.self_id = actor
+        self.auto_self = False
+        self._rebind_pending = False
+        self.self_candidates[actor] += 4
+        # Drop stale "self" from pet set if it was misclassified.
+        self.pet_actors.discard(actor)
+        label = "切换角色" if prev is not None and prev != actor else "识别角色"
+        text = f"{label} self={actor}（{reason}）" + (f" 原={prev}" if prev is not None and prev != actor else "")
+        self.events.appendleft((now_label(), text))
+        self.pending_notices.append({
+            "level": "success",
+            "message": f"已{'切换' if prev is not None and prev != actor else '识别'}角色 #{actor}",
+        })
+        self.log({
+            "ts": time.time(),
+            "kind": "self_identity",
+            "event": "bind" if prev is None else "rebind",
+            "self_id": actor,
+            "previous": prev,
+            "reason": reason,
+        })
+        return True
+
+    def drain_notices(self):
+        out = list(self.pending_notices)
+        self.pending_notices.clear()
+        return out
 
     def mark_self_candidate(self, actor, score):
-        if not self.auto_self or actor is None:
+        if actor is None:
             return
+        try:
+            actor = int(actor)
+        except (TypeError, ValueError):
+            return
+        if actor <= 0:
+            return
+        # Always accumulate evidence; useful after re-login even if locked.
         self.self_candidates[actor] += score
-        if self.self_candidates[actor] >= 4:
-            self.self_id = actor
-            self.auto_self = False
-            self.events.appendleft((now_label(), f"auto self actor={actor}"))
+        if self.self_id is None and self.auto_self and self.self_candidates[actor] >= 4:
+            self.bind_self(actor, reason="candidate_score")
 
     def best_self_candidate(self):
         if self.self_id is not None:
@@ -269,10 +444,28 @@ class DamageMeter:
     def own_actor(self):
         actor = self.best_self_candidate()
         if actor is not None and self.self_id is None:
-            self.self_id = actor
-            self.auto_self = False
-            self.events.appendleft((now_label(), f"auto self actor={actor} by outgoing action"))
+            self.bind_self(actor, reason="outgoing_action")
         return self.self_id
+
+    def observe_local_caster(self, caster, reason="local_packet"):
+        """
+        C2S skill/attack is always from the local client. When the matching S2C
+        names a caster, that actor is the logged-in character — even if we had
+        locked an older self_id from a previous account on the same process.
+        """
+        if caster is None:
+            return False
+        try:
+            caster = int(caster)
+        except (TypeError, ValueError):
+            return False
+        if caster <= 0:
+            return False
+        if self.self_id is None:
+            return self.bind_self(caster, reason=reason)
+        if self.self_id != caster:
+            return self.bind_self(caster, reason=f"relogin_or_switch:{reason}", force=True)
+        return False
 
     def sync_buffs_to_self(self, timestamp):
         actor = self.self_id
@@ -366,6 +559,34 @@ class DamageMeter:
     def is_pet_actor(self, actor):
         return actor in self.pet_actors
 
+    def is_likely_character_actor(self, actor):
+        """Heuristic: player-ish actor ids (not mob templates / known pets)."""
+        if actor is None:
+            return False
+        try:
+            actor = int(actor)
+        except (TypeError, ValueError):
+            return False
+        if actor <= 0:
+            return False
+        if actor in self.pet_actors or actor in self.actor_mobs:
+            return False
+        if actor in self.pet_owner:
+            return False
+        # Field mobs/pets usually sit in higher id bands; PCs are typically lower.
+        return actor < 10000
+
+    def is_owned_pet_source(self, src):
+        if src is None or self.self_id is None:
+            return False
+        if src == self.self_id:
+            return False
+        if src in self.pet_actors and self.pet_owner.get(src) in (self.self_id, None, 0):
+            return True
+        if self.pet_owner.get(src) == self.self_id:
+            return True
+        return False
+
     def target_is_ours_recently(self, ts, target, max_age=10.0):
         if target is None or target == self.self_id:
             return False
@@ -373,6 +594,167 @@ class DamageMeter:
             if target == recent_target and 0 <= ts - target_ts <= max_age:
                 return True
         return self.by_target.get(target, 0) > 0
+
+    def is_possession_host(self, actor):
+        if actor is None or self.possession_host_id is None:
+            return False
+        try:
+            return int(actor) == int(self.possession_host_id)
+        except (TypeError, ValueError):
+            return False
+
+    def local_skill_proxy_source(self, ts, src, skill_id, dst):
+        """
+        Ride / 依凭(憑依) / partner / marionette:
+        Client C2S is always ours, but S2C may name mount/host/pet as caster.
+        Never rebind self_id to that proxy.
+
+        Returns 'self' | 'pet' | 'ride' | 'possession' | None.
+        """
+        if skill_id is not None and self.has_recent_own_skill_request(ts, skill_id, dst):
+            if src is None or src == self.self_id:
+                return "self"
+            if self.is_possession_host(src):
+                return "possession"
+            # Player pressed a skill but S2C caster is non-PC (mount/ride body):
+            # always 骑宠技能 — even if actor was also marked as pet earlier.
+            if not self.is_likely_character_actor(src):
+                if self.self_id is not None:
+                    self.mark_pet_actor(src, owner=self.self_id, reason="骑宠施法代理")
+                return "ride"
+            # Other PC after our C2S skill → 依凭 host (packet not seen yet).
+            if self.possession_host_id is None and self.self_id is not None:
+                self.possession_host_id = int(src)
+            return "possession"
+        if self.has_recent_own_attack(ts, dst, max_age=1.5):
+            if src is None or src == self.self_id:
+                return "self"
+            if self.is_possession_host(src):
+                return "possession"
+            if self.is_owned_pet_source(src) or self.is_pet_actor(src):
+                return "pet"
+            if src is not None and src != self.self_id and self.self_id is not None:
+                if not self.is_likely_character_actor(src):
+                    self.mark_pet_actor(src, owner=self.self_id, reason="骑宠普攻代理")
+                    return "ride"
+                if self.possession_host_id is None:
+                    self.possession_host_id = int(src)
+                return "possession"
+        return None
+
+    def resolve_outgoing_channel(self, mode, skill_id):
+        kind = "skill" if skill_id is not None else "normal"
+        mode = mode if mode in ("self", "pet", "ride", "possession") else "self"
+        return f"{mode}_{kind}"
+
+    def should_capture_channel(self, channel, skill_id=None):
+        """Fine channel toggle (matches UI metric cards 1:1)."""
+        return self.category_enabled(category_for_channel(channel))
+
+    def credit_outgoing_damage(
+        self,
+        ts,
+        channel,
+        src,
+        dst,
+        damage,
+        skill_id=None,
+        source_kind="伤害包",
+        raw_op=None,
+        parsed=None,
+    ):
+        """
+        Credit one outgoing hit into fine channel counters + legacy aggregates.
+        channel: self_skill | self_normal | pet_skill | pet_normal |
+                 ride_skill | ride_normal | possession_skill | possession_normal
+        """
+        try:
+            damage = int(damage or 0)
+        except (TypeError, ValueError):
+            return None
+        if damage <= 0:
+            return None
+        if not self.should_capture_channel(channel, skill_id):
+            return None
+        if self.is_duplicate_damage_hit(ts, src, dst, damage, skill_id):
+            self.log({
+                "ts": ts,
+                "kind": "damage_dedup",
+                "reason": "credit_outgoing",
+                "channel": channel,
+                "src": src,
+                "dst": dst,
+                "damage": damage,
+                "skill_id": skill_id,
+            })
+            return None
+
+        side = "pet_dealt" if channel.startswith("pet_") else "dealt"
+        # Fine channel counters (self_skill_dealt, ride_normal_dealt, pet_skill_dealt, …)
+        for prefix, value in (
+            (f"{channel}_dealt", damage),
+            (f"hits_{channel}_dealt", 1),
+        ):
+            if hasattr(self, prefix):
+                setattr(self, prefix, getattr(self, prefix) + value)
+        max_attr = f"max_{channel}_dealt"
+        if hasattr(self, max_attr):
+            setattr(self, max_attr, max(getattr(self, max_attr), damage))
+
+        # Coarse aggregates for existing cards
+        if channel.startswith("pet_"):
+            self.pet_dealt += damage
+            self.hits_pet_dealt += 1
+            self.max_pet_dealt = max(self.max_pet_dealt, damage)
+            # pet_skill_dealt / pet_normal_dealt already updated via fine channel names
+            if skill_id is not None:
+                self.by_pet_skill[skill_id] += damage
+            if src is not None:
+                self.by_pet[src] += damage
+        else:
+            self.total_dealt += damage
+            self.hits_dealt += 1
+            self.max_dealt = max(self.max_dealt, damage)
+            if skill_id is None:
+                # self_normal / ride_normal / possession_normal already on fine counters;
+                # also roll into legacy normal_dealt
+                if channel != "self_normal":
+                    # self_normal_dealt already set; still add to normal_dealt once
+                    pass
+                self.normal_dealt += damage
+                self.hits_normal_dealt += 1
+                self.max_normal_dealt = max(self.max_normal_dealt, damage)
+            else:
+                self.skill_dealt += damage
+                self.hits_skill_dealt += 1
+                self.max_skill_dealt = max(self.max_skill_dealt, damage)
+                self.by_skill_dealt[skill_id] += damage
+                self.by_channel_skill[(channel, skill_id)] += damage
+
+        # Avoid double-count: fine channel pet_skill_dealt equals legacy pet_skill_dealt
+        # (same attribute name). For self_skill, fine is self_skill_dealt; legacy skill_dealt separate.
+
+        self.by_target[dst] += damage
+        self.remember_damage_hit(ts, src, dst, damage, skill_id)
+        self.remember_damage_time(ts)
+        detail = self.add_damage_detail(
+            ts, side, src, dst, damage, skill_id,
+            source_kind=source_kind, raw_op=raw_op,
+        )
+        if detail is not None:
+            detail["channel"] = channel
+            detail["source_mode"] = channel.rsplit("_", 1)[0]
+        self.emit_event({
+            "side": side,
+            "channel": channel,
+            "damage": damage,
+            "target": dst,
+            "source": src,
+            "skill": detail["skill"] if detail else self.skill_label(skill_id),
+            "ts": ts,
+            "total": self.total_dealt if side == "dealt" else self.pet_dealt,
+        })
+        return detail
 
     def maybe_mark_pet_from_damage(self, ts, src, dst):
         if src is None or dst is None:
@@ -390,33 +772,36 @@ class DamageMeter:
         return self.is_pet_actor(src)
 
     def add_pet_damage(self, ts, src, dst, damage, skill_id, parsed=None, source_kind="伤害包"):
-        if damage <= 0 or not self.should_capture_damage("pet_dealt", skill_id):
-            return None
-        self.pet_dealt += damage
-        self.hits_pet_dealt += 1
-        self.max_pet_dealt = max(self.max_pet_dealt, damage)
-        if skill_id is None:
-            self.pet_normal_dealt += damage
-            self.hits_pet_normal_dealt += 1
-            self.max_pet_normal_dealt = max(self.max_pet_normal_dealt, damage)
-        else:
-            self.pet_skill_dealt += damage
-            self.hits_pet_skill_dealt += 1
-            self.max_pet_skill_dealt = max(self.max_pet_skill_dealt, damage)
-            self.by_pet_skill[skill_id] += damage
-        self.by_pet[src] += damage
-        self.by_target[dst] += damage
-        self.remember_damage_time(ts)
         op = parsed.get("_op") if parsed else None
-        detail = self.add_damage_detail(ts, "pet_dealt", src, dst, damage, skill_id,
-                                        source_kind=source_kind, raw_op=op)
-        self.emit_event({"side": "pet_dealt", "damage": damage, "target": dst,
-                         "source": src, "skill": detail["skill"], "ts": ts})
-        return detail
+        return self.credit_outgoing_damage(
+            ts,
+            self.resolve_outgoing_channel("pet", skill_id),
+            src,
+            dst,
+            damage,
+            skill_id=skill_id,
+            source_kind=source_kind,
+            raw_op=op,
+            parsed=parsed,
+        )
+
+    def set_skill_name_mode(self, mode):
+        mode = str(mode or "client").strip().lower()
+        if mode not in ("client", "ja", "dual"):
+            mode = "client"
+        self.skill_name_mode = mode
+        return self.skill_name_mode
 
     def skill_label(self, skill_id, fallback="普通攻击"):
         if skill_id is None:
             return fallback
+        if format_skill_display and self.skill_name_tables:
+            return format_skill_display(
+                skill_id,
+                self.skill_name_tables,
+                mode=self.skill_name_mode,
+                fallback=fallback if skill_id is None else f"技能#{skill_id}",
+            )
         return self.skill_names.get(skill_id) or f"技能#{skill_id}"
 
     def classify_skill_cast(self, skill_id, target):
@@ -574,12 +959,13 @@ class DamageMeter:
             skill_id = int(skill_id)
         except (TypeError, ValueError):
             return None
-        # Dedup request/result/active for the same cast (~1s window).
+        # Dedup same skill id for a short window (double C2S / result+active burst).
+        # Cast-time skills must NOT rely on this alone — S2C must not count when C2S did.
         for item in list(self.skill_cast_history):
             if item.get("skill_id") != skill_id:
                 continue
             age = ts - item.get("ts", 0)
-            if 0 <= age < 1.0:
+            if 0 <= age < 1.5:
                 return None
         role = self.classify_skill_cast(skill_id, target)
         rec = {
@@ -613,7 +999,12 @@ class DamageMeter:
         return rec
 
     def remember_action(self, ts, actor, target, skill_id=None, kind="attack", own=False):
-        if target is None or target == 0xFFFFFFFF:
+        # 0xFFFFFFFF = ground/self/no target in ECO C2S; keep as None so we still
+        # remember the local cast (needed for account-switch rebind).
+        if target == 0xFFFFFFFF:
+            target = None
+        # Non-own actions without a target are useless for matching.
+        if target is None and not own:
             return
         self.recent_actions.appendleft({
             "ts": ts,
@@ -644,6 +1035,24 @@ class DamageMeter:
             return action
         return None
 
+    def _action_source_matches(self, action, src):
+        """Match action actor to S2C src; allow own actions when ride/依凭 host is the src."""
+        actor = action.get("actor")
+        if actor is None or src is None or actor == src:
+            return True
+        # Own C2S recorded with player id; ride/pet/依凭 S2C uses mount/host id.
+        if action.get("own") and (
+            self.is_owned_pet_source(src)
+            or self.is_pet_actor(src)
+            or self.is_possession_host(src)
+            or not self.is_likely_character_actor(src)
+        ):
+            return True
+        # Own C2S + other PC as src (依凭 host before possession packet) — still match.
+        if action.get("own") and self.is_likely_character_actor(src) and src != self.self_id:
+            return True
+        return False
+
     def find_action(self, ts, src, dst):
         best_skill = None
         best_any = None
@@ -653,8 +1062,7 @@ class DamageMeter:
                 continue
             if action.get("target") != dst:
                 continue
-            actor = action.get("actor")
-            if actor is not None and src is not None and actor != src:
+            if not self._action_source_matches(action, src):
                 continue
             if best_any is None and age <= 5.0:
                 best_any = action
@@ -672,8 +1080,7 @@ class DamageMeter:
                 continue
             if action.get("target") != dst:
                 continue
-            actor = action.get("actor")
-            if actor is not None and src is not None and actor != src:
+            if not self._action_source_matches(action, src):
                 continue
             return action
         return None
@@ -707,22 +1114,127 @@ class DamageMeter:
         return False
 
     def has_recent_own_skill_request(self, ts, skill_id, dst, max_age=10.0):
+        """
+        True if this client recently sent a matching skill C2S.
+
+        C2S is always the local login. Target may differ between request and
+        result (AOE primary vs affected unit, self-buff, 0xFFFFFFFF), so
+        skill_id + own is enough; prefer exact target when present.
+        """
+        if skill_id is None:
+            return False
+        try:
+            skill_id = int(skill_id)
+        except (TypeError, ValueError):
+            return False
+        if dst == 0xFFFFFFFF:
+            dst = None
+        skill_only = False
         for action in list(self.recent_actions):
             age = ts - action["ts"]
             if age < 0 or age > max_age:
                 continue
             if not action.get("own") or action.get("kind") != "skill":
                 continue
-            if action.get("skill_id") != skill_id:
+            try:
+                act_skill = int(action.get("skill_id")) if action.get("skill_id") is not None else None
+            except (TypeError, ValueError):
+                act_skill = None
+            if act_skill != skill_id:
                 continue
-            if action.get("target") in (dst, None):
+            act_target = action.get("target")
+            if act_target == 0xFFFFFFFF:
+                act_target = None
+            # Exact / unknown-target match is definitive.
+            if act_target in (dst, None) or dst is None:
+                return True
+            # Same skill from our C2S shortly before S2C — still our cast
+            # (request target can differ from result/affected target).
+            skill_only = True
+        return skill_only
+
+    def has_recent_own_attack(self, ts, dst, max_age=1.5):
+        """True if this client recently sent an attack C2S to dst (or any target)."""
+        if dst == 0xFFFFFFFF:
+            dst = None
+        for action in list(self.recent_actions):
+            age = ts - action["ts"]
+            if age < 0 or age > max_age:
+                continue
+            if not action.get("own") or action.get("kind") != "attack":
+                continue
+            act_target = action.get("target")
+            if act_target == 0xFFFFFFFF:
+                act_target = None
+            if dst is None or act_target in (dst, None):
                 return True
         return False
 
-    def recently_counted_damage(self, ts, actor):
-        for hit_ts, hit_actor in list(self.recent_damage_hits):
-            if actor == hit_actor and 0 <= ts - hit_ts <= 1.0:
+    def has_recent_own_combat_request(self, ts, max_age=2.0):
+        """Any recent local C2S combat (skill or attack) — used for soft rebind."""
+        for action in list(self.recent_actions):
+            age = ts - action["ts"]
+            if age < 0 or age > max_age:
+                continue
+            if action.get("own") and action.get("kind") in ("skill", "attack"):
                 return True
+        return False
+
+    def remember_damage_hit(self, ts, src, dst, damage, skill_id=None):
+        """Track recent hits for HP-delta ignore + cross-packet damage dedup."""
+        self.recent_damage_hits.appendleft({
+            "ts": ts,
+            "src": src,
+            "dst": dst,
+            "damage": int(damage or 0),
+            "skill_id": skill_id,
+        })
+
+    def recently_counted_damage(self, ts, actor):
+        """True if this actor was recently a damage target (for HP-delta suppress)."""
+        for hit in list(self.recent_damage_hits):
+            if isinstance(hit, tuple):
+                hit_ts, hit_actor = hit
+                if actor == hit_actor and 0 <= ts - hit_ts <= 1.0:
+                    return True
+                continue
+            hit_ts = hit.get("ts", 0)
+            if hit.get("dst") == actor and 0 <= ts - hit_ts <= 1.0:
+                return True
+        return False
+
+    def is_duplicate_damage_hit(self, ts, src, dst, damage, skill_id=None, max_age=0.5):
+        """
+        Suppress double-count when the same hit is reported by both skill_active
+        (5010) and attack_result (4001), or similar dual packets (ride/pet modes).
+        """
+        try:
+            damage = int(damage or 0)
+        except (TypeError, ValueError):
+            return False
+        if damage <= 0:
+            return False
+        for hit in list(self.recent_damage_hits):
+            if isinstance(hit, tuple):
+                continue
+            age = ts - hit.get("ts", 0)
+            if age < 0 or age > max_age:
+                continue
+            if hit.get("dst") != dst:
+                continue
+            if hit.get("damage") != damage:
+                continue
+            # Same skill (or both normal) and same/compatible source.
+            hit_skill = hit.get("skill_id")
+            if skill_id is not None and hit_skill is not None and skill_id != hit_skill:
+                continue
+            hit_src = hit.get("src")
+            if src is not None and hit_src is not None and src != hit_src:
+                # Ride/partner modes may re-attribute caster; still dedup same dst+dmg.
+                # Only allow when skill matches exactly.
+                if skill_id is None or skill_id != hit_skill:
+                    continue
+            return True
         return False
 
     def apply_hp_delta_damage(self, ts, actor, prev_hp, hp):
@@ -789,20 +1301,37 @@ class DamageMeter:
             damage = abs(int(raw_damage or 0))
             if damage <= 0:
                 continue
+            if self.is_duplicate_damage_hit(ts, caster, dst, damage, skill_id):
+                self.log({
+                    "ts": ts,
+                    "kind": "damage_dedup",
+                    "reason": "skill_result_dup",
+                    "src": caster,
+                    "dst": dst,
+                    "damage": damage,
+                    "skill_id": skill_id,
+                })
+                continue
             side = "other"
             src = caster
+            channel = None
+            # Local C2S + character-range caster: rebind self (account switch).
+            if (
+                caster is not None
+                and caster != self.self_id
+                and not self.is_possession_host(caster)
+                and self.has_recent_own_skill_request(ts, skill_id, dst)
+                and self.is_likely_character_actor(caster)
+                and (self.self_id is None or getattr(self, "_rebind_pending", False) or self.auto_self)
+            ):
+                self.observe_local_caster(caster, reason="skill_damage")
+            proxy = self.local_skill_proxy_source(ts, caster, skill_id, dst)
             if self.self_id is not None and caster == self.self_id:
-                if not self.should_capture_damage("dealt", skill_id):
-                    continue
-                side = "dealt"
-                self.total_dealt += damage
-                self.skill_dealt += damage
-                self.hits_dealt += 1
-                self.hits_skill_dealt += 1
-                self.max_dealt = max(self.max_dealt, damage)
-                self.max_skill_dealt = max(self.max_skill_dealt, damage)
-                self.by_target[dst] += damage
-                self.by_skill_dealt[skill_id] += damage
+                channel = self.resolve_outgoing_channel("self", skill_id)
+                src = caster
+            elif proxy in ("self", "ride", "possession", "pet") and self.self_id is not None:
+                channel = self.resolve_outgoing_channel(proxy, skill_id)
+                src = self.self_id if proxy in ("self", "possession") else (caster or self.self_id)
             elif self.self_id is not None and dst == self.self_id:
                 if not self.should_capture_damage("taken", skill_id):
                     continue
@@ -815,44 +1344,59 @@ class DamageMeter:
                 self.max_skill_taken = max(self.max_skill_taken, damage)
                 self.by_source[src] += damage
                 self.by_skill_taken[skill_id] += damage
+                self.remember_damage_hit(ts, src, dst, damage, skill_id)
+                self.remember_damage_time(ts)
+                detail = self.add_damage_detail(
+                    ts, side, src, dst, damage, skill_id,
+                    source_kind="技能结果包", raw_op=parsed.get("_op"),
+                )
+                self.emit_event({
+                    "side": side, "damage": damage, "target": dst,
+                    "source": src, "skill": detail["skill"], "ts": ts,
+                })
             elif self.maybe_mark_pet_from_damage(ts, caster, dst):
-                side = "pet_dealt"
-                detail = self.add_pet_damage(ts, caster, dst, damage, skill_id, parsed,
-                                             source_kind="宠物技能结果包")
-                if detail is None:
-                    continue
+                channel = self.resolve_outgoing_channel("pet", skill_id)
+                src = caster
             elif self.self_id is None and (
                 self.best_self_candidate() == caster
-                or self.has_recent_own_skill_request(ts, skill_id, dst)
+                or (
+                    self.has_recent_own_skill_request(ts, skill_id, dst)
+                    and self.is_likely_character_actor(caster)
+                )
             ):
-                side = "dealt"
-                self.self_id = caster
-                self.auto_self = False
+                self.bind_self(caster, reason="skill_damage_bootstrap")
+                channel = self.resolve_outgoing_channel("self", skill_id)
                 src = caster
-                if not self.should_capture_damage("dealt", skill_id):
-                    continue
-                self.total_dealt += damage
-                self.skill_dealt += damage
-                self.hits_dealt += 1
-                self.hits_skill_dealt += 1
-                self.max_dealt = max(self.max_dealt, damage)
-                self.max_skill_dealt = max(self.max_skill_dealt, damage)
-                self.by_target[dst] += damage
-                self.by_skill_dealt[skill_id] += damage
             else:
                 continue
 
-            if side != "pet_dealt":
-                self.remember_damage_time(ts)
-                detail = self.add_damage_detail(ts, side, src, dst, damage, skill_id,
-                                            source_kind="技能结果包", raw_op=parsed.get("_op"))
-                self.emit_event({"side": side, "damage": damage, "target": dst,
-                                 "source": src, "skill": detail["skill"], "ts": ts})
+            if channel is not None:
+                labels = {
+                    "self_skill": "自身技能",
+                    "ride_skill": "骑宠技能",
+                    "possession_skill": "依凭技能",
+                    "pet_skill": "宠物技能",
+                    "self_normal": "自身普攻",
+                    "ride_normal": "骑宠普攻",
+                    "possession_normal": "依凭普攻",
+                    "pet_normal": "宠物普攻",
+                }
+                detail = self.credit_outgoing_damage(
+                    ts, channel, src, dst, damage, skill_id,
+                    source_kind=labels.get(channel, "技能结果包"),
+                    raw_op=parsed.get("_op"),
+                    parsed=parsed,
+                )
+                if detail is None:
+                    continue
+                side = "pet_dealt" if channel.startswith("pet_") else "dealt"
+
             self.log({
                 "ts": ts,
                 "kind": "damage",
                 "source_kind": "skill_result",
                 "side": side,
+                "channel": channel,
                 "self": self.self_id,
                 "src": src,
                 "dst": dst,
@@ -865,69 +1409,209 @@ class DamageMeter:
                 "raw_dir": parsed.get("_dir"),
                 "raw_sub": parsed.get("_sub"),
             })
-            self.recent_damage_hits.appendleft((ts, dst))
+            self.remember_damage_hit(ts, src, dst, damage, skill_id)
             counted = True
 
         return counted
 
     def handle_parsed(self, parsed, ts):
         typ = parsed.get("type")
+        if typ == "player_exp":
+            event = self.exp_tracker.apply_exp(
+                cexp_pct_x10=parsed.get("cexp_pct_x10"),
+                jexp_pct_x10=parsed.get("jexp_pct_x10"),
+                cexp_abs=parsed.get("cexp_abs"),
+                jexp_abs=parsed.get("jexp_abs"),
+                ts=ts,
+            )
+            if event:
+                c_pct = (event.get("cexp_pct_x10") or 0) / 10.0
+                j_pct = (event.get("jexp_pct_x10") or 0) / 10.0
+                parts = []
+                if c_pct > 0:
+                    parts.append(f"基础+{c_pct:.1f}%")
+                if j_pct > 0:
+                    parts.append(f"职业+{j_pct:.1f}%")
+                if event.get("cexp_abs"):
+                    parts.append(f"CEXP+{event['cexp_abs']}")
+                if event.get("jexp_abs"):
+                    parts.append(f"JEXP+{event['jexp_abs']}")
+                if parts:
+                    self.events.appendleft((now_label(), "经验 " + " ".join(parts)))
+            self.log({
+                "ts": ts,
+                "kind": "player_exp",
+                "cexp_pct_x10": parsed.get("cexp_pct_x10"),
+                "jexp_pct_x10": parsed.get("jexp_pct_x10"),
+                "cexp_abs": parsed.get("cexp_abs"),
+                "jexp_abs": parsed.get("jexp_abs"),
+                "gain": event,
+            })
+            return
+        if typ == "player_level":
+            prev_lv = self.exp_tracker.level
+            self.exp_tracker.apply_level(
+                level=parsed.get("level"),
+                job_level=parsed.get("job_level"),
+                job_level_2x=parsed.get("job_level_2x"),
+                job_level_2t=parsed.get("job_level_2t"),
+                job_level_joint=parsed.get("job_level_joint"),
+                ts=ts,
+            )
+            new_lv = self.exp_tracker.level
+            if prev_lv is not None and new_lv is not None and new_lv > prev_lv:
+                self.events.appendleft((now_label(), f"升级 → Lv.{new_lv}"))
+                self.pending_notices.append({
+                    "level": "success",
+                    "message": f"角色升级到 Lv.{new_lv}",
+                })
+            self.log({
+                "ts": ts,
+                "kind": "player_level",
+                "level": parsed.get("level"),
+                "job_level": parsed.get("job_level"),
+                "job_level_2x": parsed.get("job_level_2x"),
+                "job_level_2t": parsed.get("job_level_2t"),
+                "job_level_joint": parsed.get("job_level_joint"),
+            })
+            return
         if typ == "attack_request":
             target = parsed.get("target")
-            if target is not None:
+            if target is not None and target != 0xFFFFFFFF:
                 self.recent_targets.append((ts, target))
+            # Always record local C2S attack — used to rebind after account switch.
+            if target is not None:
                 self.remember_action(ts, self.own_actor(), target, None, "attack", own=True)
             return
+        if typ == "possession_result":
+            # SagaECO: FromID = possessor, ToID = host. result 0 = success (typical).
+            from_id = parsed.get("from_id")
+            to_id = parsed.get("to_id")
+            result = parsed.get("result")
+            try:
+                result_i = int(result) if result is not None else -1
+            except (TypeError, ValueError):
+                result_i = -1
+            # Success paths: result==0 or missing; ignore explicit failures.
+            ok = result is None or result_i == 0
+            if ok and to_id not in (None, 0, 0xFFFFFFFF):
+                # Local player is usually the possessor (from_id); host body is to_id.
+                if self.self_id is None and from_id and self.is_likely_character_actor(from_id):
+                    self.bind_self(from_id, reason="possession_from")
+                if self.self_id is None or from_id in (self.self_id, None) or to_id != self.self_id:
+                    self.possession_host_id = int(to_id)
+                    self.events.appendleft((
+                        now_label(),
+                        f"依凭中 → 宿主#{self.possession_host_id}",
+                    ))
+                    self.pending_notices.append({
+                        "level": "info",
+                        "message": f"已进入依凭（宿主 #{self.possession_host_id}），技能将计入你的伤害",
+                    })
+            self.log({
+                "ts": ts,
+                "kind": "possession",
+                "event": "result",
+                "from_id": from_id,
+                "to_id": to_id,
+                "result": result,
+                "host": self.possession_host_id,
+                "self_id": self.self_id,
+            })
+            return
+        if typ == "possession_cancel":
+            prev = self.possession_host_id
+            self.possession_host_id = None
+            if prev is not None:
+                self.events.appendleft((now_label(), f"依凭解除（原宿主#{prev}）"))
+            self.log({
+                "ts": ts,
+                "kind": "possession",
+                "event": "cancel",
+                "from_id": parsed.get("from_id"),
+                "to_id": parsed.get("to_id"),
+                "previous_host": prev,
+            })
+            return
         if typ == "skill_cast_request":
+            # C2S is always from the logged-in client. Record even when target is
+            # 0xFFFFFFFF (ground / self / no-lock) so S2C can rebind self_id.
             target = parsed.get("target")
-            if target is not None and target != 0xFFFFFFFF:
-                actor = self.own_actor()
+            if target == 0xFFFFFFFF:
+                target = None
+            actor = self.own_actor()
+            if target is not None:
                 self.recent_targets.append((ts, target))
-                self.remember_action(ts, actor, target, parsed.get("skill_id"), "skill", own=True)
-                # Count own cast on client request (includes 0-damage skills like パリイ).
-                self.record_own_skill_cast(ts, parsed.get("skill_id"), target, source="request")
-                self.log({
-                    "ts": ts,
-                    "kind": "skill_action",
-                    "source": "request",
-                    "actor": actor,
-                    "target": target,
-                    "skill_id": parsed.get("skill_id"),
-                    "skill": self.skill_label(parsed.get("skill_id")),
-                    "raw_op": parsed.get("_op"),
-                    "raw_dir": parsed.get("_dir"),
-                    "raw_sub": parsed.get("_sub"),
-                })
+            self.remember_action(ts, actor, target, parsed.get("skill_id"), "skill", own=True)
+            # Count own cast on client request (includes 0-damage skills like パリイ).
+            self.record_own_skill_cast(ts, parsed.get("skill_id"), target, source="request")
+            self.log({
+                "ts": ts,
+                "kind": "skill_action",
+                "source": "request",
+                "actor": actor,
+                "target": target,
+                "skill_id": parsed.get("skill_id"),
+                "skill": self.skill_label(parsed.get("skill_id")),
+                "raw_op": parsed.get("_op"),
+                "raw_dir": parsed.get("_dir"),
+                "raw_sub": parsed.get("_sub"),
+            })
             return
         if typ in ("skill_cast_result", "skill_active"):
-            if self.self_id is None and self.has_recent_own_skill_request(
-                ts, parsed.get("skill_id"), parsed.get("target")
+            # Local C2S request proves the following S2C caster is the logged-in character.
+            # Critical for account/character switch on the same eco.exe (same Frida session).
+            caster = parsed.get("caster")
+            skill_id = parsed.get("skill_id")
+            target = parsed.get("target")
+            # Rebind only when S2C caster looks like a PC (account switch),
+            # never ride-mount / 依凭 host.
+            if (
+                caster is not None
+                and caster != self.self_id
+                and not self.is_possession_host(caster)
+                and self.is_likely_character_actor(caster)
+                and (
+                    self.has_recent_own_skill_request(ts, skill_id, target)
+                    or any(
+                        self.has_recent_own_skill_request(ts, skill_id, d)
+                        for d in (parsed.get("affected") or [])[:4]
+                    )
+                )
             ):
-                caster = parsed.get("caster")
-                if caster is not None:
-                    self.self_id = caster
-                    self.auto_self = False
-            self.remember_action(ts, parsed.get("caster"), parsed.get("target"),
-                                 parsed.get("skill_id"), "skill")
-            # Fallback: if request was missed, count own cast on server active/result.
+                self.observe_local_caster(caster, reason=typ)
+            elif (
+                caster is not None
+                and self.self_id is not None
+                and caster != self.self_id
+                and self.has_recent_own_skill_request(ts, skill_id, target)
+                and not self.is_likely_character_actor(caster)
+            ):
+                self.mark_pet_actor(caster, owner=self.self_id, reason="骑宠施法者")
+            self.remember_action(ts, caster, target, skill_id, "skill")
+            # Cast counting: prefer C2S request only. Cast-time skills fire skill_active
+            # 1–3s later; counting both request+active doubles the skill cast total.
             own_cast = (
-                (self.self_id is not None and parsed.get("caster") == self.self_id)
-                or self.has_recent_own_skill_request(ts, parsed.get("skill_id"), parsed.get("target"))
+                (self.self_id is not None and caster == self.self_id)
+                or self.has_recent_own_skill_request(ts, skill_id, target)
             )
             if own_cast:
-                self.record_own_skill_cast(
-                    ts, parsed.get("skill_id"), parsed.get("target"), source=typ
+                saw_request = self.has_recent_own_skill_request(
+                    ts, skill_id, target, max_age=15.0
                 )
+                if not saw_request:
+                    # Missed C2S (or non-local packet path) — bootstrap cast count from S2C.
+                    self.record_own_skill_cast(ts, skill_id, target, source=typ)
             if typ == "skill_active":
                 self.apply_skill_result_damage(ts, parsed)
             self.log({
                 "ts": ts,
                 "kind": "skill_action",
                 "source": typ,
-                "actor": parsed.get("caster"),
-                "target": parsed.get("target"),
-                "skill_id": parsed.get("skill_id"),
-                "skill": self.skill_label(parsed.get("skill_id")),
+                "actor": caster,
+                "target": target,
+                "skill_id": skill_id,
+                "skill": self.skill_label(skill_id),
                 "raw_op": parsed.get("_op"),
                 "raw_dir": parsed.get("_dir"),
                 "raw_sub": parsed.get("_sub"),
@@ -938,8 +1622,7 @@ class DamageMeter:
             owner = parsed.get("owner")
             if actor is not None:
                 if self.self_id is None and owner in self.self_candidates:
-                    self.self_id = owner
-                    self.auto_self = False
+                    self.bind_self(owner, reason="pet_owner_candidate")
                 if self.self_id is None or owner in (self.self_id, None, 0):
                     self.mark_pet_actor(actor, owner=owner, reason="宠物出现包")
                 hp = parsed.get("hp")
@@ -1063,6 +1746,24 @@ class DamageMeter:
             # history remain readable.
             return
         if typ == "combat_context":
+            # Field often carries local actor; use with recent C2S for rebind.
+            ctx_actor = parsed.get("u32_2")
+            if ctx_actor:
+                try:
+                    ctx_actor = int(ctx_actor)
+                except (TypeError, ValueError):
+                    ctx_actor = None
+            if ctx_actor and ctx_actor > 0:
+                self.mark_self_candidate(ctx_actor, 2)
+                # Cold start only: field layout is soft evidence. Locked-self rebind
+                # relies on skill_cast_result / attack_result (stronger C2S+S2C pair).
+                if (
+                    self.self_id is None
+                    and self.auto_self
+                    and ctx_actor < 10000
+                    and self.has_recent_own_combat_request(ts, max_age=3.0)
+                ):
+                    self.observe_local_caster(ctx_actor, reason="combat_context")
             self.log({
                 "ts": ts,
                 "kind": "combat_context",
@@ -1087,6 +1788,16 @@ class DamageMeter:
         damage = parsed.get("damage") or 0
         self.note_unknown_actor(src)
         self.note_unknown_actor(dst)
+        # Local C2S attack + S2C src: rebind for account switch (new PC id).
+        # Never rebind to 依凭 host or non-PC (ride mount).
+        if (
+            src is not None
+            and src != self.self_id
+            and not self.is_possession_host(src)
+            and self.is_likely_character_actor(src)
+            and self.has_recent_own_attack(ts, dst, max_age=1.5)
+        ):
+            self.observe_local_caster(src, reason="attack_result")
         action = self.find_action(ts, src, dst)
         skill_id = None
         fresh_skill_action = self.find_fresh_skill_action(ts, src, dst)
@@ -1110,38 +1821,56 @@ class DamageMeter:
                 break
 
         side = "other"
-        if self.self_id is not None and src == self.self_id:
-            if not self.should_capture_damage("dealt", skill_id):
+        proxy = self.local_skill_proxy_source(ts, src, skill_id, dst)
+        if proxy is None and self.self_id is not None and src == self.self_id:
+            proxy = "self"
+        if proxy is None and self.maybe_mark_pet_from_damage(ts, src, dst):
+            proxy = "pet"
+
+        if proxy in ("self", "ride", "possession", "pet") and self.self_id is not None and damage > 0:
+            channel = self.resolve_outgoing_channel(proxy, skill_id)
+            credit_src = (
+                self.self_id if proxy in ("self", "possession") and src != self.self_id else src
+            )
+            labels = {
+                "self_skill": "自身技能",
+                "self_normal": "自身普攻",
+                "ride_skill": "骑宠技能",
+                "ride_normal": "骑宠普攻",
+                "possession_skill": "依凭技能",
+                "possession_normal": "依凭普攻",
+                "pet_skill": "宠物技能",
+                "pet_normal": "宠物普攻",
+            }
+            detail = self.credit_outgoing_damage(
+                ts, channel, credit_src, dst, damage, skill_id,
+                source_kind=labels.get(channel, "伤害包"),
+                raw_op=parsed.get("_op"),
+                parsed=parsed,
+            )
+            if detail is None:
                 return
-            side = "dealt"
-            self.total_dealt += damage
-            if damage > 0:
-                self.hits_dealt += 1
-                self.max_dealt = max(self.max_dealt, damage)
-                if skill_id is None:
-                    self.normal_dealt += damage
-                    self.hits_normal_dealt += 1
-                    self.max_normal_dealt = max(self.max_normal_dealt, damage)
-                else:
-                    self.skill_dealt += damage
-                    self.hits_skill_dealt += 1
-                    self.max_skill_dealt = max(self.max_skill_dealt, damage)
-                self.by_target[dst] += damage
-                if skill_id is not None:
-                    self.by_skill_dealt[skill_id] += damage
-                self.recent_damage_hits.appendleft((ts, dst))
-                self.remember_damage_time(ts)
-                detail = self.add_damage_detail(ts, side, src, dst, damage, skill_id,
-                                                source_kind="伤害包", raw_op=parsed.get("_op"))
-                self.emit_event({"side": "dealt", "damage": damage, "total": self.total_dealt,
-                                 "target": dst, "skill": detail["skill"], "ts": ts})
+            side = "pet_dealt" if channel.startswith("pet_") else "dealt"
+            if side == "dealt":
                 self.post_game_chat(f"[伤害] {detail['skill']} 对 {detail['target']} 造成 {damage}")
-            elif damage <= 0:
-                self.events.appendleft((now_label(), f"{self.actor_label(src)} 未命中 {self.actor_label(dst)}"))
+        elif damage <= 0 and proxy in ("self", "ride", "possession", "pet"):
+            self.events.appendleft((now_label(), f"{self.actor_label(src)} 未命中 {self.actor_label(dst)}"))
         elif self.self_id is not None and dst == self.self_id:
             if not self.should_capture_damage("taken", skill_id):
                 return
             side = "taken"
+            if damage > 0 and self.is_duplicate_damage_hit(ts, src, dst, damage, skill_id):
+                self.log({
+                    "ts": ts,
+                    "kind": "damage_dedup",
+                    "reason": "attack_result_taken_dup",
+                    "src": src,
+                    "dst": dst,
+                    "damage": damage,
+                    "skill_id": skill_id,
+                    "raw_op": parsed.get("_op"),
+                })
+                return
             self.total_taken += damage
             if damage > 0:
                 self.hits_taken += 1
@@ -1157,7 +1886,7 @@ class DamageMeter:
                 self.by_source[src] += damage
                 if skill_id is not None:
                     self.by_skill_taken[skill_id] += damage
-                self.recent_damage_hits.appendleft((ts, dst))
+                self.remember_damage_hit(ts, src, dst, damage, skill_id)
                 self.remember_damage_time(ts)
                 detail = self.add_damage_detail(ts, side, src, dst, damage, skill_id,
                                                 source_kind="伤害包", raw_op=parsed.get("_op"))
@@ -1166,14 +1895,6 @@ class DamageMeter:
                 self.post_game_chat(f"[伤害] {detail['source']} 用 {detail['skill']} 造成 {damage}")
             elif damage <= 0:
                 self.events.appendleft((now_label(), f"{self.actor_label(src)} 未命中 {self.actor_label(dst)}"))
-
-        elif damage > 0 and self.maybe_mark_pet_from_damage(ts, src, dst):
-            if not self.should_capture_damage("pet_dealt", skill_id):
-                return
-            side = "pet_dealt"
-            self.add_pet_damage(ts, src, dst, damage, skill_id, parsed,
-                                source_kind="宠物普通攻击包" if skill_id is None else "宠物技能伤害包")
-            self.recent_damage_hits.appendleft((ts, dst))
 
         self.log({
             "ts": ts,
@@ -1196,6 +1917,7 @@ class DamageMeter:
             "recent_skill_actions": recent_skill_actions,
             "dealt_total": self.total_dealt,
             "taken_total": self.total_taken,
+            "proxy": proxy,
         })
 
     def on_message(self, message, data):
@@ -1223,8 +1945,11 @@ class DamageMeter:
         parsed["_op"] = int(payload.get("op", 0))
         parsed["_sub"] = payload.get("sub")
         with self.lock:
+            now = time.time()
+            self.packet_count += 1
+            self.last_packet_ts = now
             self._current_op = parsed.get("_op")
-            self.handle_parsed(parsed, time.time())
+            self.handle_parsed(parsed, now)
             self._current_op = None
 
     def snapshot(self, history_limit=None):
@@ -1236,22 +1961,42 @@ class DamageMeter:
             active = 0.0
             if self.first_damage_ts and self.last_damage_ts and self.last_damage_ts > self.first_damage_ts:
                 active = self.last_damage_ts - self.first_damage_ts
-            dps = self.total_dealt / active if active > 0 else 0.0
-            tps = self.total_taken / active if active > 0 else 0.0
-            skill_dps = self.skill_dealt / active if active > 0 else 0.0
-            normal_dps = self.normal_dealt / active if active > 0 else 0.0
-            pet_dps = self.pet_dealt / active if active > 0 else 0.0
+            def _rate(value):
+                return value / active if active > 0 else 0.0
+
+            dps = _rate(self.total_dealt)
+            tps = _rate(self.total_taken)
+            skill_dps = _rate(self.skill_dealt)
+            normal_dps = _rate(self.normal_dealt)
+            pet_dps = _rate(self.pet_dealt)
             candidates = ", ".join(f"{a}:{s}" for a, s in self.self_candidates.most_common(3))
+            last_packet_age = None
+            if self.last_packet_ts is not None:
+                last_packet_age = max(0.0, now - self.last_packet_ts)
             if history_limit is None:
                 damage_history = list(self.damage_history)
             else:
                 limit = max(0, int(history_limit))
                 damage_history = list(self.damage_history[-limit:]) if limit else []
+            channels = {
+                "self_skill": self.self_skill_dealt,
+                "self_normal": self.self_normal_dealt,
+                "pet_skill": self.pet_skill_dealt,
+                "pet_normal": self.pet_normal_dealt,
+                "ride_skill": self.ride_skill_dealt,
+                "ride_normal": self.ride_normal_dealt,
+                "possession_skill": self.possession_skill_dealt,
+                "possession_normal": self.possession_normal_dealt,
+            }
             return {
                 "elapsed": elapsed,
                 "active": active,
                 "self_id": self.self_id,
+                "rebind_pending": bool(getattr(self, "_rebind_pending", False)),
                 "candidates": candidates,
+                "packet_count": self.packet_count,
+                "last_packet_age": last_packet_age,
+                "possession_host_id": self.possession_host_id,
                 "dealt": self.total_dealt,
                 "taken": self.total_taken,
                 "skill_dealt": self.skill_dealt,
@@ -1261,6 +2006,13 @@ class DamageMeter:
                 "pet_dealt": self.pet_dealt,
                 "pet_skill_dealt": self.pet_skill_dealt,
                 "pet_normal_dealt": self.pet_normal_dealt,
+                "self_skill_dealt": self.self_skill_dealt,
+                "self_normal_dealt": self.self_normal_dealt,
+                "ride_skill_dealt": self.ride_skill_dealt,
+                "ride_normal_dealt": self.ride_normal_dealt,
+                "possession_skill_dealt": self.possession_skill_dealt,
+                "possession_normal_dealt": self.possession_normal_dealt,
+                "channels": channels,
                 "hits_dealt": self.hits_dealt,
                 "hits_taken": self.hits_taken,
                 "hits_skill_dealt": self.hits_skill_dealt,
@@ -1270,6 +2022,12 @@ class DamageMeter:
                 "hits_pet_dealt": self.hits_pet_dealt,
                 "hits_pet_skill_dealt": self.hits_pet_skill_dealt,
                 "hits_pet_normal_dealt": self.hits_pet_normal_dealt,
+                "hits_self_skill_dealt": self.hits_self_skill_dealt,
+                "hits_self_normal_dealt": self.hits_self_normal_dealt,
+                "hits_ride_skill_dealt": self.hits_ride_skill_dealt,
+                "hits_ride_normal_dealt": self.hits_ride_normal_dealt,
+                "hits_possession_skill_dealt": self.hits_possession_skill_dealt,
+                "hits_possession_normal_dealt": self.hits_possession_normal_dealt,
                 "max_dealt": self.max_dealt,
                 "max_taken": self.max_taken,
                 "max_skill_dealt": self.max_skill_dealt,
@@ -1284,6 +2042,14 @@ class DamageMeter:
                 "skill_dps": skill_dps,
                 "normal_dps": normal_dps,
                 "pet_dps": pet_dps,
+                "self_skill_dps": _rate(self.self_skill_dealt),
+                "self_normal_dps": _rate(self.self_normal_dealt),
+                "pet_skill_dps": _rate(self.pet_skill_dealt),
+                "pet_normal_dps": _rate(self.pet_normal_dealt),
+                "ride_skill_dps": _rate(self.ride_skill_dealt),
+                "ride_normal_dps": _rate(self.ride_normal_dealt),
+                "possession_skill_dps": _rate(self.possession_skill_dealt),
+                "possession_normal_dps": _rate(self.possession_normal_dealt),
                 "targets": list(self.by_target.most_common(5)),
                 "sources": list(self.by_source.most_common(5)),
                 "skills_dealt": list(self.by_skill_dealt.most_common(8)),
@@ -1316,6 +2082,7 @@ class DamageMeter:
                 "buff_history": buffs["history"],
                 "buff_version": buffs["version"],
                 "buff_masks": buffs["masks"],
+                "grind": self.exp_tracker.snapshot(now),
             }
 
 

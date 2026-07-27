@@ -36,8 +36,56 @@ export function useServiceActions(options: {
 
   const resetDamage = useCallback(async () => {
     await window.eco.resetDamage();
-    showToast('伤害统计已清空');
+    showToast('伤害统计已清空（角色识别保持不变）');
   }, [showToast]);
+
+  const reidentifySelf = useCallback(async () => {
+    if (!window.eco.reidentifySelf) {
+      showToast('当前版本不支持重新识别角色');
+      return;
+    }
+    const result = await window.eco.reidentifySelf();
+    if (!result?.ok) {
+      showToast(result?.error || '重新识别失败');
+      return;
+    }
+    showToast('请普攻或放技能一次以确认角色（识别成功后无需再点）');
+    await refreshState();
+  }, [showToast, refreshState]);
+
+  /**
+   * One-shot for account/character switch (and casual recovery):
+   * reconnect Frida to current eco.exe → clear meter → soft reidentify.
+   * Users only need this button + one auto-attack.
+   */
+  const switchCharacter = useCallback(async () => {
+    showToast('正在重连采集…');
+    if (window.eco.reconnectGame) {
+      const rec = await window.eco.reconnectGame();
+      // Throttle "重连过于频繁" is ok to ignore; real failures surface below if identify also fails.
+      if (!rec?.ok && rec?.error && !String(rec.error).includes('频繁')) {
+        // Keep going: capture may already be up; identify still helps.
+        console.warn('switchCharacter reconnect:', rec.error);
+      }
+    }
+    try {
+      await window.eco.resetDamage();
+    } catch {
+      // ignore
+    }
+    if (!window.eco.reidentifySelf) {
+      showToast('已尝试重连；请普攻一次。当前版本无单独识别接口');
+      await refreshState();
+      return;
+    }
+    const result = await window.eco.reidentifySelf();
+    await refreshState();
+    if (!result?.ok) {
+      showToast(result?.error || '换号识别未完成，请确认游戏已打开后再点一次');
+      return;
+    }
+    showToast('已就绪：请普攻或放技能一次完成识别');
+  }, [showToast, refreshState]);
 
   const selectGameProcess = useCallback(async (pid: number) => {
     const result = await window.eco.selectGameProcess(pid);
@@ -74,6 +122,8 @@ export function useServiceActions(options: {
     startAll,
     stopAll,
     resetDamage,
+    reidentifySelf,
+    switchCharacter,
     selectGameProcess,
     selectXiaoyaProcess,
     refreshProcesses,

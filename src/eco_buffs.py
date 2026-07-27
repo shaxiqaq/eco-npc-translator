@@ -39,7 +39,27 @@ def load_buff_names(path=BUFF_NAMES):
         return {}
     if not isinstance(data, dict):
         return {}
-    return {str(key): value for key, value in data.items() if isinstance(value, dict)}
+    names = {str(key): value for key, value in data.items() if isinstance(value, dict)}
+    # Merge optional wiki-aligned descriptions / category overrides.
+    meta_path = find_data_file(_DATA_DIR, _RES_DIR, "buff_meta.json")
+    try:
+        with open(meta_path, encoding="utf-8") as stream:
+            meta = json.load(stream)
+    except Exception:
+        meta = {}
+    if isinstance(meta, dict):
+        for key, extra in meta.items():
+            if not isinstance(extra, dict):
+                continue
+            entry = dict(names.get(str(key)) or {})
+            if extra.get("description"):
+                entry["description"] = extra["description"]
+            if extra.get("wiki_category") and not entry.get("category"):
+                entry["category"] = extra["wiki_category"]
+            elif extra.get("wiki_category") and extra.get("force_category"):
+                entry["category"] = extra["wiki_category"]
+            names[str(key)] = entry
+    return names
 
 
 def _positive_float(value):
@@ -382,6 +402,8 @@ class BuffTracker:
                         else "status_flag"
                     ),
                 }
+                if metadata.get("description"):
+                    definition["description"] = metadata.get("description")
                 learned = self.learned_skills.get(key)
                 if learned:
                     # Learned skill names are game-facing; prefer them over localized dict names.

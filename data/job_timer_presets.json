@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "source": "wiki-aligned skill names + common combat timers (durations are starting points; calibrate in combat)",
+  "wiki": "https://eco.lycolia.info/wiki/?Skill",
+  "presets": [
+    {
+      "id": "job-swordman-basic",
+      "name": "剑士系·常用",
+      "job": "SwordMan",
+      "note": "含パリイ等防御技；秒数请按实战微调",
+      "custom_durations": {
+        "skill:2100": { "cooldown": 30, "duration": 3, "skill_id": 2100, "label": "パリイ", "overlay": true },
+        "skill:3114": { "duration": 900, "skill_id": 3114, "label": "力护盾/マジックシールド", "overlay": true }
+      }
+    },
+    {
+      "id": "job-scout-basic",
+      "name": "斥候系·标记/闪避",
+      "job": "Scout",
+      "note": "标记与闪避类；秒数请实战校准",
+      "custom_durations": {
+        "skill:2486": { "duration": 60, "skill_id": 2486, "label": "戮印记/アサシンマーク", "overlay": true },
+        "skill:2004": { "cooldown": 20, "skill_id": 2004, "label": "间闪避", "overlay": true },
+        "skill:4026": { "duration": 120, "skill_id": 4026, "label": "击援手", "overlay": true }
+      }
+    },
+    {
+      "id": "job-spell-shields",
+      "name": "法师系·护盾",
+      "job": "SpellUser",
+      "note": "各类护盾持续参考值",
+      "custom_durations": {
+        "skill:3100": { "duration": 600, "skill_id": 3100, "label": "火护盾", "overlay": true },
+        "skill:3113": { "duration": 600, "skill_id": 3113, "label": "量护盾", "overlay": true },
+        "skill:3114": { "duration": 900, "skill_id": 3114, "label": "力护盾", "overlay": true }
+      }
+    }
+  ]
+}

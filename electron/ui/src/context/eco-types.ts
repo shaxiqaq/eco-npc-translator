@@ -39,6 +39,9 @@ export type EcoContextValue = {
   startAll: () => Promise<void>;
   stopAll: () => Promise<void>;
   resetDamage: () => Promise<void>;
+  reidentifySelf: () => Promise<void>;
+  /** Reconnect capture + clear meter + soft reidentify — one button for switch/account recovery. */
+  switchCharacter: () => Promise<void>;
   selectGameProcess: (pid: number) => Promise<void>;
   selectXiaoyaProcess: (pid: number) => Promise<void>;
   refreshProcesses: () => Promise<void>;

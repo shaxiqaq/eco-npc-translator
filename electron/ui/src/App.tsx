@@ -5,6 +5,7 @@ import { UpdateDialog } from '@/components/UpdateDialog';
 import { OnboardingDialog } from '@/components/OnboardingDialog';
 import { OverviewPage } from '@/pages/OverviewPage';
 import { DamagePage } from '@/pages/DamagePage';
+import { GrindPage } from '@/pages/GrindPage';
 import { BuffsPage } from '@/pages/BuffsPage';
 import { TranslationPage } from '@/pages/TranslationPage';
 import { XiaoyaPage } from '@/pages/XiaoyaPage';
@@ -25,6 +26,8 @@ function Pages() {
   switch (page) {
     case 'damage':
       return <DamagePage />;
+    case 'grind':
+      return <GrindPage />;
     case 'buffs':
       return <BuffsPage />;
     case 'translation':

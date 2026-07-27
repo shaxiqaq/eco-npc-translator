@@ -30,11 +30,18 @@ try {
         --specpath (Join-Path $Work "spec-damage") `
         --add-data "$Src\_damage_capture.js;." `
         --add-data "$Data\skill_names.json;." `
+        --add-data "$Data\skill_names_ja.json;." `
         --add-data "$Data\mob_names.json;." `
         --add-data "$Data\buff_names.json;." `
+        --add-data "$Data\buff_meta.json;." `
+        --add-data "$Data\defensive_skill_ids.json;." `
+        --add-data "$Data\job_timer_presets.json;." `
+        --add-data "$Data\exp_table.json;." `
         --hidden-import eco_log `
         --hidden-import eco_paths `
         --hidden-import eco_process `
+        --hidden-import eco_display_names `
+        --hidden-import eco_exp_tracker `
         eco_damage_bridge.py
     if ($LASTEXITCODE -ne 0) { throw "Failed to package the damage capture backend" }
 

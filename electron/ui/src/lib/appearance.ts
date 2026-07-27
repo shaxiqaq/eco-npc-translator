@@ -32,12 +32,14 @@ export function normalizeAppearance(raw: AppearanceSettings = {}): Required<
     | 'overlayBackgroundBlur'
     | 'overlayBackgroundFit'
     | 'accent'
+    | 'skillNameMode'
   >
 > {
   const dim = Number(raw.backgroundDim);
   const blur = Number(raw.backgroundBlur);
   const fit = String(raw.backgroundFit || 'cover');
   const accent = String(raw.accent || 'amber');
+  const skillNameMode = String(raw.skillNameMode || 'client');
   const overlayDim = Number(raw.overlayBackgroundDim);
   const overlayBlur = Number(raw.overlayBackgroundBlur);
   const overlayFit = String(raw.overlayBackgroundFit || 'cover');
@@ -60,6 +62,7 @@ export function normalizeAppearance(raw: AppearanceSettings = {}): Required<
     overlayBackgroundBlur: Number.isFinite(overlayBlur) ? Math.min(24, Math.max(0, overlayBlur)) : 4,
     overlayBackgroundFit: ['cover', 'contain', 'fill'].includes(overlayFit) ? overlayFit : 'cover',
     accent: (ACCENT_PRESETS as readonly string[]).includes(accent) ? accent : 'amber',
+    skillNameMode: ['client', 'ja', 'dual'].includes(skillNameMode) ? skillNameMode : 'client',
   };
 }
 
@@ -88,6 +91,7 @@ export function serializableAppearance(appearance: AppearanceSettings) {
     overlayBackgroundFit: normalized.overlayBackgroundFit,
     applyToOverlay: normalized.overlayBgMode !== 'solid',
     accent: normalized.accent,
+    skillNameMode: normalized.skillNameMode,
   };
 }
 

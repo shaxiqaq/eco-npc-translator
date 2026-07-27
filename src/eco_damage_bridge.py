@@ -73,7 +73,20 @@ def safe_frida_teardown(script, session, reason="stop"):
         pass
 
 
-def command_loop(meter, stop_event):
+def push_snapshot(meter, history_limit=80):
+    try:
+        snapshot = meter.snapshot(history_limit=history_limit)
+        emit("snapshot", data=snapshot)
+    except Exception:
+        pass
+    try:
+        for notice in meter.drain_notices():
+            emit("notice", level=notice.get("level") or "info", message=notice.get("message") or "")
+    except Exception:
+        pass
+
+
+def command_loop(meter, stop_event, history_limit=80):
     while not stop_event.is_set():
         line = sys.stdin.readline()
         if not line:
@@ -87,7 +100,25 @@ def command_loop(meter, stop_event):
         action = command.get("action")
         if action == "reset":
             meter.reset()
-            emit("notice", level="success", message="伤害统计已清空")
+            emit("notice", level="success", message="伤害统计已清空（角色识别保持不变）")
+            push_snapshot(meter, history_limit)
+        elif action == "reidentify-self":
+            with meter.lock:
+                # Soft reidentify: keep last self_id on screen until next local combat.
+                meter.reset_identity(reason="user_reidentify", hard=False)
+            cur = meter.self_id
+            if cur is not None:
+                emit(
+                    "notice",
+                    level="info",
+                    message=f"请攻击或放技能一次以确认角色（当前仍显示 #{cur}）",
+                )
+            else:
+                emit("notice", level="info", message="请攻击或放技能一次以识别当前登录角色")
+            push_snapshot(meter, history_limit)
+        elif action == "set-skill-name-mode":
+            mode = meter.set_skill_name_mode(command.get("mode"))
+            emit("notice", level="info", message=f"技能名称显示模式：{mode}")
         elif action == "set-categories":
             meter.set_capture_categories(command.get("categories"))
             emit(
@@ -191,13 +222,14 @@ def main():
             message=f"已连接游戏进程 {pid}",
         )
 
-        reader = threading.Thread(target=command_loop, args=(meter, stop_event), daemon=True)
-        reader.start()
         # Keep history modest — UI shows recent rows; full dumps bloat IPC.
         history_limit = max(20, min(200, int(os.environ.get("ECO_SNAPSHOT_HISTORY", "80"))))
+        reader = threading.Thread(
+            target=command_loop, args=(meter, stop_event, history_limit), daemon=True
+        )
+        reader.start()
         while not stop_event.wait(max(0.1, args.interval)):
-            snapshot = meter.snapshot(history_limit=history_limit)
-            emit("snapshot", data=snapshot)
+            push_snapshot(meter, history_limit)
     except KeyboardInterrupt:
         cleanup("keyboard-interrupt")
     except Exception as exc:

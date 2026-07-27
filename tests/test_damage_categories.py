@@ -1,10 +1,13 @@
+# -*- coding: utf-8 -*-
 import unittest
 
 from eco_damage_categories import (
-    NORMAL,
-    PET,
-    SKILL,
+    PET_NORMAL,
+    PET_SKILL,
+    SELF_NORMAL,
+    SELF_SKILL,
     TAKEN,
+    category_for_channel,
     category_for_damage,
     default_capture_categories,
     update_capture_categories,
@@ -13,23 +16,36 @@ from eco_damage_meter import DamageMeter
 
 
 class DamageCategoryRulesTest(unittest.TestCase):
-    def test_maps_damage_sides_to_four_capture_categories(self):
-        self.assertEqual(category_for_damage("dealt", 3001), SKILL)
-        self.assertEqual(category_for_damage("dealt", None), NORMAL)
-        self.assertEqual(category_for_damage("pet_dealt", 7505), PET)
+    def test_maps_sides_and_channels(self):
+        self.assertEqual(category_for_damage("dealt", 3001), SELF_SKILL)
+        self.assertEqual(category_for_damage("dealt", None), SELF_NORMAL)
+        self.assertEqual(category_for_damage("pet_dealt", 7505), PET_SKILL)
         self.assertEqual(category_for_damage("taken", None), TAKEN)
+        self.assertEqual(category_for_channel("ride_skill"), "ride_skill")
+        self.assertEqual(category_for_damage("dealt", 1, channel="possession_skill"), "possession_skill")
 
-    def test_updates_only_known_categories(self):
+    def test_updates_fine_keys(self):
         current = default_capture_categories()
         updated = update_capture_categories(
             current,
-            {"skill": False, "pet": 0, "unknown": False},
+            {"self_skill": False, "pet_normal": 0, "unknown": False},
         )
+        self.assertFalse(updated["self_skill"])
+        self.assertFalse(updated["pet_normal"])
+        self.assertTrue(updated["self_normal"])
+        self.assertTrue(updated["taken"])
 
-        self.assertEqual(
-            updated,
-            {"skill": False, "normal": True, "pet": False, "taken": True},
+    def test_legacy_coarse_keys_expand(self):
+        updated = update_capture_categories(
+            default_capture_categories(),
+            {"skill": False, "pet": False},
         )
+        self.assertFalse(updated["self_skill"])
+        self.assertFalse(updated["ride_skill"])
+        self.assertFalse(updated["possession_skill"])
+        self.assertFalse(updated["pet_normal"])
+        self.assertFalse(updated["pet_skill"])
+        self.assertTrue(updated["self_normal"])
 
 
 class DamageMeterCaptureSwitchTest(unittest.TestCase):
@@ -108,17 +124,19 @@ class DamageMeterCaptureSwitchTest(unittest.TestCase):
         self.incoming_attack(meter)
 
         self.assertEqual(meter.normal_dealt, 10)
+        self.assertEqual(meter.self_normal_dealt, 10)
         self.assertEqual(meter.skill_dealt, 20)
+        self.assertEqual(meter.self_skill_dealt, 20)
         self.assertEqual(meter.pet_dealt, 30)
         self.assertEqual(meter.total_taken, 5)
         self.assertEqual(len(meter.damage_history), 4)
         self.assertEqual(len(emitted), 4)
 
-    def test_each_disabled_category_records_nothing(self):
+    def test_each_disabled_fine_category_records_nothing(self):
         cases = (
-            ("normal", self.normal_attack, "normal_dealt"),
-            ("skill", self.skill_attack, "skill_dealt"),
-            ("pet", self.pet_attack, "pet_dealt"),
+            ("self_normal", self.normal_attack, "self_normal_dealt"),
+            ("self_skill", self.skill_attack, "self_skill_dealt"),
+            ("pet_normal", self.pet_attack, "pet_normal_dealt"),
             ("taken", self.incoming_attack, "total_taken"),
         )
 
@@ -137,7 +155,7 @@ class DamageMeterCaptureSwitchTest(unittest.TestCase):
         meter, emitted = self.make_meter()
         self.normal_attack(meter, ts=1.0, damage=10)
 
-        meter.set_capture_categories({"normal": False})
+        meter.set_capture_categories({"self_normal": False})
         self.normal_attack(meter, ts=2.0, damage=99)
 
         self.assertEqual(meter.normal_dealt, 10)
@@ -187,6 +205,28 @@ class DamageMeterCaptureSwitchTest(unittest.TestCase):
         reset = meter.snapshot(history_limit=2)
         self.assertEqual(reset["damage_history"], [])
         self.assertEqual(reset["history_version"], 0)
+
+    def test_ride_skill_toggle_independent(self):
+        meter, _ = self.make_meter()
+        meter.set_capture_categories({"ride_skill": False, "self_skill": True})
+        meter.handle_parsed(
+            {"type": "skill_cast_request", "skill_id": 2486, "target": self.TARGET, "_op": 4999},
+            1.0,
+        )
+        meter.handle_parsed(
+            {
+                "type": "skill_active",
+                "skill_id": 2486,
+                "caster": 20257,
+                "target": self.TARGET,
+                "affected": [self.TARGET],
+                "damages": [-50],
+                "_op": 5010,
+            },
+            1.1,
+        )
+        self.assertEqual(meter.ride_skill_dealt, 0)
+        self.assertEqual(meter.self_skill_dealt, 0)
 
 
 if __name__ == "__main__":

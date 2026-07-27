@@ -44,6 +44,10 @@ DEFAULT_OPS = {
     # Server combat / skill / HP / actor packets most likely to carry damage context.
     4001, 4002, 4006, 4031, 5001, 5005, 5010, 5025, 5030, 5035, 5040,
     525, 540, 545, 530, 535, 5500, 4620, 4625, 4640, 4645, 4655, 4660,
+    # Possession (依凭): SSMG_POSSESSION_RESULT / CANCEL
+    6011, 6016,
+    # EXP / level: SSMG_PLAYER_EXP / SSMG_PLAYER_LEVEL
+    565, 570,
 }
 
 
@@ -158,6 +162,22 @@ def parse_packet(direction, op, sub):
             "type": "pet_delete",
             "actor": u32be(sub, 2),
         }
+    # SagaECO SSMG_POSSESSION_RESULT 0x177B — FromID(possessor)@2, ToID(host)@6, result@10
+    if direction == "S2C" and op == 6011:
+        return {
+            "type": "possession_result",
+            "from_id": u32be(sub, 2),
+            "to_id": u32be(sub, 6),
+            "result": sub[10] if len(sub) > 10 else None,
+        }
+    # SagaECO SSMG_POSSESSION_CANCEL 0x1780 — FromID@2, ToID@6
+    if direction == "S2C" and op == 6016:
+        return {
+            "type": "possession_cancel",
+            "from_id": u32be(sub, 2),
+            "to_id": u32be(sub, 6),
+            "position": sub[10] if len(sub) > 10 else None,
+        }
     if direction == "C2S" and op == 3999:
         return {
             "type": "attack_request",
@@ -195,12 +215,20 @@ def parse_packet(direction, op, sub):
             "u32_18": u32be(sub, 18),
         }
     if direction == "S2C" and op == 5001:
+        # SagaECO SSMG_SKILL_CAST_RESULT (0x1389):
+        #   SkillID u16@2, Result u8@4, ActorID u32@5, CastTime u32@9,
+        #   TargetID u32@13, X@17, Y@18, SkillLv@19
+        # ActorID is intentionally unaligned (starts at offset 5).
         return {
             "type": "skill_cast_result",
             "skill_id": u16be(sub, 2),
-            "target": u32be(sub, 6),
-            "caster": u32be(sub, 14),
-            "level": sub[18] if len(sub) > 18 else None,
+            "result": sub[4] if len(sub) > 4 else None,
+            "caster": u32be(sub, 5),
+            "cast_time": u32be(sub, 9),
+            "target": u32be(sub, 13),
+            "x": sub[17] if len(sub) > 17 else None,
+            "y": sub[18] if len(sub) > 18 else None,
+            "level": sub[19] if len(sub) > 19 else None,
         }
     if direction == "S2C" and op == 5010:
         affected = []
@@ -268,6 +296,35 @@ def parse_packet(direction, op, sub):
         return {
             "type": "mob_delete",
             "actor": u32be(sub, 2),
+        }
+    # SSMG_PLAYER_EXP 0x0235 — CEXP%/JEXP% as uint32 scale×10 (345 → 34.5%).
+    # Older protocol lengths also carry absolute Exp/JExp as int64.
+    if direction == "S2C" and op == 565:
+        cexp_abs = None
+        jexp_abs = None
+        if len(sub) >= 34:
+            try:
+                cexp_abs = int.from_bytes(sub[18:26], "big", signed=True)
+                jexp_abs = int.from_bytes(sub[26:34], "big", signed=True)
+            except Exception:
+                cexp_abs = None
+                jexp_abs = None
+        return {
+            "type": "player_exp",
+            "cexp_pct_x10": u32be(sub, 2),
+            "jexp_pct_x10": u32be(sub, 6),
+            "cexp_abs": cexp_abs,
+            "jexp_abs": jexp_abs,
+        }
+    # SSMG_PLAYER_LEVEL 0x023A — base + job levels.
+    if direction == "S2C" and op == 570:
+        return {
+            "type": "player_level",
+            "level": sub[2] if len(sub) > 2 else None,
+            "job_level": sub[3] if len(sub) > 3 else None,
+            "job_level_2x": sub[4] if len(sub) > 4 else None,
+            "job_level_2t": sub[5] if len(sub) > 5 else None,
+            "job_level_joint": sub[6] if len(sub) > 6 else None,
         }
     return None
 

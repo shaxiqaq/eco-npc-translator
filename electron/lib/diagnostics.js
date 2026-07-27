@@ -12,7 +12,9 @@ function collectDiagnostics({
   gameProcesses,
   captureIntents,
   services,
-  logs
+  logs,
+  identity = null,
+  connectionHealth = null
 }) {
   let elevated = null;
   try {
@@ -22,6 +24,7 @@ function collectDiagnostics({
     elevated = null;
   }
 
+  const id = identity && typeof identity === 'object' ? identity : {};
   return {
     exportedAt: new Date().toISOString(),
     app: {
@@ -46,6 +49,16 @@ function collectDiagnostics({
     },
     captureIntents: captureIntents || {},
     services: services || {},
+    // Character identity — critical when debugging account-switch rebind.
+    identity: {
+      self_id: id.self_id ?? null,
+      candidates: id.candidates ?? '',
+      captureRunning: Boolean(id.captureRunning),
+      total_dealt: id.total_dealt ?? null,
+      total_taken: id.total_taken ?? null,
+      skill_cast_total: id.skill_cast_total ?? null
+    },
+    connectionHealth: connectionHealth || null,
     // Surface ECO_Exx codes when present on service state.
     errorCodes: Object.fromEntries(
       Object.entries(services || {})
@@ -73,6 +86,10 @@ function formatDiagnosticsText(diag) {
   }
   lines.push('', '## capture intents', JSON.stringify(diag.captureIntents || {}, null, 2));
   lines.push('', '## services', JSON.stringify(diag.services || {}, null, 2));
+  lines.push('', '## identity', JSON.stringify(diag.identity || {}, null, 2));
+  if (diag.connectionHealth) {
+    lines.push('', '## connection health', JSON.stringify(diag.connectionHealth, null, 2));
+  }
   lines.push('', '## recent logs');
   for (const entry of diag.recentLogs || []) {
     lines.push(

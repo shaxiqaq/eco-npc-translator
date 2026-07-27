@@ -1,6 +1,7 @@
 import {
   LayoutDashboard,
   Swords,
+  Flame,
   ShieldCheck,
   Languages,
   Keyboard,
@@ -33,6 +34,7 @@ import {
 const NAV: Array<{ id: PageId; icon: React.ComponentType<{ className?: string }>; label: string }> = [
   { id: 'overview', icon: LayoutDashboard, label: '总览' },
   { id: 'damage', icon: Swords, label: '伤害统计' },
+  { id: 'grind', icon: Flame, label: '肝度统计' },
   { id: 'buffs', icon: ShieldCheck, label: '状态监控' },
   { id: 'translation', icon: Languages, label: 'NPC 翻译' },
   { id: 'xiaoya', icon: Keyboard, label: '小雅助手' },
