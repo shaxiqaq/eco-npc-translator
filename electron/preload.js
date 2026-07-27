@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('eco', {
   getState: () => ipcRenderer.invoke('app:get-state'),
   refreshGameProcesses: () => ipcRenderer.invoke('game-processes:refresh'),
-  selectGameProcess: (pid) => ipcRenderer.invoke('game-processes:select', pid),
+  selectGameProcess: (pid, options) => ipcRenderer.invoke('game-processes:select', pid, options || {}),
   selectXiaoyaProcess: (pid) => ipcRenderer.invoke('game-processes:select-xiaoya', pid),
   startService: (name) => ipcRenderer.invoke('service:start', name),
   stopService: (name) => ipcRenderer.invoke('service:stop', name),
@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('eco', {
   exportLogs: (options) => ipcRenderer.invoke('logs:export', options || {}),
   getDiagnostics: () => ipcRenderer.invoke('app:get-diagnostics'),
   copyDiagnostics: () => ipcRenderer.invoke('app:copy-diagnostics'),
+  exportDiagnosticPack: () => ipcRenderer.invoke('app:export-diagnostic-pack'),
   reconnectGame: () => ipcRenderer.invoke('app:reconnect'),
   setOnboardingSeen: (seen) => ipcRenderer.invoke('app:set-onboarding-seen', seen),
   exportConfig: (options) => ipcRenderer.invoke('config:export', options || {}),

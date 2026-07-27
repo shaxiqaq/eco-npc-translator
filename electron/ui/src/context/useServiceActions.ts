@@ -88,9 +88,22 @@ export function useServiceActions(options: {
   }, [showToast, refreshState]);
 
   const selectGameProcess = useCallback(async (pid: number) => {
-    const result = await window.eco.selectGameProcess(pid);
+    showToast('正在切换游戏进程…');
+    const result = await window.eco.selectGameProcess(pid, { autoRestart: true });
     await refreshState();
-    showToast(result.ok ? `已选择主进程 ${result.selectedPid}` : result.error || '选择失败');
+    if (!result?.ok) {
+      showToast(result?.error || '选择失败');
+      return;
+    }
+    if (result.unchanged) {
+      showToast(`当前已是进程 ${result.selectedPid}`);
+      return;
+    }
+    const restarted = Array.isArray(result.restarted) && result.restarted.length
+      ? `，已重挂 ${result.restarted.join('+')}`
+      : '';
+    const title = result.title ? `（${result.title}）` : '';
+    showToast(`已选择主进程 ${result.selectedPid}${title}${restarted} · 请普攻一次`);
   }, [refreshState, showToast]);
 
   const selectXiaoyaProcess = useCallback(async (pid: number) => {

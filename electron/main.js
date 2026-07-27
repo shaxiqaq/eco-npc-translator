@@ -13,7 +13,13 @@ const { XiaoyaCoreService } = require('./lib/xiaoya-core-service');
 const { createLogger } = require('./lib/logger');
 const { createSettingsCache } = require('./lib/settings-cache');
 const { createStateBus } = require('./lib/state-bus');
-const { collectDiagnostics, formatDiagnosticsText } = require('./lib/diagnostics');
+const {
+  collectDiagnostics,
+  formatDiagnosticsText,
+  collectCaptureLogTails,
+  writeDiagnosticPack,
+  buildSnapshotSummary
+} = require('./lib/diagnostics');
 const { buildBackendEnv } = require('./lib/backend-env');
 const { isProcessElevated, buildConnectionHealth } = require('./lib/system-health');
 const { createCharacterPresetStore } = require('./lib/character-presets');
@@ -526,7 +532,9 @@ function buildLightState() {
         peakDealt: r.peakDealt,
         samples: r.samples,
         startedAt: r.startedAt,
-        last: r.last
+        last: r.last,
+        // Compact trail for overview sparkline (last ~40 samples).
+        history: Array.isArray(r.history) ? r.history.slice(-40) : []
       };
     })(),
     rememberedTitles: {
@@ -640,14 +648,51 @@ async function refreshGameProcesses() {
   }
 }
 
-function selectGameProcess(pid) {
-  if (processSelectionLocked()) {
-    return { ok: false, error: '请先停止伤害采集和 NPC 翻译，再切换游戏进程' };
-  }
+/**
+ * Switch main eco.exe target.
+ * options.autoRestart (default true): stop capture/translator if running, switch, then restart
+ * whatever was wanted so multi-client users need not manually stop first.
+ */
+async function selectGameProcess(pid, options = {}) {
+  const autoRestart = options.autoRestart !== false;
   const normalized = Number(pid);
   if (!gameProcesses.some((process) => process.pid === normalized)) {
     return { ok: false, error: '所选游戏进程已经退出，请刷新列表' };
   }
+  if (selectedGamePid === normalized) {
+    return {
+      ok: true,
+      selectedPid: selectedGamePid,
+      title: rememberedProcessTitle,
+      unchanged: true
+    };
+  }
+
+  const wantDamageCollection = Boolean(damageCollectionWanted);
+  const wantMonitoring = isMonitoringWanted();
+  const wantCapture = wantDamageCollection || wantMonitoring
+    || Boolean(services.damage)
+    || ['running', 'starting'].includes(serviceState.damage?.state || '');
+  const translatorWasRunning = Boolean(services.translator)
+    || ['running', 'starting'].includes(serviceState.translator?.state || '');
+
+  if (autoRestart && processSelectionLocked()) {
+    addLog('app', 'info', `切换进程 ${selectedGamePid || '—'} → ${normalized}，正在安全重挂…`);
+    try {
+      if (services.damage || ['running', 'starting'].includes(serviceState.damage?.state || '')) {
+        // Force detach from old PID even if monitoring intent remains.
+        await stopCaptureBackend({ waitMs: 8000, force: true });
+      }
+      if (services.translator || translatorWasRunning) {
+        await stopService('translator');
+      }
+    } catch (error) {
+      addLog('app', 'warn', `切换前停止服务：${error.message || error}`);
+    }
+  } else if (processSelectionLocked()) {
+    return { ok: false, error: '请先停止伤害采集和 NPC 翻译，再切换游戏进程' };
+  }
+
   selectedGamePid = normalized;
   latestSnapshot = null;
   const proc = gameProcesses.find((p) => p.pid === normalized);
@@ -655,7 +700,72 @@ function selectGameProcess(pid) {
   selectedProcessAlive = true;
   if (!isDemo) persistSelectedGamePid(selectedGamePid, rememberedProcessTitle);
   broadcastState();
-  return { ok: true, selectedPid: selectedGamePid, title: rememberedProcessTitle };
+
+  // Auto-apply character preset bound to this window title (multi-client QoL).
+  tryMaybeApplyPresetForTitle(rememberedProcessTitle);
+
+  let restarted = [];
+  if (autoRestart) {
+    // Restore intents after forced stop.
+    damageCollectionWanted = wantDamageCollection;
+    if (wantCapture) {
+      const r = await reconcileCaptureBackend();
+      if (r?.ok) restarted.push(wantDamageCollection ? 'damage' : 'monitoring');
+    }
+    if (translatorWasRunning) {
+      const r = await startService('translator');
+      if (r?.ok) restarted.push('translator');
+    }
+    // Soft reidentify so next auto-attack rebinds self_id for the new window.
+    try {
+      reidentifySelf();
+    } catch {
+      /* optional */
+    }
+  }
+
+  addLog(
+    'app',
+    'success',
+    `已选择主进程 ${selectedGamePid}${rememberedProcessTitle ? `（${rememberedProcessTitle}）` : ''}`
+      + (restarted.length ? `，已重挂：${restarted.join('+')}` : '')
+  );
+  broadcastState();
+  return {
+    ok: true,
+    selectedPid: selectedGamePid,
+    title: rememberedProcessTitle,
+    restarted
+  };
+}
+
+function tryMaybeApplyPresetForTitle(title) {
+  const t = String(title || '').trim();
+  if (!t) return null;
+  const presets = characterPresets.loadAll();
+  const match = presets.find((p) => {
+    const bind = String(p.windowTitle || p.note || '').trim();
+    if (!bind) return false;
+    return bind === t || t.includes(bind) || bind.includes(t);
+  });
+  if (!match) return null;
+  // Reuse apply path without double-logging noise.
+  const current = appSettings();
+  if (match.capture) current.capture = { ...(current.capture || {}), ...match.capture };
+  if (match.overlay) {
+    current.overlay = {
+      ...(current.overlay || {}),
+      density: match.overlay.density || current.overlay?.density,
+      expiryWarningSeconds: match.overlay.expiryWarningSeconds ?? current.overlay?.expiryWarningSeconds
+    };
+  }
+  persistAppSettings(current);
+  if (match.custom_durations) {
+    saveCustomBuffDurations(match.custom_durations);
+    notifyDamageReloadCustomBuffs(match.custom_durations);
+  }
+  addLog('app', 'info', `已按窗口标题自动应用预设「${match.name}」`);
+  return match;
 }
 
 function selectXiaoyaProcess(pid) {
@@ -1530,8 +1640,12 @@ function getDiagnosticsPayload() {
       total_taken: snap.total_taken ?? snap.taken ?? null,
       skill_cast_total: snap.skill_cast_total ?? null,
       packet_count: snap.packet_count ?? null,
-      last_packet_age: snap.last_packet_age ?? null
+      last_packet_age: snap.last_packet_age ?? null,
+      ride_mode: Boolean(snap.ride_mode),
+      ride_mount_id: snap.ride_mount_id ?? null,
+      possession_host_id: snap.possession_host_id ?? null
     },
+    snapshotSummary: buildSnapshotSummary(snap),
     connectionHealth: currentConnectionHealth()
   });
 }
@@ -1584,6 +1698,124 @@ ipcMain.handle('app:copy-diagnostics', () => {
   addLog('app', 'info', '诊断信息已复制到剪贴板');
   return { ok: true, text };
 });
+ipcMain.handle('app:export-diagnostic-pack', async () => {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const defaultName = `eco-toolbox-diag-${stamp}`;
+  const result = await dialog.showSaveDialog(mainWindow || undefined, {
+    title: '导出诊断包',
+    defaultPath: path.join(app.getPath('documents'), defaultName),
+    buttonLabel: '导出诊断包',
+    // No extension — we create a folder of files for remote support.
+    filters: [{ name: '诊断包文件夹', extensions: ['*'] }]
+  });
+  if (result.canceled || !result.filePath) {
+    return { ok: false, cancelled: true };
+  }
+
+  let outDir = result.filePath;
+  // If the user picked something ending in .json/.txt, strip and use as folder.
+  outDir = outDir.replace(/\.(json|txt|zip)$/i, '');
+  try {
+    fs.mkdirSync(outDir, { recursive: true });
+    const diag = getDiagnosticsPayload();
+    const text = buildDiagnosticsText();
+    const logDirs = [
+      path.join(localDataDir(), 'logs'),
+      path.join(backendDir(), 'logs'),
+      path.join(backendDir(), 'data', 'logs')
+    ];
+    const captureTails = collectCaptureLogTails(logDirs, {
+      prefix: 'damage_electron_',
+      maxBytes: 160_000,
+      maxFiles: 2
+    });
+    // Also try generic capture prefixes if electron logs are empty.
+    if (!captureTails.tails.length) {
+      const alt = collectCaptureLogTails(logDirs, {
+        prefix: 'damage_',
+        maxBytes: 120_000,
+        maxFiles: 2
+      });
+      if (alt.tails.length) {
+        captureTails.tails = alt.tails;
+        captureTails.files = alt.files;
+      }
+    }
+    const pack = writeDiagnosticPack(outDir, {
+      diag,
+      text,
+      snapshot: latestSnapshot || null,
+      captureTails
+    });
+
+    // Best-effort zip beside the folder for easier sharing.
+    let zipPath = null;
+    try {
+      zipPath = await zipDirectory(outDir);
+    } catch (zipErr) {
+      addLog('app', 'warn', `诊断包压缩失败（仍有文件夹）：${zipErr.message || zipErr}`);
+    }
+
+    addLog(
+      'app',
+      'success',
+      zipPath
+        ? `已导出诊断包 → ${zipPath}`
+        : `已导出诊断包（${pack.files.length} 个文件）→ ${outDir}`
+    );
+    try {
+      shell.showItemInFolder(zipPath || path.join(outDir, 'README.txt'));
+    } catch {
+      /* optional */
+    }
+    return {
+      ok: true,
+      path: zipPath || outDir,
+      dir: outDir,
+      zipPath,
+      files: pack.files.length
+    };
+  } catch (error) {
+    return { ok: false, error: error.message || '导出诊断包失败' };
+  }
+});
+
+function zipDirectory(dirPath) {
+  return new Promise((resolve, reject) => {
+    if (process.platform !== 'win32') {
+      reject(new Error('zip only implemented on Windows'));
+      return;
+    }
+    const zipPath = `${dirPath}.zip`;
+    try {
+      if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+    } catch {
+      /* ignore */
+    }
+    const { execFile } = require('child_process');
+    // PowerShell Compress-Archive: available on modern Windows without extra deps.
+    const ps = [
+      `$ErrorActionPreference='Stop'`,
+      `Compress-Archive -Path ${JSON.stringify(dirPath + path.sep + '*')} -DestinationPath ${JSON.stringify(zipPath)} -Force`
+    ].join('; ');
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+      (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        if (!fs.existsSync(zipPath)) {
+          reject(new Error('zip file missing after compress'));
+          return;
+        }
+        resolve(zipPath);
+      }
+    );
+  });
+}
 ipcMain.handle('app:reconnect', async () => reconnectGameProcess({ reason: 'manual' }));
 ipcMain.handle('app:set-onboarding-seen', (_event, seen = true) => {
   const current = appSettings();
@@ -1661,10 +1893,15 @@ ipcMain.handle('config:import', async () => {
 ipcMain.handle('presets:list', () => ({ ok: true, presets: characterPresets.loadAll() }));
 ipcMain.handle('presets:save', (_event, payload = {}) => {
   const name = String(payload.name || '').trim() || '未命名预设';
+  // Bind to current main window title by default (multi-client auto-apply).
+  const windowTitle = String(
+    payload.windowTitle != null ? payload.windowTitle : (rememberedProcessTitle || '')
+  ).trim();
   const result = characterPresets.upsert({
     id: payload.id || `preset-${Date.now()}`,
     name,
     note: payload.note || '',
+    windowTitle,
     capture: payload.capture || appSettings().capture || {},
     custom_durations: payload.custom_durations || loadCustomBuffDurations(),
     overlay: {
@@ -1674,7 +1911,11 @@ ipcMain.handle('presets:save', (_event, payload = {}) => {
     }
   });
   broadcastState();
-  addLog('app', 'info', `角色预设已保存：${name}`);
+  addLog(
+    'app',
+    'info',
+    `角色预设已保存：${name}${windowTitle ? `（绑定窗口 ${windowTitle}）` : ''}`
+  );
   return { ok: true, ...result };
 });
 ipcMain.handle('presets:apply', (_event, id) => {
@@ -1714,7 +1955,7 @@ ipcMain.handle('presets:delete', (_event, id) => {
   return { ok: true, ...result };
 });
 ipcMain.handle('game-processes:refresh', () => refreshGameProcesses());
-ipcMain.handle('game-processes:select', (_event, pid) => selectGameProcess(pid));
+ipcMain.handle('game-processes:select', async (_event, pid, options = {}) => selectGameProcess(pid, options));
 ipcMain.handle('game-processes:select-xiaoya', (_event, pid) => selectXiaoyaProcess(pid));
 ipcMain.handle('service:start', (_event, name) => startService(name));
 ipcMain.handle('service:stop', (_event, name) => stopService(name));

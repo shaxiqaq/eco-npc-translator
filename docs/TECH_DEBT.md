@@ -15,19 +15,25 @@ Living notes for ECO Toolbox. Prefer small, test-backed cleanups over rewrites.
 - Window-title memory for main + Xiaoya PIDs
 - Session battle report (export / copy)
 - Help page with ECO_Exx table, hotkeys, version
+- **v0.2.12**: sticky ride channels, grind readiness notices
+- Diagnostic pack export (UI logs + snapshot + capture jsonl tail)
+- Grind observability (exp/level packet counts, status/hint)
+- Ride/possession badges on overview + damage pages
+- Multi-client process switch auto stop→attach→start + title labels
+- ActionBanner next-step guidance; channel bars + DPS sparkline
+- Damage page hide-empty-channels; diag pack zip; preset↔windowTitle
+- Settings: restore recommended defaults + help link
 
 ## Still optional
 
 | Item | Why | Effort |
 |------|-----|--------|
-| Ship **v0.2.10** with title memory + report + help | Users still on 0.2.9 | Small |
-| DPS sparkline (no heavy chart lib) | Product polish | Medium |
-| Auto-apply character preset by window title | Multi-client QoL | Medium |
 | Split remaining IPC out of `main.js` | Readability | Medium |
 | Gradual TypeScript for preload/IPC contracts | Fewer wrong payloads | Medium |
 | Delete `electron/renderer-legacy` after confirmation | Repo noise | Small |
 | E2E with Playwright against demo | Regression | Medium |
 | Move `archive/` / research trees out of product clone | Clone size | Process |
+| Dual simultaneous damage capture | Product complexity | Large |
 
 ## Commands
 

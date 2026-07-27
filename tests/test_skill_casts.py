@@ -310,6 +310,37 @@ class SkillCastTrackingTest(unittest.TestCase):
         self.assertEqual(snap["self_normal_dealt"], 0)
         self.assertEqual(snap["self_skill_dealt"], 0)
 
+    def test_walk_pet_appear_exits_ride_mode(self):
+        meter = DamageMeter(self_id=84, game_chat=False, out_path=None)
+        self.addCleanup(meter.close)
+        ts = time.time()
+        meter.enter_ride_mode(mount_id=20257, reason="test", ts=ts, quiet=True)
+        self.assertTrue(meter.is_ride_active(ts))
+        meter.handle_parsed(
+            {
+                "type": "pet_appear",
+                "actor": 30001,
+                "owner": 84,
+                "hp": 500,
+                "max_hp": 800,
+                "_op": 4655,
+            },
+            ts + 0.1,
+        )
+        self.assertFalse(meter.is_ride_active(ts + 0.1))
+        meter.handle_parsed(
+            {"type": "attack_request", "target": 16000, "_op": 3999},
+            ts + 0.2,
+        )
+        meter.handle_parsed(
+            {"type": "attack_result", "src": 84, "dst": 16000, "damage": 40, "_op": 4001},
+            ts + 0.3,
+        )
+        snap = meter.snapshot()
+        self.assertEqual(snap["self_normal_dealt"], 40)
+        self.assertEqual(snap["ride_normal_dealt"], 0)
+        self.assertFalse(snap["ride_mode"])
+
     def test_possession_skill_counts_when_caster_is_host(self):
         """依凭: C2S from player, S2C caster is host body (another PC id)."""
         meter = DamageMeter(self_id=84, game_chat=False, out_path=None)

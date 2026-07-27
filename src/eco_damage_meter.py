@@ -1793,13 +1793,31 @@ class DamageMeter:
                 if own_pet:
                     self.mark_pet_actor(actor, owner=owner if owner else self.self_id, reason="宠物出现包")
                     # Ride mounts commonly appear with hp/max_hp == 0 then delete (absorbed).
-                    # Walking companion pets usually show real HP — do not force ride mode.
+                    # Walking companion pets usually show real HP → exit sticky ride.
+                    try:
+                        hp_i = int(hp) if hp is not None else None
+                    except (TypeError, ValueError):
+                        hp_i = None
+                    try:
+                        max_hp_i = int(max_hp) if max_hp is not None else None
+                    except (TypeError, ValueError):
+                        max_hp_i = None
+                    walk_pet = (
+                        self.self_id is not None
+                        and owner in (self.self_id, None, 0)
+                        and hp_i is not None
+                        and hp_i > 0
+                        and (max_hp_i is None or max_hp_i > 0)
+                    )
                     ride_like = (
                         self.self_id is not None
                         and owner in (self.self_id, None, 0)
-                        and (hp in (None, 0) or max_hp in (None, 0))
+                        and not walk_pet
+                        and (hp_i in (None, 0) or max_hp_i in (None, 0))
                     )
-                    if ride_like:
+                    if walk_pet and self.is_ride_active(ts):
+                        self.exit_ride_mode(reason="walk_pet_appear", ts=ts)
+                    elif ride_like:
                         self.enter_ride_mode(
                             mount_id=actor,
                             reason="宠物出现包",
@@ -2196,6 +2214,12 @@ class DamageMeter:
                 "possession_host_id": self.possession_host_id,
                 "ride_mode": self.is_ride_active(now),
                 "ride_mount_id": self.ride_mount_id,
+                "ride_mode_reason": self.ride_mode_reason if self.is_ride_active(now) else None,
+                "ride_mode_remaining": (
+                    max(0.0, float(self.ride_mode_until) - now)
+                    if self.is_ride_active(now)
+                    else 0.0
+                ),
                 "dealt": self.total_dealt,
                 "taken": self.total_taken,
                 "skill_dealt": self.skill_dealt,

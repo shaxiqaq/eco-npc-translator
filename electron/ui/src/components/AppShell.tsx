@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { PAGE_META, serviceText } from '@/lib/damage';
+import { formatProcessLabel } from '@/lib/process-label';
 import { useEco } from '@/context/EcoContext';
 import type { PageId } from '@/types/eco';
 import { Button } from '@/components/ui/button';
@@ -155,23 +156,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <MonitorDot className="h-4 w-4 text-[var(--amber)]" />
                   <Select
                     value={processValue || undefined}
-                    onValueChange={(value) => selectGameProcess(Number(value))}
-                    disabled={Boolean(state.processSelectionLocked) || !processes.length}
+                    onValueChange={(value) => void selectGameProcess(Number(value))}
+                    disabled={!processes.length}
                   >
-                    <SelectTrigger className="h-8 min-w-[180px] border-0 bg-transparent px-1 text-[11px] shadow-none focus:ring-0">
+                    <SelectTrigger
+                      className="h-8 min-w-[200px] max-w-[280px] border-0 bg-transparent px-1 text-[11px] shadow-none focus:ring-0"
+                      title={state.processSelectionLocked ? '切换时会自动停采并重挂' : '选择主号 eco.exe'}
+                    >
                       <SelectValue placeholder={processes.length ? '选择进程' : '没有找到 eco.exe'} />
                     </SelectTrigger>
                     <SelectContent>
-                      {processes.map((process) => {
-                        const titleExtra =
-                          process.title && process.title.toLowerCase() !== 'eco' ? ` · ${process.title}` : '';
-                        const started = process.started ? ` · ${process.started}` : '';
-                        return (
-                          <SelectItem key={process.pid} value={String(process.pid)}>
-                            {`PID ${process.pid}${titleExtra}${started}`}
-                          </SelectItem>
-                        );
-                      })}
+                      {processes.map((process) => (
+                        <SelectItem key={process.pid} value={String(process.pid)}>
+                          {formatProcessLabel(process)}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                   <Separator orientation="vertical" className="h-5" />

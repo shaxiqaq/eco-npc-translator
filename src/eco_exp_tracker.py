@@ -276,6 +276,12 @@ class ExpTracker:
         self.level_ups = 0
         self.job_level_ups = 0
         self.exp_update_count = 0
+        # Observability: raw packet counts (not only "gain" events).
+        self.exp_packet_count = 0
+        self.level_packet_count = 0
+        self.last_exp_packet_ts: Optional[float] = None
+        self.last_level_packet_ts: Optional[float] = None
+        self.ready_since_ts: Optional[float] = None
         self.gain_events: Deque[Dict[str, Any]] = deque(maxlen=MAX_EVENTS)
         # Compact samples for rolling rates: (ts, cexp_pct_x10_cum, jexp..., cabs, jabs)
         self.samples: Deque[Tuple[float, int, int, int, int]] = deque(maxlen=MAX_SAMPLES)
@@ -285,6 +291,8 @@ class ExpTracker:
                 setattr(self, key, value)
             # Seed a zero sample so rate windows work immediately after reset.
             self.samples.append((self.started, 0, 0, 0, 0))
+            if self.cexp_pct_x10 is not None or self.jexp_pct_x10 is not None:
+                self.ready_since_ts = self.started
 
     # ------------------------------------------------------------------ levels
     def apply_level(
@@ -297,6 +305,8 @@ class ExpTracker:
         ts: Optional[float] = None,
     ) -> None:
         now = float(ts if ts is not None else time.time())
+        self.level_packet_count = int(getattr(self, "level_packet_count", 0) or 0) + 1
+        self.last_level_packet_ts = now
         if level is not None:
             try:
                 lv = int(level)
@@ -339,6 +349,8 @@ class ExpTracker:
     ) -> Optional[Dict[str, Any]]:
         """Ingest an EXP update. Returns a gain event dict when something increased."""
         now = float(ts if ts is not None else time.time())
+        self.exp_packet_count = int(getattr(self, "exp_packet_count", 0) or 0) + 1
+        self.last_exp_packet_ts = now
         if level is not None:
             self.apply_level(level=level, ts=now)
 
@@ -448,6 +460,12 @@ class ExpTracker:
                 self.jexp_abs = int(jexp_abs)
             except (TypeError, ValueError):
                 pass
+
+        if (
+            getattr(self, "ready_since_ts", None) is None
+            and (self.cexp_pct_x10 is not None or self.jexp_pct_x10 is not None)
+        ):
+            self.ready_since_ts = now
 
         self.exp_update_count += 1
         if first:
@@ -585,6 +603,43 @@ class ExpTracker:
             "session": self._rate_in_window(max(elapsed, 1.0), now),
         }
 
+        ready = self.cexp_pct_x10 is not None or self.jexp_pct_x10 is not None
+        has_gains = (
+            self.session_cexp_pct_x10 > 0
+            or self.session_jexp_pct_x10 > 0
+            or self.session_cexp_abs > 0
+            or self.session_jexp_abs > 0
+        )
+        last_exp_age = (
+            None
+            if self.last_exp_packet_ts is None
+            else max(0.0, now - float(self.last_exp_packet_ts))
+        )
+        last_level_age = (
+            None
+            if self.last_level_packet_ts is None
+            else max(0.0, now - float(self.last_level_packet_ts))
+        )
+        last_gain_age = (
+            None
+            if self.last_gain_ts is None
+            else max(0.0, now - float(self.last_gain_ts))
+        )
+
+        # Machine status + user-facing hint for the grind page.
+        if not ready:
+            status = "waiting_packets"
+            hint = "尚未收到服务器经验包：请进图或击杀怪物；若已打怪仍无数据，请尝试管理员运行"
+        elif not has_gains:
+            status = "baseline"
+            hint = "已同步经验条（基线），继续打怪后会开始累计本会话获得量"
+        elif last_gain_age is not None and last_gain_age > self.idle_gap_s:
+            status = "idle"
+            hint = f"已超过约 {int(self.idle_gap_s // 60)} 分钟无经验增量，有效肝时暂停累计"
+        else:
+            status = "tracking"
+            hint = "正在跟踪经验增量"
+
         return {
             "elapsed": elapsed,
             "active": active,
@@ -612,10 +667,26 @@ class ExpTracker:
             "level_ups": self.level_ups,
             "job_level_ups": self.job_level_ups,
             "exp_update_count": self.exp_update_count,
+            "exp_packets": int(getattr(self, "exp_packet_count", 0) or 0),
+            "level_packets": int(getattr(self, "level_packet_count", 0) or 0),
+            "last_exp_packet_ts": self.last_exp_packet_ts,
+            "last_level_packet_ts": self.last_level_packet_ts,
+            "last_exp_packet_age": last_exp_age,
+            "last_level_packet_age": last_level_age,
+            "last_gain_age": last_gain_age,
+            "ready_since": self.ready_since_ts,
+            "ready_age": (
+                None
+                if self.ready_since_ts is None
+                else max(0.0, now - float(self.ready_since_ts))
+            ),
+            "has_session_gains": has_gains,
+            "status": status,
+            "hint": hint,
             "first_gain_ts": self.first_gain_ts,
             "last_gain_ts": self.last_gain_ts,
             "windows": windows,
             "recent_gains": list(self.gain_events)[:20],
             "table_source": (self.table or {}).get("source"),
-            "ready": self.cexp_pct_x10 is not None or self.jexp_pct_x10 is not None,
+            "ready": ready,
         }

@@ -47,6 +47,18 @@ export type GrindSnapshot = {
   level_ups?: number;
   job_level_ups?: number;
   exp_update_count?: number;
+  exp_packets?: number;
+  level_packets?: number;
+  last_exp_packet_ts?: number | null;
+  last_level_packet_ts?: number | null;
+  last_exp_packet_age?: number | null;
+  last_level_packet_age?: number | null;
+  last_gain_age?: number | null;
+  ready_since?: number | null;
+  ready_age?: number | null;
+  has_session_gains?: boolean;
+  status?: 'waiting_packets' | 'baseline' | 'tracking' | 'idle' | string;
+  hint?: string | null;
   ready?: boolean;
   table_source?: string;
   windows?: {
@@ -197,6 +209,8 @@ export type CharacterPreset = {
   name: string;
   updatedAt?: string;
   note?: string;
+  /** Bound window title for multi-client auto-apply */
+  windowTitle?: string;
   capture?: Record<string, boolean>;
   custom_durations?: Record<string, CustomBuffEntry | number | string>;
   overlay?: AppSettings['overlay'];
@@ -266,6 +280,8 @@ export type Snapshot = {
   possession_host_id?: number | null;
   ride_mode?: boolean;
   ride_mount_id?: number | null;
+  ride_mode_reason?: string | null;
+  ride_mode_remaining?: number | null;
   taken?: number;
   skill_dps?: number;
   normal_dps?: number;
@@ -303,6 +319,7 @@ export type BattleReportSummary = {
   startedAt?: string;
   last?: Record<string, unknown> | null;
   topSkills?: Array<{ skill_id?: number; skill?: string; count?: number }>;
+  history?: Array<{ t?: number; dps?: number; dealt?: number }>;
 };
 
 export type EcoAppState = {
@@ -332,7 +349,17 @@ export type EcoAppState = {
 export type EcoApi = {
   getState: () => Promise<EcoAppState>;
   refreshGameProcesses: () => Promise<{ ok: boolean; processes?: GameProcess[]; error?: string }>;
-  selectGameProcess: (pid: number) => Promise<{ ok: boolean; selectedPid?: number; error?: string }>;
+  selectGameProcess: (
+    pid: number,
+    options?: { autoRestart?: boolean },
+  ) => Promise<{
+    ok: boolean;
+    selectedPid?: number;
+    title?: string;
+    restarted?: string[];
+    unchanged?: boolean;
+    error?: string;
+  }>;
   selectXiaoyaProcess: (pid: number) => Promise<{ ok: boolean; selectedXiaoyaPid?: number; error?: string }>;
   startService: (name: ServiceName) => Promise<{ ok: boolean; error?: string }>;
   stopService: (name: ServiceName) => Promise<{ ok: boolean; error?: string }>;
@@ -418,6 +445,13 @@ export type EcoApi = {
   openXiaoyaFolder: () => Promise<{ ok: boolean; error?: string }>;
   getDiagnostics: () => Promise<{ ok: boolean; text?: string; health?: ConnectionHealth; error?: string }>;
   copyDiagnostics: () => Promise<{ ok: boolean; text?: string; error?: string }>;
+  exportDiagnosticPack: () => Promise<{
+    ok: boolean;
+    cancelled?: boolean;
+    path?: string;
+    files?: number;
+    error?: string;
+  }>;
   reconnectGame: () => Promise<{ ok: boolean; error?: string; selectedPid?: number | null }>;
   setOnboardingSeen: (seen?: boolean) => Promise<{ ok: boolean; settings?: AppSettings }>;
   exportConfig: (options?: { includeSecrets?: boolean }) => Promise<{ ok: boolean; cancelled?: boolean; path?: string; error?: string }>;

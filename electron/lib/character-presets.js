@@ -34,7 +34,9 @@ function createCharacterPresetStore({ localDataDir }) {
         ? item.custom_durations
         : {},
       overlay: item.overlay && typeof item.overlay === 'object' ? item.overlay : {},
-      note: String(item.note || '').trim()
+      note: String(item.note || '').trim(),
+      // Window title used for multi-client auto-apply when selecting a process.
+      windowTitle: String(item.windowTitle || '').trim()
     };
   }
 

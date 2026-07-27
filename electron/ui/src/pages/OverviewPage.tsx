@@ -25,7 +25,9 @@ import {
   EmptyState,
   TextLink,
 } from '@/components/layout';
-import { ConnectionBanner } from '@/components/ConnectionBanner';
+import { ActionBanner } from '@/components/ActionBanner';
+import { ChannelBars } from '@/components/ChannelBars';
+import { DpsSparkline } from '@/components/DpsSparkline';
 import { cn } from '@/lib/utils';
 
 function ServiceChip({
@@ -111,9 +113,22 @@ export function OverviewPage() {
               {!hasSelf && captureUp ? (
                 <Badge variant="warning" className="text-[10px]">请普攻一次</Badge>
               ) : null}
+              {snapshot?.ride_mode ? (
+                <Badge variant="default" className="bg-[var(--blue)]/20 text-[var(--blue)] text-[10px]">
+                  骑宠中{snapshot.ride_mount_id != null ? ` #${snapshot.ride_mount_id}` : ''}
+                </Badge>
+              ) : null}
+              {snapshot?.possession_host_id != null ? (
+                <Badge variant="secondary" className="text-[10px]">
+                  依凭 → #{snapshot.possession_host_id}
+                </Badge>
+              ) : null}
             </div>
             <div className="mt-0.5 text-[11px] text-[var(--muted-foreground)]">
               战斗 {formatDuration(snapshot?.active)} · 峰值 DPS {formatNumber(state.battleReport?.peakDps, 2)}
+              {snapshot?.ride_mode && snapshot.ride_mode_remaining != null
+                ? ` · 骑宠粘性 ${Math.max(0, Math.round(Number(snapshot.ride_mode_remaining)))}s`
+                : ''}
             </div>
           </div>
         </div>
@@ -128,7 +143,7 @@ export function OverviewPage() {
         </Button>
       </Card>
 
-      <ConnectionBanner compact />
+      <ActionBanner />
 
       <Card className="flex flex-row divide-x divide-[var(--line-soft)] overflow-hidden p-0">
         <ServiceChip
@@ -217,27 +232,57 @@ export function OverviewPage() {
         action={<TextLink onClick={() => setPage('damage')}>伤害详情</TextLink>}
       />
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
-        {([
-          ['self_normal', '自身普攻', 'white', snapshot?.self_normal_dealt, snapshot?.self_normal_dps] as const,
-          ['self_skill', '自身技能', 'amber', snapshot?.self_skill_dealt, snapshot?.self_skill_dps] as const,
-          ['pet_normal', '宠物普攻', 'green', snapshot?.pet_normal_dealt, snapshot?.pet_normal_dps] as const,
-          ['pet_skill', '宠物技能', 'green', snapshot?.pet_skill_dealt, snapshot?.pet_skill_dps] as const,
-          ['ride_normal', '骑宠普攻', 'blue', snapshot?.ride_normal_dealt, snapshot?.ride_normal_dps] as const,
-          ['ride_skill', '骑宠技能', 'blue', snapshot?.ride_skill_dealt, snapshot?.ride_skill_dps] as const,
-          ['possession_normal', '依凭普攻', 'white', snapshot?.possession_normal_dealt, snapshot?.possession_normal_dps] as const,
-          ['possession_skill', '依凭技能', 'amber', snapshot?.possession_skill_dealt, snapshot?.possession_skill_dps] as const,
-          ['taken', '受到伤害', 'red', snapshot?.taken, snapshot?.tps] as const,
-        ]).map(([key, label, accent, total, dps]) => (
-          <MetricCard
-            key={key}
-            label={label}
-            accent={accent}
-            value={formatNumber(total)}
-            hint={<><b className="font-semibold text-[#cbd0d2]">{formatNumber(dps, 2)}</b> 秒伤</>}
-            disabled={capture[key] === false}
+      <Card className="grid gap-3 px-3.5 py-3 sm:grid-cols-[1fr_auto] sm:items-center">
+        <div className="min-w-0 space-y-2">
+          <div className="text-[11px] font-medium text-[var(--muted-foreground)]">输出渠道占比</div>
+          <ChannelBars
+            totals={{
+              self_skill: snapshot?.self_skill_dealt,
+              self_normal: snapshot?.self_normal_dealt,
+              ride_skill: snapshot?.ride_skill_dealt,
+              ride_normal: snapshot?.ride_normal_dealt,
+              pet_skill: snapshot?.pet_skill_dealt,
+              pet_normal: snapshot?.pet_normal_dealt,
+              possession_skill: snapshot?.possession_skill_dealt,
+              possession_normal: snapshot?.possession_normal_dealt,
+            }}
           />
-        ))}
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <div className="text-[11px] text-[var(--muted-foreground)]">
+            DPS 趋势 · 现 {formatNumber(snapshot?.dps, 2)}
+          </div>
+          <DpsSparkline points={state.battleReport?.history} width={180} height={40} />
+        </div>
+      </Card>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
+        {(() => {
+          const cards = [
+            ['self_normal', '自身普攻', 'white', snapshot?.self_normal_dealt, snapshot?.self_normal_dps] as const,
+            ['self_skill', '自身技能', 'amber', snapshot?.self_skill_dealt, snapshot?.self_skill_dps] as const,
+            ['pet_normal', '宠物普攻', 'green', snapshot?.pet_normal_dealt, snapshot?.pet_normal_dps] as const,
+            ['pet_skill', '宠物技能', 'green', snapshot?.pet_skill_dealt, snapshot?.pet_skill_dps] as const,
+            ['ride_normal', '骑宠普攻', 'blue', snapshot?.ride_normal_dealt, snapshot?.ride_normal_dps] as const,
+            ['ride_skill', '骑宠技能', 'blue', snapshot?.ride_skill_dealt, snapshot?.ride_skill_dps] as const,
+            ['possession_normal', '依凭普攻', 'white', snapshot?.possession_normal_dealt, snapshot?.possession_normal_dps] as const,
+            ['possession_skill', '依凭技能', 'amber', snapshot?.possession_skill_dealt, snapshot?.possession_skill_dps] as const,
+            ['taken', '受到伤害', 'red', snapshot?.taken, snapshot?.tps] as const,
+          ];
+          const anyHit = cards.some(([, , , total]) => (Number(total) || 0) > 0);
+          return cards
+            .filter(([, , , total]) => !anyHit || (Number(total) || 0) > 0)
+            .map(([key, label, accent, total, dps]) => (
+              <MetricCard
+                key={key}
+                label={label}
+                accent={accent}
+                value={formatNumber(total)}
+                hint={<><b className="font-semibold text-[#cbd0d2]">{formatNumber(dps, 2)}</b> 秒伤</>}
+                disabled={capture[key] === false}
+              />
+            ));
+        })()}
       </div>
 
       <DataCard

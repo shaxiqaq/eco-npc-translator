@@ -237,6 +237,7 @@ export function EcoProvider({ children }: { children: ReactNode }) {
     exportLogs: settingsActions.exportLogs,
     providerPreset: settingsActions.providerPreset,
     copyDiagnostics: settingsActions.copyDiagnostics,
+    exportDiagnosticPack: settingsActions.exportDiagnosticPack,
     reconnectGame: settingsActions.reconnectGame,
     setOnboardingSeen: settingsActions.setOnboardingSeen,
     exportConfig: settingsActions.exportConfig,

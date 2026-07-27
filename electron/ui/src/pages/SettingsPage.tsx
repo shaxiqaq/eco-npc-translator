@@ -775,7 +775,87 @@ export function SettingsPage() {
                 >
                   复制诊断信息
                 </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={async () => {
+                    if (!window.eco.exportDiagnosticPack) {
+                      showToast('当前版本不支持诊断包');
+                      return;
+                    }
+                    const result = await window.eco.exportDiagnosticPack();
+                    if (result?.cancelled) return;
+                    showToast(result.ok ? '诊断包已导出' : result.error || '导出失败');
+                  }}
+                >
+                  导出诊断包
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={async () => {
+                    // Recommended defaults: show overlay, monitoring on, amber accent, client skill names.
+                    const result = await window.eco.saveAppSettings({
+                      appearance: {
+                        accent: 'amber',
+                        skillNameMode: 'client',
+                        backgroundDim: 0.52,
+                        backgroundBlur: 6,
+                        overlayBgMode: 'follow',
+                      },
+                      overlay: {
+                        visible: true,
+                        monitoring: true,
+                        density: 'comfortable',
+                        expiryWarningSeconds: 10,
+                        opacity: 1,
+                        scale: 1,
+                      },
+                      capture: {
+                        skill: true,
+                        normal: true,
+                        pet: true,
+                        taken: true,
+                        self_skill: true,
+                        self_normal: true,
+                        pet_skill: true,
+                        pet_normal: true,
+                        ride_skill: true,
+                        ride_normal: true,
+                        possession_skill: true,
+                        possession_normal: true,
+                      },
+                      startup: {
+                        damage: false,
+                        translator: false,
+                        overlay: true,
+                        monitoring: true,
+                        tray: true,
+                        minimizeToTray: true,
+                        autoReconnect: true,
+                      },
+                    });
+                    if (result?.settings) {
+                      showToast('已恢复推荐默认（翻译 Key 未改动）');
+                    } else {
+                      showToast(result?.error || '恢复失败');
+                    }
+                  }}
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  恢复推荐默认
+                </Button>
               </div>
+              <p className="m-0 text-[11px] text-[var(--muted-foreground)]">
+                错误码说明见
+                <button
+                  type="button"
+                  className="ml-1 text-[var(--amber)] underline"
+                  onClick={() => setPage('help')}
+                >
+                  帮助页
+                </button>
+              </p>
             </div>
             <div className="settings-block space-y-3">
               <div className="form-heading">
@@ -829,7 +909,10 @@ export function SettingsPage() {
             <div className="settings-block space-y-3">
               <div className="form-heading">
                 <h2>多角色预设</h2>
-                <p>保存当前采集开关 + 自定义倒计时 + 悬浮窗密度，切换角色时一键应用</p>
+                <p>
+                  保存当前采集开关 + 自定义倒计时 + 悬浮窗密度。
+                  会绑定当前主窗口标题，多开切换进程时自动匹配应用。
+                </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Input
@@ -850,6 +933,11 @@ export function SettingsPage() {
                   保存当前为预设
                 </Button>
               </div>
+              {state.rememberedTitles?.main ? (
+                <p className="m-0 text-[11px] text-[var(--muted-foreground)]">
+                  当前主窗口：{state.rememberedTitles.main}
+                </p>
+              ) : null}
               <div className="space-y-2">
                 {(state.characterPresets || []).length === 0 ? (
                   <p className="m-0 text-xs text-[var(--muted-foreground)]">暂无预设</p>
@@ -862,6 +950,7 @@ export function SettingsPage() {
                       <div className="min-w-0">
                         <div className="truncate text-sm font-semibold">{preset.name}</div>
                         <div className="text-[11px] text-[var(--muted-foreground)]">
+                          {preset.windowTitle ? `绑定：${preset.windowTitle} · ` : ''}
                           {preset.updatedAt ? new Date(preset.updatedAt).toLocaleString('zh-CN', { hour12: false }) : ''}
                         </div>
                       </div>

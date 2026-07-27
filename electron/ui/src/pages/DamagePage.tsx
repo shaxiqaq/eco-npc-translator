@@ -145,6 +145,7 @@ export function DamagePage() {
   const report = state.battleReport;
   const capture = state.settings?.capture || {};
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [hideEmptyChannels, setHideEmptyChannels] = useState(true);
 
   const historyNewestFirst = useMemo(
     () => [...(snapshot?.damage_history || [])].reverse(),
@@ -188,7 +189,21 @@ export function DamagePage() {
           <ToggleGroupItem value="pet">宠物造成</ToggleGroupItem>
           <ToggleGroupItem value="taken">受到伤害</ToggleGroupItem>
         </ToggleGroup>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {snapshot?.ride_mode ? (
+            <Badge className="bg-[var(--blue)]/20 text-[var(--blue)] font-normal">
+              骑宠中
+              {snapshot.ride_mount_id != null ? ` #${snapshot.ride_mount_id}` : ''}
+              {snapshot.ride_mode_remaining != null
+                ? ` · ${Math.max(0, Math.round(Number(snapshot.ride_mode_remaining)))}s`
+                : ''}
+            </Badge>
+          ) : null}
+          {snapshot?.possession_host_id != null ? (
+            <Badge variant="secondary" className="font-normal">
+              依凭 #{snapshot.possession_host_id}
+            </Badge>
+          ) : null}
           <Button
             type="button"
             variant="secondary"
@@ -277,20 +292,33 @@ export function DamagePage() {
             <RadioTower className="h-4 w-4 text-[var(--amber)]" />
             分渠道统计 · 点击卡片展开每次伤害明细
           </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 text-[11px]"
-            onClick={() => {
-              const allOpen = CHANNEL_DEFS.every((d) => expanded[d.key]);
-              const next: Record<string, boolean> = {};
-              for (const d of CHANNEL_DEFS) next[d.key] = !allOpen;
-              setExpanded(next);
-            }}
-          >
-            {CHANNEL_DEFS.every((d) => expanded[d.key]) ? '全部收起' : '全部展开'}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="inline-flex items-center gap-1.5 text-[11px] text-[var(--muted-foreground)]">
+              <Switch
+                checked={hideEmptyChannels}
+                onCheckedChange={setHideEmptyChannels}
+              />
+              隐藏空渠道
+            </label>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 text-[11px]"
+              onClick={() => {
+                const visible = CHANNEL_DEFS.filter((d) => {
+                  if (!hideEmptyChannels) return true;
+                  return (d.total(snapshot) || 0) > 0 || (byChannel[d.key] || []).length > 0;
+                });
+                const allOpen = visible.every((d) => expanded[d.key]);
+                const next: Record<string, boolean> = { ...expanded };
+                for (const d of visible) next[d.key] = !allOpen;
+                setExpanded(next);
+              }}
+            >
+              {CHANNEL_DEFS.every((d) => expanded[d.key]) ? '全部收起' : '全部展开'}
+            </Button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
@@ -305,6 +333,7 @@ export function DamagePage() {
             const open = Boolean(expanded[key]);
             const maxHit = rows.reduce((m, r) => Math.max(m, Number(r.damage) || 0), 0);
             const avg = hits > 0 ? total / hits : 0;
+            if (hideEmptyChannels && total <= 0 && rows.length === 0) return null;
 
             return (
               <div

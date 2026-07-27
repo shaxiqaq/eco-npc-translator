@@ -217,6 +217,13 @@ export function useSettingsActions(options: {
     return window.eco.copyDiagnostics();
   }, []);
 
+  const exportDiagnosticPack = useCallback(async () => {
+    if (!window.eco.exportDiagnosticPack) {
+      return { ok: false, error: '当前版本不支持导出诊断包' };
+    }
+    return window.eco.exportDiagnosticPack();
+  }, []);
+
   const reconnectGame = useCallback(async () => {
     if (!window.eco.reconnectGame) return { ok: false, error: '当前版本不支持重连' };
     return window.eco.reconnectGame();
@@ -296,6 +303,7 @@ export function useSettingsActions(options: {
     exportLogs,
     providerPreset,
     copyDiagnostics,
+    exportDiagnosticPack,
     reconnectGame,
     setOnboardingSeen,
     exportConfig,

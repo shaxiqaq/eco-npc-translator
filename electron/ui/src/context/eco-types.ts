@@ -81,6 +81,13 @@ export type EcoContextValue = {
   }>;
   providerPreset: (provider: string) => { model: string; url: string } | null;
   copyDiagnostics: () => Promise<{ ok: boolean; text?: string; error?: string }>;
+  exportDiagnosticPack: () => Promise<{
+    ok: boolean;
+    cancelled?: boolean;
+    path?: string;
+    files?: number;
+    error?: string;
+  }>;
   reconnectGame: () => Promise<{ ok: boolean; error?: string; selectedPid?: number | null }>;
   setOnboardingSeen: (seen?: boolean) => Promise<{ ok: boolean }>;
   exportConfig: (includeSecrets?: boolean) => Promise<{ ok: boolean; cancelled?: boolean; path?: string; error?: string }>;

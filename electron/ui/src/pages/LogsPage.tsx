@@ -1,4 +1,4 @@
-import { Download, FolderOpen } from 'lucide-react';
+import { Download, FolderOpen, Package } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useEco } from '@/context/EcoContext';
 import { Button } from '@/components/ui/button';
@@ -16,8 +16,9 @@ function matchesLogFilter(entry: { service?: string; channels?: string[] }, filt
 }
 
 export function LogsPage() {
-  const { state, logFilter, setLogFilter, openLogs, exportLogs, showToast } = useEco();
+  const { state, logFilter, setLogFilter, openLogs, exportLogs, exportDiagnosticPack, showToast } = useEco();
   const [exporting, setExporting] = useState(false);
+  const [packing, setPacking] = useState(false);
   const all = state.logs || [];
   const filtered = useMemo(
     () => all.filter((entry) => matchesLogFilter(entry, logFilter)),
@@ -40,6 +41,22 @@ export function LogsPage() {
     }
   };
 
+  const handleDiagPack = async () => {
+    if (packing) return;
+    setPacking(true);
+    try {
+      const result = await exportDiagnosticPack();
+      if (result?.cancelled) return;
+      if (!result?.ok) {
+        showToast(result?.error || '导出诊断包失败');
+        return;
+      }
+      showToast(`诊断包已导出（${result.files || 0} 个文件）`);
+    } finally {
+      setPacking(false);
+    }
+  };
+
   return (
     <PageStack>
       <PageToolbar>
@@ -51,9 +68,13 @@ export function LogsPage() {
           <ToggleGroupItem value="xiaoya">小雅助手</ToggleGroupItem>
         </ToggleGroup>
         <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" onClick={() => void handleDiagPack()} disabled={packing}>
+            <Package />
+            {packing ? '打包中…' : '导出诊断包'}
+          </Button>
           <Button type="button" variant="secondary" onClick={() => void handleExport()} disabled={exporting}>
             <Download />
-            {exporting ? '导出中…' : '一键导出'}
+            {exporting ? '导出中…' : '导出 UI 日志'}
           </Button>
           <Button type="button" variant="secondary" onClick={() => void openLogs()}>
             <FolderOpen />

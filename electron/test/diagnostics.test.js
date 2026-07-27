@@ -55,3 +55,50 @@ test('writeDiagnosticBundle writes json + txt sidecar files', () => {
   const parsed = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
   assert.equal(parsed.app.version, '0.2.7');
 });
+
+test('writeDiagnosticPack includes snapshot and capture tails', () => {
+  const {
+    writeDiagnosticPack,
+    collectCaptureLogTails,
+    buildSnapshotSummary
+  } = require('../lib/diagnostics');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eco-pack-'));
+  const logDir = path.join(dir, 'logs');
+  fs.mkdirSync(logDir);
+  const logPath = path.join(logDir, 'damage_electron_test.jsonl');
+  fs.writeFileSync(logPath, `${JSON.stringify({ kind: 'damage', damage: 1 })}\n`, 'utf8');
+
+  const diag = collectDiagnostics({
+    appVersion: '0.2.12',
+    isPackaged: false,
+    selectedGamePid: 9,
+    selectedXiaoyaPid: null,
+    gameProcesses: [],
+    captureIntents: { damage: true },
+    services: {},
+    logs: [{ time: '12:00:00', service: 'app', level: 'info', message: 'hi' }],
+    snapshotSummary: buildSnapshotSummary({
+      self_id: 84,
+      ride_mode: true,
+      ride_mount_id: 20257,
+      dealt: 100,
+      grind: { ready: true, status: 'tracking', exp_packets: 3 }
+    })
+  });
+  const tails = collectCaptureLogTails([logDir], { prefix: 'damage_electron_', maxFiles: 1 });
+  assert.equal(tails.tails.length, 1);
+  assert.match(tails.tails[0].text, /"damage":\s*1/);
+
+  const outDir = path.join(dir, 'pack-out');
+  const pack = writeDiagnosticPack(outDir, {
+    diag,
+    text: formatDiagnosticsText(diag),
+    snapshot: { self_id: 84, dealt: 100 },
+    captureTails: tails
+  });
+  assert.ok(fs.existsSync(path.join(outDir, 'README.txt')));
+  assert.ok(fs.existsSync(path.join(outDir, 'diagnostic.json')));
+  assert.ok(fs.existsSync(path.join(outDir, 'snapshot.json')));
+  assert.ok(fs.existsSync(path.join(outDir, 'ui-logs.txt')));
+  assert.ok(pack.files.length >= 4);
+});

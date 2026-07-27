@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { BookOpen, ClipboardCopy, ExternalLink, Keyboard, Shield } from 'lucide-react';
+import { BookOpen, ClipboardCopy, ExternalLink, Keyboard, Package, Shield } from 'lucide-react';
 import { useEco } from '@/context/EcoContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -16,8 +16,9 @@ type AboutInfo = {
 };
 
 export function HelpPage() {
-  const { copyDiagnostics, showToast, state } = useEco();
+  const { copyDiagnostics, exportDiagnosticPack, showToast, state } = useEco();
   const [about, setAbout] = useState<AboutInfo>({});
+  const [packing, setPacking] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -62,6 +63,30 @@ export function HelpPage() {
               <Button
                 type="button"
                 size="sm"
+                onClick={async () => {
+                  if (packing) return;
+                  setPacking(true);
+                  try {
+                    const result = await exportDiagnosticPack();
+                    if (result?.cancelled) return;
+                    showToast(
+                      result.ok
+                        ? `诊断包已导出（${result.files || 0} 个文件）`
+                        : result.error || '导出失败',
+                    );
+                  } finally {
+                    setPacking(false);
+                  }
+                }}
+                disabled={packing}
+              >
+                <Package className="h-3.5 w-3.5" />
+                {packing ? '打包中…' : '导出诊断包'}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
                 onClick={async () => {
                   const result = await copyDiagnostics();
                   showToast(result.ok ? '诊断已复制' : result.error || '复制失败');

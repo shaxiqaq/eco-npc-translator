@@ -1,4 +1,4 @@
-import { RotateCcw, Flame, Gauge, Timer, TrendingUp, Sparkles } from 'lucide-react';
+import { RotateCcw, Flame, Gauge, Timer, TrendingUp, Sparkles, Activity } from 'lucide-react';
 import { useEco } from '@/context/EcoContext';
 import {
   formatDurationLong,
@@ -49,6 +49,21 @@ function rateRow(label: string, win?: GrindWindowRate | null) {
   );
 }
 
+function formatAge(seconds?: number | null) {
+  if (seconds == null || !Number.isFinite(seconds)) return '—';
+  if (seconds < 5) return '刚刚';
+  if (seconds < 60) return `${Math.round(seconds)} 秒前`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟前`;
+  return `${(seconds / 3600).toFixed(1)} 小时前`;
+}
+
+const STATUS_BADGE: Record<string, { label: string; variant: 'default' | 'secondary' | 'outline' | 'warning' | 'success' }> = {
+  waiting_packets: { label: '等待经验包', variant: 'warning' },
+  baseline: { label: '已同步基线', variant: 'secondary' },
+  tracking: { label: '跟踪中', variant: 'success' },
+  idle: { label: '休息中', variant: 'outline' },
+};
+
 export function GrindPage() {
   const { snapshot, state, resetDamage, showToast } = useEco();
   const grind = snapshot?.grind;
@@ -58,6 +73,12 @@ export function GrindPage() {
   const estimated = grind?.session_cexp_abs_estimated !== false;
   const windows = grind?.windows || {};
   const gains = grind?.recent_gains || [];
+  const statusKey = grind?.status || (ready ? 'baseline' : 'waiting_packets');
+  const statusMeta = STATUS_BADGE[statusKey] || STATUS_BADGE.waiting_packets;
+  const dealt = Number(snapshot?.dealt) || 0;
+  const noExpButFighting = damageRunning && !ready && dealt > 0;
+  const expPackets = grind?.exp_packets ?? grind?.exp_update_count ?? 0;
+  const levelPackets = grind?.level_packets ?? 0;
 
   return (
     <PageStack>
@@ -69,10 +90,13 @@ export function GrindPage() {
           <span>
             {damageRunning
               ? ready
-                ? '正在跟踪经验（依赖伤害/状态采集）'
-                : '采集已开：进图或击杀掉落经验后会同步进度条（需收到服务器经验包）'
+                ? grind?.hint || '正在跟踪经验（依赖伤害/状态采集）'
+                : grind?.hint || '采集已开：进图或击杀掉落经验后会同步进度条'
               : '请先启动伤害采集或状态监控'}
           </span>
+          <Badge variant={statusMeta.variant} className="font-normal">
+            {statusMeta.label}
+          </Badge>
           {grind?.table_source ? (
             <Badge variant="outline" className="font-normal">
               经验表: {grind.table_source}
@@ -91,6 +115,51 @@ export function GrindPage() {
           清空会话
         </Button>
       </PageToolbar>
+
+      {noExpButFighting ? (
+        <DataCard title="经验包未到达">
+          <p className="m-0 px-1 text-[12px] leading-relaxed text-[var(--muted-foreground)]">
+            已统计到伤害（{formatNumber(dealt)}），但尚未收到服务器经验包（565）。
+            请确认已在地图中、经验有实际掉落；若长期如此，可尝试以管理员身份运行并在「日志」页导出诊断包。
+          </p>
+        </DataCard>
+      ) : null}
+
+      <SectionHeader
+        title="采集健康"
+        description="可观测指标：是否收到经验/等级包，以及上次同步时间"
+      />
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          label="经验包次数"
+          value={formatNumber(expPackets)}
+          hint={`上次 ${formatAge(grind?.last_exp_packet_age)}`}
+          accent={expPackets > 0 ? 'green' : 'amber'}
+        />
+        <MetricCard
+          label="等级包次数"
+          value={formatNumber(levelPackets)}
+          hint={`上次 ${formatAge(grind?.last_level_packet_age)}`}
+        />
+        <MetricCard
+          label="状态"
+          value={statusMeta.label}
+          hint={grind?.hint || (ready ? '就绪' : '等待服务器经验包')}
+          accent={statusKey === 'tracking' ? 'green' : 'amber'}
+        />
+        <MetricCard
+          label="会话增量"
+          value={grind?.has_session_gains ? '有' : '无'}
+          hint={
+            grind?.last_gain_age != null
+              ? `最近获得 ${formatAge(grind.last_gain_age)}`
+              : ready
+                ? '基线已建立，等待击杀增量'
+                : '—'
+          }
+        />
+      </div>
 
       <SectionHeader
         title="当前进度"
@@ -288,6 +357,10 @@ export function GrindPage() {
         }
       >
         <ul className="space-y-1.5 px-1 text-[11px] leading-relaxed text-[var(--muted-foreground)]">
+          <li className="inline-flex items-start gap-1.5">
+            <Activity className="mt-0.5 h-3 w-3 shrink-0" />
+            <span>「经验包次数」每收到一次服务器经验同步 +1（含基线）；有次数但无会话增量说明只建立了基线。</span>
+          </li>
           <li>· 数据来自地图服下发的经验/等级包，与伤害采集共用后端，无需额外启动。</li>
           <li>· 「有效肝时」会在连续获得经验时累计，超过约 2 分钟无经验则视为休息，不计入效率分母。</li>
           <li>· 清空会话会同时重置伤害统计；当前等级与经验条会保留为新的起点。</li>

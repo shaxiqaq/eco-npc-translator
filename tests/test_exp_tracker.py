@@ -95,6 +95,23 @@ class ExpTrackerSessionTest(unittest.TestCase):
         # ~10% per hour over the hour window
         self.assertAlmostEqual(snap["windows"]["1h"]["cexp_pct_per_hour"], 10.0, delta=0.5)
 
+    def test_observability_fields(self):
+        t0 = 2_000_000.0
+        self.tracker.apply_level(level=12, job_level=4, ts=t0)
+        self.assertIsNone(self.tracker.apply_exp(cexp_pct_x10=100, jexp_pct_x10=50, ts=t0 + 1))
+        snap = self.tracker.snapshot(now=t0 + 5)
+        self.assertTrue(snap["ready"])
+        self.assertEqual(snap["status"], "baseline")
+        self.assertEqual(snap["exp_packets"], 1)
+        self.assertEqual(snap["level_packets"], 1)
+        self.assertIsNotNone(snap["last_exp_packet_age"])
+        self.assertFalse(snap["has_session_gains"])
+        self.tracker.apply_exp(cexp_pct_x10=200, jexp_pct_x10=50, ts=t0 + 10)
+        snap2 = self.tracker.snapshot(now=t0 + 12)
+        self.assertTrue(snap2["has_session_gains"])
+        self.assertEqual(snap2["status"], "tracking")
+        self.assertEqual(snap2["exp_packets"], 2)
+
 
 class ParseExpPacketsTest(unittest.TestCase):
     def test_parse_player_exp(self):
