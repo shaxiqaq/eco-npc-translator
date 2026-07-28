@@ -24,6 +24,9 @@ from eco_damage_categories import (
     update_capture_categories,
 )
 from eco_damage_console import render
+from eco_damage_identity import IdentityMixin
+from eco_damage_ride import RideModeMixin
+from eco_damage_util import now_label
 from eco_buffs import BuffTracker, load_custom_durations
 from eco_exp_tracker import ExpTracker, load_exp_table
 from eco_log import setup_logger
@@ -114,11 +117,7 @@ def load_id_names(path):
     return names
 
 
-def now_label():
-    return _dt.datetime.now().strftime("%H:%M:%S")
-
-
-class DamageMeter:
+class DamageMeter(RideModeMixin, IdentityMixin):
     def __init__(self, out_path=None, self_id=None, game_chat=True, chat_mode="whole", event_sink=None):
         self.out_path = out_path
         self.out = open(out_path, "a", encoding="utf-8", buffering=1) if out_path else None
@@ -328,165 +327,10 @@ class DamageMeter:
             if hasattr(self, "exp_tracker") and self.exp_tracker is not None:
                 self.exp_tracker.reset(keep_baseline=True)
 
-    def reset_identity(self, reason="manual", quiet=False, hard=False):
-        """
-        Allow re-learning the logged-in character.
-
-        Soft mode (default, UI「重新识别」): keep showing the last self_id until a
-        new local combat packet rebinds. This avoids the false "未识别" state that
-        appears when users reidentify after a successful bind and export diagnostics
-        before attacking again.
-
-        Hard mode: immediately clear self_id (tests / forced wipe).
-        """
-        prev = self.self_id
-        self.auto_self = True
-        self._rebind_pending = True
-        self.self_candidates.clear()
-        # Drop stale C2S evidence from the previous login so re-bind is clean.
-        self.recent_targets.clear()
-        self.recent_actions.clear()
-        self.exit_ride_mode(reason="reidentify", quiet=True)
-        self.possession_host_id = None
-        if hard or prev is None:
-            self.self_id = None
-            tracker = getattr(self, "buff_tracker", None)
-            if tracker is not None:
-                try:
-                    tracker.reset_actor(None)
-                except Exception:
-                    pass
-        if not quiet:
-            if prev is not None and not hard:
-                self.events.appendleft((
-                    now_label(),
-                    f"等待重新确认角色（当前仍显示 self={prev}，请攻击或放技能一次）",
-                ))
-                self.pending_notices.append({
-                    "level": "info",
-                    "message": f"请攻击或放技能一次以确认角色（当前 #{prev}）",
-                })
-            elif prev is not None:
-                self.events.appendleft((now_label(), f"重置角色识别（原 self={prev}，原因={reason}）"))
-            else:
-                self.events.appendleft((now_label(), f"重置角色识别（原因={reason}）"))
-            self.log({
-                "ts": time.time(),
-                "kind": "self_identity",
-                "event": "reidentify_pending" if (prev is not None and not hard) else "reset",
-                "previous": prev,
-                "self_id": self.self_id,
-                "reason": reason,
-                "hard": hard,
-            })
-
-    def bind_self(self, actor, reason="auto", force=False):
-        """Lock local player actor id. force=True rebinds after account/character switch."""
-        if actor is None:
-            return False
-        try:
-            actor = int(actor)
-        except (TypeError, ValueError):
-            return False
-        if actor <= 0:
-            return False
-        if getattr(self, "_rebind_pending", False):
-            force = True
-        if self._self_id_forced and self.self_id is not None and actor != self.self_id and not force:
-            return False
-        if self.self_id == actor:
-            self.auto_self = False
-            self._rebind_pending = False
-            return False
-        if self.self_id is not None and not force and not self.auto_self:
-            return False
-        prev = self.self_id
-        self.self_id = actor
-        self.auto_self = False
-        self._rebind_pending = False
-        self.self_candidates[actor] += 4
-        # Drop stale "self" from pet set if it was misclassified.
-        self.pet_actors.discard(actor)
-        # Character switch invalidates ride/possession proxy state.
-        if prev is not None and prev != actor:
-            self.exit_ride_mode(reason="character_switch", quiet=True)
-            self.possession_host_id = None
-        # If mount packets arrived before self_id was known, promote owned pets now.
-        for pet_id, owner in list(self.pet_owner.items()):
-            if owner == actor and pet_id != actor:
-                hp = self.hp_by_actor.get(pet_id)
-                if hp in (None, 0):
-                    self.enter_ride_mode(mount_id=pet_id, reason="bind_owned_mount", quiet=True)
-                    break
-        label = "切换角色" if prev is not None and prev != actor else "识别角色"
-        text = f"{label} self={actor}（{reason}）" + (f" 原={prev}" if prev is not None and prev != actor else "")
-        self.events.appendleft((now_label(), text))
-        self.pending_notices.append({
-            "level": "success",
-            "message": f"已{'切换' if prev is not None and prev != actor else '识别'}角色 #{actor}",
-        })
-        self.log({
-            "ts": time.time(),
-            "kind": "self_identity",
-            "event": "bind" if prev is None else "rebind",
-            "self_id": actor,
-            "previous": prev,
-            "reason": reason,
-        })
-        return True
-
     def drain_notices(self):
         out = list(self.pending_notices)
         self.pending_notices.clear()
         return out
-
-    def mark_self_candidate(self, actor, score):
-        if actor is None:
-            return
-        try:
-            actor = int(actor)
-        except (TypeError, ValueError):
-            return
-        if actor <= 0:
-            return
-        # Always accumulate evidence; useful after re-login even if locked.
-        self.self_candidates[actor] += score
-        if self.self_id is None and self.auto_self and self.self_candidates[actor] >= 4:
-            self.bind_self(actor, reason="candidate_score")
-
-    def best_self_candidate(self):
-        if self.self_id is not None:
-            return self.self_id
-        if not self.self_candidates:
-            return None
-        actor, score = self.self_candidates.most_common(1)[0]
-        return actor if score >= 3 else None
-
-    def own_actor(self):
-        actor = self.best_self_candidate()
-        if actor is not None and self.self_id is None:
-            self.bind_self(actor, reason="outgoing_action")
-        return self.self_id
-
-    def observe_local_caster(self, caster, reason="local_packet"):
-        """
-        C2S skill/attack is always from the local client. When the matching S2C
-        names a caster, that actor is the logged-in character — even if we had
-        locked an older self_id from a previous account on the same process.
-        """
-        if caster is None:
-            return False
-        try:
-            caster = int(caster)
-        except (TypeError, ValueError):
-            return False
-        if caster <= 0:
-            return False
-        if self.self_id is None:
-            return self.bind_self(caster, reason=reason)
-        if self.self_id != caster:
-            return self.bind_self(caster, reason=f"relogin_or_switch:{reason}", force=True)
-        return False
 
     def sync_buffs_to_self(self, timestamp):
         actor = self.self_id
@@ -615,151 +459,6 @@ class DamageMeter:
             if target == recent_target and 0 <= ts - target_ts <= max_age:
                 return True
         return self.by_target.get(target, 0) > 0
-
-    def is_possession_host(self, actor):
-        if actor is None or self.possession_host_id is None:
-            return False
-        try:
-            return int(actor) == int(self.possession_host_id)
-        except (TypeError, ValueError):
-            return False
-
-    # Ride sticky TTL: mount packets are sparse; keep mode while grinding.
-    RIDE_MODE_TTL_S = 180.0
-
-    def is_ride_active(self, ts=None):
-        """True while sticky ride mode has not expired."""
-        if not self.ride_mode:
-            return False
-        now = float(ts if ts is not None else time.time())
-        if now > float(self.ride_mode_until or 0):
-            self.ride_mode = False
-            return False
-        return True
-
-    def enter_ride_mode(self, mount_id=None, reason="ride", ts=None, quiet=False):
-        """Mark local player as mounted; outgoing self damage reclassifies to ride_*."""
-        now = float(ts if ts is not None else time.time())
-        was = self.is_ride_active(now)
-        self.ride_mode = True
-        self.ride_mode_until = now + self.RIDE_MODE_TTL_S
-        self.ride_mode_reason = reason
-        if mount_id is not None:
-            try:
-                mid = int(mount_id)
-            except (TypeError, ValueError):
-                mid = None
-            if mid and mid != self.self_id:
-                self.ride_mount_id = mid
-                self.mark_pet_actor(mid, owner=self.self_id, reason=reason or "骑宠")
-        if not was and not quiet:
-            label = f"#{self.ride_mount_id}" if self.ride_mount_id else ""
-            self.events.appendleft((now_label(), f"骑宠中 {label}".strip()))
-            self.pending_notices.append({
-                "level": "info",
-                "message": "已进入骑宠状态：普攻/技能将计入骑宠渠道",
-            })
-            self.log({
-                "ts": now,
-                "kind": "ride_mode",
-                "event": "enter",
-                "mount_id": self.ride_mount_id,
-                "reason": reason,
-                "until": self.ride_mode_until,
-            })
-        return True
-
-    def refresh_ride_mode(self, ts=None):
-        if not self.ride_mode:
-            return False
-        now = float(ts if ts is not None else time.time())
-        if now > float(self.ride_mode_until or 0):
-            self.ride_mode = False
-            return False
-        self.ride_mode_until = now + self.RIDE_MODE_TTL_S
-        return True
-
-    def exit_ride_mode(self, reason="dismount", quiet=False, ts=None):
-        if not self.ride_mode and self.ride_mount_id is None:
-            return False
-        prev = self.ride_mount_id
-        self.ride_mode = False
-        self.ride_mode_until = 0.0
-        self.ride_mode_reason = None
-        self.ride_mount_id = None
-        if not quiet:
-            self.events.appendleft((now_label(), f"骑宠解除（{reason}）"))
-            self.log({
-                "ts": float(ts if ts is not None else time.time()),
-                "kind": "ride_mode",
-                "event": "exit",
-                "previous_mount": prev,
-                "reason": reason,
-            })
-        return True
-
-    def is_ride_mount(self, actor):
-        if actor is None or self.ride_mount_id is None:
-            return False
-        try:
-            return int(actor) == int(self.ride_mount_id)
-        except (TypeError, ValueError):
-            return False
-
-    def local_skill_proxy_source(self, ts, src, skill_id, dst):
-        """
-        Ride / 依凭(憑依) / partner / marionette:
-        Client C2S is always ours, but S2C may name mount/host/pet as caster.
-        Never rebind self_id to that proxy.
-
-        Returns 'self' | 'pet' | 'ride' | 'possession' | None.
-        """
-        ride_on = self.is_ride_active(ts)
-        if skill_id is not None and self.has_recent_own_skill_request(ts, skill_id, dst):
-            if self.is_possession_host(src):
-                return "possession"
-            # Mount / non-PC caster while we pressed the skill → 骑宠.
-            if src is not None and src != self.self_id and not self.is_likely_character_actor(src):
-                self.enter_ride_mode(mount_id=src, reason="骑宠施法代理", ts=ts, quiet=True)
-                return "ride"
-            if self.is_ride_mount(src):
-                self.refresh_ride_mode(ts)
-                return "ride"
-            # While mounted, server often still names the player as caster.
-            if ride_on and (src is None or src == self.self_id or self.is_owned_pet_source(src)):
-                self.refresh_ride_mode(ts)
-                return "ride"
-            if src is None or src == self.self_id:
-                return "self"
-            # Other PC after our C2S skill → 依凭 host (packet not seen yet).
-            if self.possession_host_id is None and self.self_id is not None:
-                self.possession_host_id = int(src)
-            return "possession"
-        if self.has_recent_own_attack(ts, dst, max_age=1.5):
-            if self.is_possession_host(src):
-                return "possession"
-            # Player pressed AA; non-PC src is the mount body (or ride proxy).
-            if src is not None and src != self.self_id and not self.is_likely_character_actor(src):
-                self.enter_ride_mode(mount_id=src, reason="骑宠普攻代理", ts=ts, quiet=True)
-                return "ride"
-            if ride_on and (src is None or src == self.self_id):
-                self.refresh_ride_mode(ts)
-                return "ride"
-            if src is None or src == self.self_id:
-                return "self"
-            if self.is_owned_pet_source(src) or self.is_pet_actor(src):
-                return "pet"
-            if src is not None and src != self.self_id and self.self_id is not None:
-                if self.possession_host_id is None:
-                    self.possession_host_id = int(src)
-                return "possession"
-        # Sticky ride: own outgoing with no fresh C2S match still reclassifies.
-        if ride_on and self.self_id is not None and (
-            src is None or src == self.self_id or self.is_ride_mount(src) or self.is_owned_pet_source(src)
-        ):
-            self.refresh_ride_mode(ts)
-            return "ride"
-        return None
 
     def resolve_outgoing_channel(self, mode, skill_id):
         kind = "skill" if skill_id is not None else "normal"

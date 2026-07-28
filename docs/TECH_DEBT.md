@@ -23,12 +23,15 @@ Living notes for ECO Toolbox. Prefer small, test-backed cleanups over rewrites.
 - ActionBanner next-step guidance; channel bars + DPS sparkline
 - Damage page hide-empty-channels; diag pack zip; preset↔windowTitle
 - Settings: restore recommended defaults + help link
+- Meter modularization: `eco_damage_ride` / `eco_damage_identity` mixins
+- Diagnostic pack: `SUMMARY.txt` + `eco_damage_meter.log` tails for remote support
+- `diagnostics.js`: zip + named log tails + remote summary helpers
 
 ## Still optional
 
 | Item | Why | Effort |
 |------|-----|--------|
-| Split remaining IPC out of `main.js` | Readability | Medium |
+| Further split remaining IPC out of `main.js` | Readability | Medium |
 | Gradual TypeScript for preload/IPC contracts | Fewer wrong payloads | Medium |
 | Delete `electron/renderer-legacy` after confirmation | Repo noise | Small |
 | E2E with Playwright against demo | Regression | Medium |

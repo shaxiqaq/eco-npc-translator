@@ -17,8 +17,11 @@ const {
   collectDiagnostics,
   formatDiagnosticsText,
   collectCaptureLogTails,
+  collectNamedLogTails,
   writeDiagnosticPack,
-  buildSnapshotSummary
+  buildSnapshotSummary,
+  zipDirectory,
+  defaultDiagnosticLogDirs
 } = require('./lib/diagnostics');
 const { buildBackendEnv } = require('./lib/backend-env');
 const { isProcessElevated, buildConnectionHealth } = require('./lib/system-health');
@@ -1719,11 +1722,8 @@ ipcMain.handle('app:export-diagnostic-pack', async () => {
     fs.mkdirSync(outDir, { recursive: true });
     const diag = getDiagnosticsPayload();
     const text = buildDiagnosticsText();
-    const logDirs = [
-      path.join(localDataDir(), 'logs'),
-      path.join(backendDir(), 'logs'),
-      path.join(backendDir(), 'data', 'logs')
-    ];
+    const health = diag.connectionHealth || currentConnectionHealth();
+    const logDirs = defaultDiagnosticLogDirs({ localDataDir, backendDir });
     const captureTails = collectCaptureLogTails(logDirs, {
       prefix: 'damage_electron_',
       maxBytes: 160_000,
@@ -1741,11 +1741,19 @@ ipcMain.handle('app:export-diagnostic-pack', async () => {
         captureTails.files = alt.files;
       }
     }
+    // Python backend logs — essential for remote support.
+    const meterLogs = collectNamedLogTails(
+      logDirs,
+      ['eco_damage_meter.log', 'eco_damage_capture.log', 'eco_npc_mitm.log'],
+      { maxBytes: 100_000 }
+    );
     const pack = writeDiagnosticPack(outDir, {
       diag,
       text,
       snapshot: latestSnapshot || null,
-      captureTails
+      captureTails,
+      meterLogs,
+      hints: health.hints || []
     });
 
     // Best-effort zip beside the folder for easier sharing.
@@ -1760,11 +1768,12 @@ ipcMain.handle('app:export-diagnostic-pack', async () => {
       'app',
       'success',
       zipPath
-        ? `已导出诊断包 → ${zipPath}`
-        : `已导出诊断包（${pack.files.length} 个文件）→ ${outDir}`
+        ? `已导出诊断包（含 SUMMARY + meter 日志）→ ${zipPath}`
+        : `已导出诊断包（${pack.files.length} 个文件，含 SUMMARY）→ ${outDir}`
     );
     try {
-      shell.showItemInFolder(zipPath || path.join(outDir, 'README.txt'));
+      // Prefer SUMMARY for remote helpers when browsing the folder.
+      shell.showItemInFolder(zipPath || path.join(outDir, 'SUMMARY.txt'));
     } catch {
       /* optional */
     }
@@ -1779,43 +1788,6 @@ ipcMain.handle('app:export-diagnostic-pack', async () => {
     return { ok: false, error: error.message || '导出诊断包失败' };
   }
 });
-
-function zipDirectory(dirPath) {
-  return new Promise((resolve, reject) => {
-    if (process.platform !== 'win32') {
-      reject(new Error('zip only implemented on Windows'));
-      return;
-    }
-    const zipPath = `${dirPath}.zip`;
-    try {
-      if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
-    } catch {
-      /* ignore */
-    }
-    const { execFile } = require('child_process');
-    // PowerShell Compress-Archive: available on modern Windows without extra deps.
-    const ps = [
-      `$ErrorActionPreference='Stop'`,
-      `Compress-Archive -Path ${JSON.stringify(dirPath + path.sep + '*')} -DestinationPath ${JSON.stringify(zipPath)} -Force`
-    ].join('; ');
-    execFile(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', ps],
-      { windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
-      (error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        if (!fs.existsSync(zipPath)) {
-          reject(new Error('zip file missing after compress'));
-          return;
-        }
-        resolve(zipPath);
-      }
-    );
-  });
-}
 ipcMain.handle('app:reconnect', async () => reconnectGameProcess({ reason: 'manual' }));
 ipcMain.handle('app:set-onboarding-seen', (_event, seen = true) => {
   const current = appSettings();
