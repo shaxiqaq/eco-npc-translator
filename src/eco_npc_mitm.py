@@ -85,10 +85,12 @@ SEEN_FILE = os.path.join(DATA_DIR, "npc_seen.json")   # 见过的英文原文语
 try: CACHE = json.load(open(CACHE_FILE, encoding="utf-8"))
 except Exception: CACHE = {}
 clock = threading.Lock()
+# Serialize API calls: OpenAI client is not reliably thread-safe under concurrent bg workers.
+_api_lock = threading.Lock()
 
-# Batch disk writes: update memory immediately, flush every N puts or on exit.
+# Disk flush: write soon so restart does not lose "seen but never cached" lines.
 CACHE_DIRTY = 0
-CACHE_FLUSH_EVERY = 50
+CACHE_FLUSH_EVERY = 5
 
 def _write_cache_unlocked():
     """Caller must hold clock. Writes CACHE to disk."""
@@ -96,29 +98,54 @@ def _write_cache_unlocked():
     try:
         json.dump(CACHE, open(CACHE_FILE, "w", encoding="utf-8"), ensure_ascii=False)
         CACHE_DIRTY = 0
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("[缓存] 落盘失败: %s", e)
 
 def flush_cache(force=False):
     """Flush translation cache to disk when dirty enough (or force=True)."""
     global CACHE_DIRTY
     with clock:
+        if CACHE_DIRTY <= 0:
+            return
         if not force and CACHE_DIRTY < CACHE_FLUSH_EVERY:
             return
-        if CACHE_DIRTY <= 0 and not force:
-            return
-        if CACHE_DIRTY > 0 or force:
-            # force with dirty=0 still rewrites; only write if dirty unless forced after put
-            if CACHE_DIRTY > 0:
-                _write_cache_unlocked()
+        _write_cache_unlocked()
 
 def cache_put(k, v):
     global CACHE_DIRTY
+    if not k or not v:
+        return
+    # Normalize key the same way as lookup (strip NULs etc.)
+    k = _norm_cache_key(k)
     with clock:
         CACHE[k] = v
         CACHE_DIRTY += 1
         if CACHE_DIRTY >= CACHE_FLUSH_EVERY:
             _write_cache_unlocked()
+
+def _norm_cache_key(text):
+    """Stable cache key: drop NULs / odd controls that break lookups across packets."""
+    if not text:
+        return text
+    if "\x00" in text or any(ord(ch) < 32 and ch not in "\n\r\t" for ch in text):
+        text = "".join(ch for ch in text if ch in "\n\r\t" or ord(ch) >= 32)
+    return text.strip()
+
+def cache_get(text):
+    if not text:
+        return None
+    k = _norm_cache_key(text)
+    with clock:
+        hit = CACHE.get(k)
+        if hit:
+            return hit
+        # Compat: older entries may still contain trailing NUL
+        if k != text:
+            hit = CACHE.get(text)
+            if hit:
+                return hit
+        nul_key = k + "\x00"
+        return CACHE.get(nul_key)
 
 atexit.register(lambda: flush_cache(force=True))
 
@@ -162,30 +189,46 @@ def _engine():
     if _tr["v"] is None: _tr["v"] = create_translator(TranslationConfig(**PROVIDER))
     return _tr["v"]
 def translate(text, cache_only=False):
-    with clock: c = CACHE.get(text)
+    text = _norm_cache_key(text) if text else text
+    c = cache_get(text)
     if c: return c
     if cache_only: return None          # 纯查表: 未命中不调 API, 交给后台
-    out = (_engine().translate(text, SOURCE_LANG, TARGET_LANG) or "").strip()
+    try:
+        with _api_lock:
+            out = (_engine().translate(text, SOURCE_LANG, TARGET_LANG) or "").strip()
+    except Exception as e:
+        logger.warning("[翻译失败] %s | %r", e, (text or "")[:60])
+        return None
     if out:
         cache_put(text, out)
         if SYNC: SYNC.enqueue(text, out)         # 本地新译文 -> 上报共享词库
+    else:
+        logger.warning("[翻译空结果] %r", (text or "")[:60])
     return out
 def translate_batch(texts, cache_only=False):
     """批量翻译(缓存命中跳过, 未命中一次 API 调用), 返回与 texts 等长的中文列表。
        cache_only=True 时未命中处保留 None, 不调用 API。"""
+    texts = [_norm_cache_key(t) if t else t for t in texts]
     res = [None] * len(texts); miss = []
     for i, t in enumerate(texts):
-        with clock: c = CACHE.get(t)
+        c = cache_get(t)
         if c: res[i] = c
         else: miss.append(i)
     if miss and not cache_only:
-        outs = _engine().translate_many([texts[i] for i in miss], SOURCE_LANG, TARGET_LANG)
+        try:
+            with _api_lock:
+                outs = _engine().translate_many([texts[i] for i in miss], SOURCE_LANG, TARGET_LANG)
+        except Exception as e:
+            logger.warning("[批量翻译失败] %s | n=%s", e, len(miss))
+            outs = []
         for j, i in enumerate(miss):
             o = ((outs[j] if j < len(outs) else "") or "").strip()
             res[i] = o
             if o:
                 cache_put(texts[i], o)
                 if SYNC: SYNC.enqueue(texts[i], o)
+            else:
+                logger.warning("[批量翻译空结果] %r", (texts[i] or "")[:60])
     return res
 
 def clean_from_subdata(sub):
@@ -228,6 +271,8 @@ def wrap_cjk(s, max_units=20):
 def _clean_text(t):
     t = t.replace("$R", "\n").replace("$P", "\n")
     t = CLEAN_RE.sub("", t)
+    # Segment payloads often include a trailing NUL; keep it out of cache keys.
+    t = t.replace("\x00", "")
     t = WS_RE.sub(" ", t)
     return NL_WS_RE.sub("\n", t).strip()
 
@@ -275,10 +320,19 @@ def untemplatize(text, name):
 
 def rebuild_1017(sub, cache_only=False):
     """[op2][npc4][flag2][segN1]{[len1][seg]}*N [motion2][nameLen1][name..pad] -> 中文"""
+    if not sub or len(sub) < 10:
+        return None
     op, npc, flag = sub[0:2], sub[2:6], sub[6:8]
     p = 8; segN = sub[p]; p += 1; segs = []
+    if segN > 64:
+        return None
     for _ in range(segN):
-        l = sub[p]; p += 1; segs.append(sub[p:p+l]); p += l
+        if p >= len(sub):
+            return None
+        l = sub[p]; p += 1
+        if p + l > len(sub):
+            return None
+        segs.append(sub[p:p+l]); p += l
     tail = sub[p:]                      # motion2 + nameLen1 + name + padding
     eng = _clean_text("".join(s.decode("utf-8", "replace") for s in segs))
     eng_key, pcname = templatize(eng)                # 角色名 -> {PC}, 模板化后翻译/缓存/共享
@@ -287,23 +341,40 @@ def rebuild_1017(sub, cache_only=False):
     if not zh: return None
     zh = untemplatize(zh, pcname)                     # 显示前把真名填回
     lines = wrap_cjk(zh, 20)                          # 每段一行, 防止框内折行重叠
-    chunks = [ln.encode("utf-8")[:250] for ln in lines]
+    chunks = [ln.encode("utf-8")[:250] for ln in lines[:40]]  # hard cap lines
+    if not chunks:
+        return None
     out = bytearray(op + npc + flag); out.append(len(chunks) & 0xff)
     for c in chunks: out.append(len(c) & 0xff); out += c
     out += tail
+    if len(out) > 4000:
+        return None
     return bytes(out)
 
 def rebuild_1526(sub, cache_only=False):
     """[op2][qlen1][question(含null)][optCount1][indices(optCount+1)]{[len1][opt]}*N [tail] -> 中文
        indices 是点击->动作映射, 原样保留; 只译问题与选项文字"""
+    if not sub or len(sub) < 5:
+        return None
     op = sub[0:2]; p = 2
     qlen = sub[p]; p += 1
+    if p + qlen > len(sub):
+        return None
     question = sub[p:p+qlen]; p += qlen
+    if p >= len(sub):
+        return None
     optCount = sub[p]; p += 1
+    if optCount > 32 or p + optCount + 1 > len(sub):
+        return None
     indices = sub[p:p+optCount+1]; p += optCount + 1
     opts = []
     for _ in range(optCount):
-        l = sub[p]; p += 1; opts.append(sub[p:p+l]); p += l
+        if p >= len(sub):
+            return None
+        l = sub[p]; p += 1
+        if p + l > len(sub):
+            return None
+        opts.append(sub[p:p+l]); p += l
     tail = sub[p:]                       # 01 + padding
     q_eng = question.split(b"\0")[0].decode("utf-8", "replace").strip()
     opt_eng = [o.decode("utf-8", "replace").strip() for o in opts]
@@ -321,6 +392,8 @@ def rebuild_1526(sub, cache_only=False):
     out.append(optCount); out += indices
     for oz in opt_zh: out.append(len(oz) & 0xff); out += oz
     out += tail
+    if len(out) > 4000:
+        return None
     return bytes(out)
 
 # ===== 内置采集器(并入 MITM, 取代单独的 eco_harvester) =====
@@ -455,7 +528,7 @@ def handler(msg, data):
         return
     p = msg["payload"]
     if p == "READY":
-        logger.info("[*] hook 就位。去和 NPC 对话：首次显英文(并后台翻译缓存)，再次见到同一句即变中文。")
+        logger.info("[*] hook 就位。去和 NPC 对话：首次英文(后台缓存，不卡住游戏线程)，同一句再出现应变中文。")
         return
     t = p.get("t")
     if t == "ctx" or t == "harvest":          # 采集消息: 丢后台队列, 绝不阻塞翻译回包
@@ -474,63 +547,56 @@ def handler(msg, data):
             """Cache miss: translate in background and inject rebuilt sub for next display."""
             try:
                 built = rebuild_1526(sub) if op == 1526 else rebuild_1017(sub)
-            except Exception:
+            except Exception as e:
+                logger.warning("[后台翻译异常] op%s(%s) hash=%s: %s", op, tag, h, e)
                 import traceback
                 traceback.print_exc()
                 return
             if not built:
+                logger.warning("[后台翻译未产出] op%s(%s) hash=%s (API空/解析失败)", op, tag, h)
                 return
             try:
                 sref["s"].post({"type": "cache", "h": h, "sub": built.hex()})
-            except Exception:
+            except Exception as e:
+                logger.warning("[缓存回填失败] hash=%s: %s", h, e)
                 return
+            # Persist soon (not every packet — full rewrite is heavy under load).
+            flush_cache(force=False)
             logger.info("[缓存+] op%s(%s) hash=%s (%sB)", op, tag, h, len(built))
 
-        if sync:
-            # 1) 先纯查表: 命中缓存→同帧出中文(毫秒级)
+        # JS no longer blocks the game thread waiting for t{h}.
+        # Always translate in background and post type=cache for next display.
+        # (sync / first_wait paths kept only if an older hook still waits — rare.)
+        if sync and FIRST_WAIT > 0:
+            # Optional short wait path for older mitm builds that still use recv().wait
             try:
                 newsub = rebuild_1526(sub, cache_only=True) if op == 1526 else rebuild_1017(sub, cache_only=True)
-            except Exception:
-                import traceback
-                traceback.print_exc()
+            except Exception as e:
+                logger.warning("[查表重建异常] op%s: %s", op, e)
                 newsub = None
-            cached_hit = newsub is not None
-            # 2) 未命中 且 开了短等待: 在 FIRST_WAIT 内抢翻出来, 第一次就中文
-            if newsub is None and FIRST_WAIT > 0:
+            if newsub is None:
                 res = {}
                 def do():
                     try:
                         res["s"] = rebuild_1526(sub) if op == 1526 else rebuild_1017(sub)
-                    except Exception:
-                        import traceback
-                        traceback.print_exc()
-                th = threading.Thread(target=do)
+                    except Exception as e:
+                        logger.warning("[现翻异常] op%s: %s", op, e)
+                th = threading.Thread(target=do, daemon=True)
                 th.start()
                 th.join(FIRST_WAIT)
                 newsub = res.get("s")
                 if newsub is None:
-                    # 超时: 放行英文, 后台翻完回填(下次生效)
-                    def finish_to():
-                        th.join()
-                        ns = res.get("s")
-                        if ns:
-                            try:
-                                sref["s"].post({"type": "cache", "h": h, "sub": ns.hex()})
-                            except Exception:
-                                pass
-                            logger.info("[缓存+](超时,下次生效) op%s(%s) hash=%s", op, tag, h)
-                    threading.Thread(target=finish_to, daemon=True).start()
-            # 2b) first_wait=0 且未命中: 必须后台翻译, 否则永远不进缓存(永远英文)
-            elif newsub is None:
-                threading.Thread(target=_bg_translate_and_cache, daemon=True).start()
-            # 3) 回复 JS(中文 or 空=放行英文)
+                    threading.Thread(target=_bg_translate_and_cache, daemon=True).start()
             try:
                 sref["s"].post({"type": "t%d" % h, "sub": newsub.hex() if newsub else ""})
             except Exception:
                 pass
             if newsub:
-                tagdesc = "缓存" if cached_hit else "现翻"
-                logger.info("[首屏中文·%s] op%s(%s) hash=%s (%sB)", tagdesc, op, tag, h, len(newsub))
+                try:
+                    sref["s"].post({"type": "cache", "h": h, "sub": newsub.hex()})
+                except Exception:
+                    pass
+                logger.info("[首屏中文] op%s(%s) hash=%s (%sB)", op, tag, h, len(newsub))
         else:
             threading.Thread(target=_bg_translate_and_cache, daemon=True).start()
     elif p.get("t") == "hit":
@@ -599,7 +665,12 @@ def main():
     cleaned = {"done": False}
 
     def cleanup_frida(reason="stop"):
-        """Unload hooks then detach so eco.exe is not crashed on agent teardown."""
+        """Unload hooks then detach so eco.exe is not crashed on agent teardown.
+
+        Windows has recorded eco.exe + frida-agent.dll 0xc0000409 when hooks
+        are torn down while a game thread is still inside recvfrom. Drain first,
+        detach only when idle, and never force-kill mid-hook.
+        """
         if cleaned["done"]:
             stop_event.set()
             return
@@ -611,25 +682,41 @@ def main():
         except Exception:
             pass
         scr = sref.get("s")
-        # Prefer agent-side Interceptor.detachAll() before unload.
+        drained = False
         if scr is not None:
             try:
                 exports = getattr(scr, "exports_sync", None) or getattr(scr, "exports", None)
                 if exports is not None and hasattr(exports, "dispose"):
-                    exports.dispose()
-                    time.sleep(0.15)
+                    # dispose() may spin up to ~6s waiting for IN_HOOK == 0
+                    info = exports.dispose()
+                    if isinstance(info, dict):
+                        drained = bool(info.get("drained"))
+                        logger.info(
+                            "[*] dispose: drained=%s inHook=%s",
+                            info.get("drained"),
+                            info.get("inHook"),
+                        )
+                    else:
+                        drained = True
+                    time.sleep(0.35 if drained else 0.8)
             except Exception as e:
                 logger.warning("[*] script.dispose 忽略: %s", e)
-            try:
-                scr.unload()
-                time.sleep(0.2)
-            except Exception as e:
-                logger.warning("[*] script.unload 忽略: %s", e)
+            # If hooks did not drain, skip unload — force unload is a top crash cause.
+            if drained:
+                try:
+                    scr.unload()
+                    time.sleep(0.35)
+                except Exception as e:
+                    logger.warning("[*] script.unload 忽略: %s", e)
+            else:
+                logger.warning(
+                    "[*] 钩子仍在收发包路径中，跳过 unload 以免游戏闪退；仅断开会话"
+                )
         try:
             sess = sref.get("session")
             if sess is not None:
                 sess.detach()
-                time.sleep(0.15)
+                time.sleep(0.35)
         except Exception as e:
             logger.warning("[*] session.detach 忽略: %s", e)
         sref["s"] = None

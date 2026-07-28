@@ -6,15 +6,23 @@ const { execFile } = require('child_process');
  * Cooperative stop for Frida Python hosts.
  * On Windows Node's child.kill() is force-kill — avoid it while attached.
  */
-function requestGracefulStop(name, child) {
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function requestGracefulStop(name, child, { endStdin = false } = {}) {
   try {
     if (child.stdin && child.stdin.writable) {
       child.stdin.write(`${JSON.stringify({ action: 'stop' })}\n`);
       if (name === 'translator') child.stdin.write('stop\n');
-      try {
-        child.stdin.end();
-      } catch {
-        // ignore
+      // Do not end stdin immediately on quit — dispose needs the process alive.
+      if (endStdin) {
+        try {
+          child.stdin.end();
+        } catch {
+          // ignore
+        }
       }
     }
   } catch {
@@ -74,45 +82,72 @@ function waitForChildExit(child, waitMs = 12000) {
  * @param {string} options.name
  * @param {import('child_process').ChildProcess} options.child
  * @param {number} [options.waitMs]
+ * @param {boolean} [options.forceKill] — force-kill after timeout (default true)
+ * @param {number} [options.settleMs] — pause after stop so game can resume IO
  * @param {(level: string, message: string) => void} options.log
  * @param {(state: string, message: string) => void} options.setStopping
  */
-async function stopChildGracefully({ name, child, waitMs = 12000, log, setStopping }) {
-  if (!child) return { ok: true };
+async function stopChildGracefully({
+  name,
+  child,
+  waitMs = 12000,
+  forceKill = true,
+  settleMs = 400,
+  log,
+  setStopping
+}) {
+  if (!child) return { ok: true, exited: true, forced: false };
   if (setStopping) setStopping('stopping', '正在安全卸载抓包钩子…');
-  log('info', '正在安全断开 Frida（Windows 上不会强杀后端，避免游戏闪退）…');
-  requestGracefulStop(name, child);
+  if (log) log('info', '正在安全断开 Frida（先卸载钩子，避免游戏闪退）…');
 
-  const exited = await waitForChildExit(child, waitMs);
-  if (exited) {
-    log('info', '后端已安全退出，钩子应已卸载');
-    return { ok: true };
-  }
+  requestGracefulStop(name, child, { endStdin: false });
 
-  if (process.platform !== 'win32') {
-    log('info', `后端 ${waitMs}ms 内未退出，发送 SIGTERM…`);
+  let exited = await waitForChildExit(child, waitMs);
+  let forced = false;
+
+  if (!exited) {
+    // Second chance: close stdin so watchers/EOF paths can finish dispose.
     try {
-      child.kill('SIGTERM');
+      if (child.stdin && child.stdin.writable) child.stdin.end();
     } catch {
       // ignore
     }
-    const exitedSoft = await waitForChildExit(child, 3000);
-    if (exitedSoft) {
-      log('info', '后端已在 SIGTERM 后退出');
-      return { ok: true };
+    exited = await waitForChildExit(child, Math.min(4000, Math.max(1500, Math.floor(waitMs / 3))));
+  }
+
+  if (!exited && forceKill) {
+    if (log) {
+      log(
+        'warn',
+        '后端未在时限内退出，强制结束后端进程（不杀游戏）。若仍闪退请先点「全部停止」再退出。'
+      );
+    }
+    forceKillChild(child);
+    forced = true;
+    exited = await waitForChildExit(child, 2500);
+  } else if (!exited && !forceKill) {
+    if (log) log('warn', '后端仍在运行且已禁用强杀；将再等待片刻…');
+    exited = await waitForChildExit(child, 5000);
+    if (!exited) {
+      if (log) log('warn', '最终仍未退出，兜底强杀后端（仅后端）。');
+      forceKillChild(child);
+      forced = true;
+      await waitForChildExit(child, 2000);
     }
   }
 
-  log('warn', '后端仍未退出；最后尝试强制结束（仅后端，不杀游戏）。若仍闪退请先点停止采集再关工具箱。');
-  forceKillChild(child);
-  await waitForChildExit(child, 2000);
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  return { ok: true };
+  if (exited && log) {
+    log('info', forced ? '后端已结束（含兜底强杀）' : '后端已安全退出，钩子应已卸载');
+  }
+
+  if (settleMs > 0) await sleep(settleMs);
+  return { ok: true, exited: Boolean(exited || forced), forced };
 }
 
 module.exports = {
   requestGracefulStop,
   forceKillChild,
   waitForChildExit,
-  stopChildGracefully
+  stopChildGracefully,
+  sleep
 };

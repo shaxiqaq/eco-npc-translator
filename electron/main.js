@@ -43,7 +43,8 @@ const {
 const { createCustomBuffStore } = require('./lib/custom-buffs-store');
 const { createSkillLibraryStore } = require('./lib/skill-library-store');
 const {
-  stopChildGracefully: stopChildGracefullyImpl
+  stopChildGracefully: stopChildGracefullyImpl,
+  sleep: lifecycleSleep
 } = require('./lib/child-lifecycle');
 const { resolveBackendRuntime, launchLabel } = require('./lib/backend-runtime');
 const { resolveSelectedPids } = require('./lib/process-selection');
@@ -1130,18 +1131,21 @@ function startService(name) {
   }
 }
 
-function stopChildGracefully(name, child, { waitMs = 12000 } = {}) {
+function stopChildGracefully(name, child, options = {}) {
+  const { waitMs = 12000, forceKill = true, settleMs = 400 } = options;
   const logFn = name === 'damage' ? addCaptureLog : (level, message) => addLog(name, level, message);
   return stopChildGracefullyImpl({
     name,
     child,
     waitMs,
+    forceKill,
+    settleMs,
     log: logFn,
     setStopping: (state, message) => setServiceState(name, state, message)
   });
 }
 
-function stopService(name, { waitMs = 12000 } = {}) {
+function stopService(name, { waitMs = 12000, forceKill = true, settleMs = 400 } = {}) {
   if (name === 'damage') {
     // Only release damage-collection intent; status monitoring may keep the backend alive.
     damageCollectionWanted = false;
@@ -1149,7 +1153,9 @@ function stopService(name, { waitMs = 12000 } = {}) {
   }
   const child = services[name];
   if (!child) return Promise.resolve({ ok: true });
-  return stopChildGracefully(name, child, { waitMs });
+  return stopChildGracefully(name, child, { waitMs, forceKill, settleMs }).finally(() => {
+    if (services[name] === child) services[name] = null;
+  });
 }
 
 async function stopAllBackends({ waitMs = 12000 } = {}) {
@@ -1158,6 +1164,113 @@ async function stopAllBackends({ waitMs = 12000 } = {}) {
   await stopCaptureBackend({ waitMs, force: true });
   await stopService('translator', { waitMs });
   return { ok: true };
+}
+
+/**
+ * Quit-time teardown: stop every Frida feature in a safe order, wait for hooks
+ * to unload, then allow the Electron process to exit.
+ * Prefer long cooperative waits; force-kill only as last resort.
+ */
+async function stopAllBackendsForQuit() {
+  damageCollectionWanted = false;
+  const waitMs = 16000;
+  const settle = (ms) => lifecycleSleep(ms);
+
+  addLog('app', 'info', '安全退出：依次关闭 NPC 翻译 → 伤害/状态采集 → 小雅…');
+
+  // 1) Translator hooks recvfrom — unload first (most crash-sensitive).
+  if (services.translator) {
+    const child = services.translator;
+    await stopChildGracefully('translator', child, {
+      waitMs,
+      forceKill: false,
+      settleMs: 600
+    });
+    if (services.translator === child) services.translator = null;
+    setServiceState('translator', 'stopped', '已停止');
+  }
+  await settle(700);
+
+  // 2) Damage / monitoring capture backend.
+  if (services.damage) {
+    const child = services.damage;
+    await stopChildGracefully('damage', child, {
+      waitMs,
+      forceKill: false,
+      settleMs: 600
+    });
+    if (services.damage === child) services.damage = null;
+    setServiceState('damage', 'stopped', '已停止');
+  } else if (isDemo) {
+    stopDemo();
+  }
+  await settle(700);
+
+  // 3) Xiaoya native helper (if any).
+  if (xiaoyaService) {
+    try {
+      await xiaoyaService.stop();
+    } catch {
+      // ignore
+    }
+    try {
+      xiaoyaService.dispose();
+    } catch {
+      // ignore
+    }
+  }
+  await settle(700);
+
+  // 4) Last-resort force for anything still alive (should be rare).
+  for (const name of ['translator', 'damage']) {
+    const child = services[name];
+    if (!child || child.killed || child.exitCode != null) continue;
+    addLog(name, 'warn', '退出兜底：仍在运行，强制结束后端');
+    await stopChildGracefully(name, child, {
+      waitMs: 2500,
+      forceKill: true,
+      settleMs: 400
+    });
+    if (services[name] === child) services[name] = null;
+  }
+
+  // 5) Let eco.exe resume packet IO after Frida detach.
+  addLog('app', 'info', '钩子已卸载，等待游戏网络恢复后再退出…');
+  await settle(1800);
+  return { ok: true };
+}
+
+function showQuitProgressOverlay(message) {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const safe = String(message || '')
+      .replace(/\\/g, '\\\\')
+      .replace(/`/g, '\\`')
+      .replace(/\$\{/g, '\\${');
+    mainWindow.webContents.executeJavaScript(`
+      (function () {
+        var el = document.getElementById('eco-shutdown-overlay');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'eco-shutdown-overlay';
+          el.setAttribute('style',
+            'position:fixed;inset:0;z-index:2147483647;background:rgba(8,10,14,.92);' +
+            'color:#f5f5f5;display:flex;align-items:center;justify-content:center;' +
+            'flex-direction:column;gap:14px;font-family:system-ui,Segoe UI,sans-serif;' +
+            'padding:24px;text-align:center');
+          el.innerHTML =
+            '<div style="font-size:20px;font-weight:650">正在安全退出</div>' +
+            '<div id="eco-shutdown-msg" style="font-size:13px;line-height:1.55;max-width:420px;opacity:.9"></div>' +
+            '<div style="font-size:12px;opacity:.65;max-width:420px">会先关闭翻译/伤害采集并卸载游戏内钩子，大约几秒到十几秒。请勿在任务管理器强杀，否则游戏可能闪退。</div>';
+          document.body.appendChild(el);
+        }
+        var msg = document.getElementById('eco-shutdown-msg');
+        if (msg) msg.textContent = \`${safe}\`;
+      })();
+    `).catch(() => {});
+  } catch {
+    // ignore
+  }
 }
 
 function resetDamage() {
@@ -1219,7 +1332,8 @@ function reidentifySelf() {
 
 async function prepareForUpdateInstall() {
   stopDemo();
-  await stopAllBackends({ waitMs: 12000 });
+  // Same safe order as app quit so update install does not tear Frida mid-hook.
+  await stopAllBackendsForQuit();
   if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.hide();
 }
 
@@ -1367,14 +1481,19 @@ function createMainWindow() {
       beginGracefulShutdown('capture-done');
     }, 1800));
   }
-  // Intercept the X button / Alt+F4: hide UI, unload Frida, THEN quit.
-  // Closing the window without this race-kills the Python bridge and can crash eco.exe.
+  // Intercept the X button / Alt+F4.
+  // Default: minimize to tray (if enabled). Real quit always goes through delayed
+  // graceful shutdown so Frida hooks leave eco.exe before the toolbox dies.
   mainWindow.on('close', (event) => {
     if (gracefulQuitComplete) return;
+    if (gracefulQuitStarted) {
+      event.preventDefault();
+      return;
+    }
     const minimizeToTray = appSettings().startup?.minimizeToTray !== false
       && appSettings().startup?.tray !== false
       && appTray;
-    if (minimizeToTray && !gracefulQuitStarted) {
+    if (minimizeToTray) {
       event.preventDefault();
       mainWindow.hide();
       return;
@@ -1602,7 +1721,7 @@ function createAppTray() {
       { label: '刷新游戏进程', click: () => { void refreshGameProcesses(); } },
       { label: '重新连接', click: () => { void reconnectGameProcess({ reason: 'tray' }); } },
       { type: 'separator' },
-      { label: '退出', click: () => beginGracefulShutdown('tray-quit') }
+      { label: '安全退出（先关功能）', click: () => beginGracefulShutdown('tray-quit') }
     ]));
     appTray.on('double-click', () => {
       if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
@@ -2554,7 +2673,7 @@ app.whenReady().then(async () => {
 
 /**
  * Single exit path used by window close / app.quit / tray.
- * Hides UI immediately, waits for Frida teardown, then destroys windows and quits.
+ * Delayed quit: stop all Frida features first, settle, then destroy windows.
  */
 function beginGracefulShutdown(reason = 'quit') {
   if (gracefulQuitComplete) {
@@ -2570,12 +2689,15 @@ function beginGracefulShutdown(reason = 'quit') {
     // ignore
   }
 
-  // Hide immediately so the user sees the app "close", while we still own the process
-  // long enough to unload ws2_32 hooks from eco.exe.
+  // Keep main window visible with a progress overlay so the user knows we are
+  // deliberately delaying exit to protect eco.exe — not frozen.
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.setTitle('ECO 工具箱 - 正在安全断开…');
-      mainWindow.hide();
+      mainWindow.setTitle('ECO 工具箱 - 正在安全退出（请稍候）…');
+      try { mainWindow.setClosable(false); } catch { /* ignore */ }
+      mainWindow.show();
+      mainWindow.focus();
+      showQuitProgressOverlay('正在关闭 NPC 翻译与伤害采集…');
     }
   } catch { /* ignore */ }
   try {
@@ -2583,21 +2705,25 @@ function beginGracefulShutdown(reason = 'quit') {
   } catch { /* ignore */ }
 
   stopDemo();
-  addLog('app', 'info', `安全退出（${reason}）：先卸载抓包钩子，请稍候…`);
+  addLog('app', 'info', `安全退出（${reason}）：先关闭全部功能并卸载钩子，请稍候…`);
 
-  Promise.resolve()
+  const quitWork = Promise.resolve()
     .then(async () => {
-      const hasBackends = Boolean(services.damage || services.translator || xiaoyaService?.child);
-      if (hasBackends) {
-        await stopAllBackends({ waitMs: 12000 });
-      }
-      if (xiaoyaService) {
-        try { await xiaoyaService.stop(); } catch { /* ignore */ }
-        try { xiaoyaService.dispose(); } catch { /* ignore */ }
-      }
-      // Let the game resume packet IO after detach.
-      await new Promise((resolve) => setTimeout(resolve, 600));
-    })
+      showQuitProgressOverlay('正在卸载游戏内 Frida 钩子（翻译）…');
+      await stopAllBackendsForQuit();
+      showQuitProgressOverlay('全部功能已关闭，即将退出…');
+      await lifecycleSleep(500);
+    });
+
+  // Hard cap so a stuck dispose cannot freeze the toolbox forever.
+  const timeoutWork = lifecycleSleep(48000).then(() => {
+    try {
+      addLog('app', 'warn', '安全退出超时，仍将结束工具箱进程');
+      showQuitProgressOverlay('等待超时，即将强制退出工具箱…');
+    } catch { /* ignore */ }
+  });
+
+  Promise.race([quitWork, timeoutWork])
     .catch((error) => {
       try { addLog('app', 'warn', `安全退出过程异常：${error?.message || error}`); } catch { /* ignore */ }
     })
@@ -2611,6 +2737,7 @@ function beginGracefulShutdown(reason = 'quit') {
       } catch { /* ignore */ }
       try {
         if (mainWindow && !mainWindow.isDestroyed()) {
+          try { mainWindow.setClosable(true); } catch { /* ignore */ }
           mainWindow.removeAllListeners('close');
           mainWindow.destroy();
           mainWindow = null;

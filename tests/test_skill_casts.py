@@ -169,9 +169,22 @@ class SkillCastTrackingTest(unittest.TestCase):
         self.addCleanup(meter.close)
         ts = time.time()
         mount = 20257
+        # Wiki 騎乗: absorb-style mount appear (hp=0,max_hp=0) before combat.
+        meter.handle_parsed(
+            {
+                "type": "pet_appear",
+                "actor": mount,
+                "owner": 84,
+                "hp": 0,
+                "max_hp": 0,
+                "_op": 4655,
+            },
+            ts,
+        )
+        self.assertTrue(meter.is_ride_active(ts))
         meter.handle_parsed(
             {"type": "skill_cast_request", "skill_id": 2486, "target": 11000, "_op": 4999},
-            ts,
+            ts + 0.05,
         )
         meter.handle_parsed(
             {
@@ -200,6 +213,7 @@ class SkillCastTrackingTest(unittest.TestCase):
         self.addCleanup(meter.close)
         ts = time.time()
         mount = 20257
+        meter.enter_ride_mode(mount_id=mount, reason="test", ts=ts, quiet=True)
         meter.handle_parsed(
             {"type": "skill_cast_request", "skill_id": 3001, "target": 12000, "_op": 4999},
             ts,
@@ -340,6 +354,141 @@ class SkillCastTrackingTest(unittest.TestCase):
         self.assertEqual(snap["self_normal_dealt"], 40)
         self.assertEqual(snap["ride_normal_dealt"], 0)
         self.assertFalse(snap["ride_mode"])
+
+    def test_pet_appear_without_hp_does_not_enter_ride(self):
+        """Missing HP must not trigger sticky ride (was misclassifying all self damage)."""
+        meter = DamageMeter(self_id=84, game_chat=False, out_path=None)
+        self.addCleanup(meter.close)
+        ts = time.time()
+        meter.handle_parsed(
+            {
+                "type": "pet_appear",
+                "actor": 20060,
+                "owner": 84,
+                "hp": None,
+                "max_hp": None,
+                "_op": 4655,
+            },
+            ts,
+        )
+        self.assertFalse(meter.is_ride_active(ts))
+        meter.handle_parsed(
+            {"type": "attack_request", "target": 17000, "_op": 3999},
+            ts + 0.05,
+        )
+        meter.handle_parsed(
+            {"type": "attack_result", "src": 84, "dst": 17000, "damage": 50, "_op": 4001},
+            ts + 0.1,
+        )
+        snap = meter.snapshot()
+        self.assertEqual(snap["self_normal_dealt"], 50)
+        self.assertEqual(snap["ride_normal_dealt"], 0)
+
+    def test_walk_pet_aa_is_pet_not_ride_even_with_player_skill(self):
+        """通常パートナー physical hit must not become 骑宠 when player just cast a skill.
+
+        Repro: self skill C2S + pet AA on same target used to enter_ride_mode and
+        sticky-reclass all self damage as ride_skill (user not mounted).
+        """
+        meter = DamageMeter(self_id=84, game_chat=False, out_path=None)
+        self.addCleanup(meter.close)
+        ts = time.time()
+        pet = 20061
+        meter.handle_parsed(
+            {
+                "type": "pet_appear",
+                "actor": pet,
+                "owner": 84,
+                "hp": 800,
+                "max_hp": 1000,
+                "_op": 4655,
+            },
+            ts,
+        )
+        self.assertFalse(meter.is_ride_active(ts))
+        # Player skill
+        meter.handle_parsed(
+            {"type": "skill_cast_request", "skill_id": 3127, "target": 19000, "_op": 4999},
+            ts + 0.05,
+        )
+        meter.handle_parsed(
+            {
+                "type": "skill_active",
+                "skill_id": 3127,
+                "caster": 84,
+                "target": 19000,
+                "affected": [19000],
+                "damages": [-200],
+                "_op": 5010,
+            },
+            ts + 0.1,
+        )
+        # Pet physical AA on same target shortly after
+        meter.handle_parsed(
+            {
+                "type": "attack_result",
+                "src": pet,
+                "dst": 19000,
+                "damage": 330,
+                "_op": 4001,
+            },
+            ts + 0.25,
+        )
+        # Another self skill must stay self_skill, not ride_skill
+        meter.handle_parsed(
+            {"type": "skill_cast_request", "skill_id": 3127, "target": 19001, "_op": 4999},
+            ts + 0.4,
+        )
+        meter.handle_parsed(
+            {
+                "type": "skill_active",
+                "skill_id": 3127,
+                "caster": 84,
+                "target": 19001,
+                "affected": [19001],
+                "damages": [-180],
+                "_op": 5010,
+            },
+            ts + 0.5,
+        )
+        snap = meter.snapshot()
+        self.assertFalse(meter.is_ride_active(ts + 0.5))
+        self.assertEqual(snap["pet_normal_dealt"], 330)
+        self.assertEqual(snap["ride_skill_dealt"], 0)
+        self.assertEqual(snap["ride_normal_dealt"], 0)
+        self.assertEqual(snap["self_skill_dealt"], 380)
+        self.assertEqual(snap["pet_dealt"], 330)
+
+    def test_self_hits_do_not_extend_ride_ttl_forever(self):
+        """After sticky TTL, self AA returns to self_normal even if fighting continuously."""
+        meter = DamageMeter(self_id=84, game_chat=False, out_path=None)
+        self.addCleanup(meter.close)
+        ts = time.time()
+        meter.enter_ride_mode(mount_id=20257, reason="test", ts=ts, quiet=True)
+        meter.RIDE_MODE_TTL_S = 2.0
+        meter.ride_mode_until = ts + 2.0
+        # Within TTL → ride
+        meter.handle_parsed(
+            {"type": "attack_request", "target": 18000, "_op": 3999},
+            ts + 0.2,
+        )
+        meter.handle_parsed(
+            {"type": "attack_result", "src": 84, "dst": 18000, "damage": 10, "_op": 4001},
+            ts + 0.3,
+        )
+        self.assertEqual(meter.ride_normal_dealt, 10)
+        # Past TTL without mount evidence → self (continuous AA must not re-stick)
+        meter.handle_parsed(
+            {"type": "attack_request", "target": 18000, "_op": 3999},
+            ts + 3.0,
+        )
+        meter.handle_parsed(
+            {"type": "attack_result", "src": 84, "dst": 18000, "damage": 11, "_op": 4001},
+            ts + 3.1,
+        )
+        self.assertFalse(meter.is_ride_active(ts + 3.1))
+        self.assertEqual(meter.self_normal_dealt, 11)
+        self.assertEqual(meter.ride_normal_dealt, 10)
 
     def test_possession_skill_counts_when_caster_is_host(self):
         """依凭: C2S from player, S2C caster is host body (another PC id)."""

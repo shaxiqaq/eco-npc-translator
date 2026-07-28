@@ -45,12 +45,20 @@ function wbe32(v){return [(v>>>24)&0xff,(v>>>16)&0xff,(v>>>8)&0xff,v&0xff];}
 
 const m=Process.findModuleByName('eco.exe');
 // Soft-disable + in-flight tracking for safe dispose().
+// Detaching while a game thread is inside onEnter/onLeave can crash eco.exe
+// (Windows Application Error 0xc0000409 in frida-agent.dll).
 let HOOKS_ARMED=true; let IN_HOOK=0;
+const HOOK_LISTENERS=[];
 function enterHook(){ if(!HOOKS_ARMED) return false; IN_HOOK++; return true; }
 function leaveHook(){ if(IN_HOOK>0) IN_HOOK--; }
+function attachHook(target, callbacks){
+  const listener=Interceptor.attach(target, callbacks);
+  HOOK_LISTENERS.push(listener);
+  return listener;
+}
 // 收割密钥(word-swap). KEYMAP: keyStr -> expanded round key (avoid re-expand on each frame).
 const KEYMAP={}; let RK=null;
-Interceptor.attach(m.base.add(0x18cc4),{
+attachHook(m.base.add(0x18cc4),{
   onEnter(){
     if(!enterHook()) return;
     this._h=true;
@@ -65,8 +73,24 @@ Interceptor.attach(m.base.add(0x18cc4),{
 
 // 缓存: hash -> 整条替换后的 subdata(字节数组), 由 Python 按结构重建好
 const CACHE={};
+// In-flight need requests: avoid flooding Python (and RPC) for the same miss.
+const PENDING={};
+function looksLikeSub(sub, expectOp){
+  // Minimal structural guard before injecting a rebuilt packet into the game.
+  if(!sub||sub.length<4||sub.length>4000) return false;
+  const op=be16(sub,0);
+  if(expectOp!=null&&op!==expectOp) return false;
+  if(op!==1017&&op!==1526) return false;
+  return true;
+}
 function onCache(msg){
-  if(msg.sub&&msg.sub.length) CACHE[msg.h>>>0]=fromHex(msg.sub);
+  if(msg.sub&&msg.sub.length){
+    const h=msg.h>>>0;
+    const bytes=fromHex(msg.sub);
+    // Drop obviously bad rebuilds rather than feed them to eco.exe.
+    if(looksLikeSub(bytes,null)) CACHE[h]=bytes;
+    delete PENDING[h];
+  }
   recv('cache',onCache);    // 重新注册(recv 是一次性)
 }
 recv('cache',onCache);
@@ -122,19 +146,18 @@ function processFrame(buf, off){
       const hexsub=toHex(subs[i]);
       send({t:'harvest',op:op,sub:hexsub});
       const h=fnv1a(subs[i])>>>0;
-      if(CACHE[h]){ subs[i]=CACHE[h]; modified=true; send({t:'hit',h:h}); }
-      else {
-        if(__SYNC__){
-          send({t:'need',h:h,op:op,sub:hexsub,sync:true});
-          const w=recv('t'+h,function(msg){
-            if(msg.sub&&msg.sub.length) CACHE[h]=fromHex(msg.sub);
-          });
-          // Never block the game network thread indefinitely. If the toolbox
-          // is exiting/unloading, a long wait can freeze/crash eco.exe.
-          try { w.wait(0.15); } catch (e) { /* timeout or unload — pass original text */ }
-          if(CACHE[h]){ subs[i]=CACHE[h]; modified=true; send({t:'hit',h:h}); }
-        } else {
-          send({t:'need',h:h,op:op,sub:hexsub});
+      const cached=CACHE[h];
+      if(cached&&looksLikeSub(cached,op)){
+        subs[i]=cached; modified=true; send({t:'hit',h:h});
+      } else {
+        // IMPORTANT: never block the game network thread (no recv().wait).
+        // Waiting here for Python translation has frozen/crashed eco.exe under
+        // multi-packet dialogue (several op1017+1526 in one recvfrom).
+        // Miss → keep English this frame; Python fills CACHE for the next time.
+        const now=Date.now();
+        if(!PENDING[h]||(now-PENDING[h])>15000){
+          PENDING[h]=now;
+          send({t:'need',h:h,op:op,sub:hexsub,sync:false});
         }
       }
     }
@@ -144,6 +167,8 @@ function processFrame(buf, off){
   let payload=[];
   for(const sub of subs){ payload.push((sub.length>>8)&0xff, sub.length&0xff); appendBytes(payload, sub); }
   const newNum1=payload.length;
+  // Guard: absurdly large rebuilt frames are more likely bad data than valid UI.
+  if(newNum1>0x20000||payload.length>0x20000) return {consumed:8+Lp,newBytes:null};
   while(payload.length%16!==0) payload.push(0);
   const newCt=ecbEnc(rk,payload);
   const frame=wbe32(payload.length);
@@ -159,7 +184,7 @@ function validPlain(pt,num1){
 }
 
 const pRecvfrom=exp('ws2_32.dll','recvfrom');
-if(pRecvfrom) Interceptor.attach(pRecvfrom,{
+if(pRecvfrom) attachHook(pRecvfrom,{
   onEnter(a){
     if(!enterHook()) return;
     this._h=true;
@@ -192,14 +217,25 @@ if(pRecvfrom) Interceptor.attach(pRecvfrom,{
 });
 
 // Called by Python before unload so ws2_32 hooks are fully removed.
+// Prefer per-listener detach after IN_HOOK drains; avoid detachAll while busy
+// (common cause of eco.exe + frida-agent 0xc0000409).
 rpc.exports = {
   dispose() {
     HOOKS_ARMED = false;
     ENABLED = false;
-    const deadline = Date.now() + 4000;
-    while (IN_HOOK > 0 && Date.now() < deadline) {}
-    try { Interceptor.detachAll(); } catch (e) {}
-    return { ok: true, drained: IN_HOOK === 0, inHook: IN_HOOK };
+    const deadline = Date.now() + 6000;
+    while (IN_HOOK > 0 && Date.now() < deadline) {
+      // Spin — other game threads finish onLeave and decrement IN_HOOK.
+    }
+    const drained = IN_HOOK === 0;
+    if (drained) {
+      for (let i = 0; i < HOOK_LISTENERS.length; i++) {
+        try { HOOK_LISTENERS[i].detach(); } catch (e) {}
+      }
+      HOOK_LISTENERS.length = 0;
+    }
+    // If still in-hook, leave soft-disabled stubs; force-detach risks crash.
+    return { ok: true, drained: drained, inHook: IN_HOOK };
   }
 };
 

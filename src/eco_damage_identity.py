@@ -97,7 +97,8 @@ class IdentityMixin:
         for pet_id, owner in list(self.pet_owner.items()):
             if owner == actor and pet_id != actor:
                 hp = self.hp_by_actor.get(pet_id)
-                if hp in (None, 0):
+                # Only explicit zero-HP mounts; missing HP is not proof of riding.
+                if hp == 0:
                     self.enter_ride_mode(mount_id=pet_id, reason="bind_owned_mount", quiet=True)
                     break
         label = "切换角色" if prev is not None and prev != actor else "识别角色"

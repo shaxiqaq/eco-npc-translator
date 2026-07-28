@@ -1155,15 +1155,21 @@ class DamageMeter(RideModeMixin, IdentityMixin):
                 and (self.self_id is None or getattr(self, "_rebind_pending", False) or self.auto_self)
             ):
                 self.observe_local_caster(caster, reason="skill_damage")
-            proxy = self.local_skill_proxy_source(ts, caster, skill_id, dst)
+            # Walk pet skill results → pet channel; never auto-ride.
+            if caster is not None and self.is_walk_partner(caster):
+                proxy = "pet"
+            else:
+                proxy = self.local_skill_proxy_source(ts, caster, skill_id, dst)
             # Prefer proxy first: while riding, caster is often still the player id.
             if proxy is None and self.self_id is not None and caster == self.self_id:
                 proxy = "ride" if self.is_ride_active(ts) else "self"
+            if proxy is None and caster is not None and self.maybe_mark_pet_from_damage(ts, caster, dst):
+                proxy = "pet"
             if proxy in ("self", "ride", "possession", "pet") and self.self_id is not None:
                 channel = self.resolve_outgoing_channel(proxy, skill_id)
                 src = self.self_id if proxy in ("self", "possession") else (caster or self.self_id)
-                if proxy == "ride":
-                    self.refresh_ride_mode(ts)
+                if proxy == "ride" and caster is not None and self.is_ride_mount(caster):
+                    self.refresh_ride_mode(ts, evidence=True)
             elif self.self_id is not None and dst == self.self_id:
                 if not self.should_capture_damage("taken", skill_id):
                     continue
@@ -1442,15 +1448,13 @@ class DamageMeter(RideModeMixin, IdentityMixin):
                 and self.has_recent_own_skill_request(ts, skill_id, target)
                 and not self.is_likely_character_actor(caster)
             ):
-                self.mark_pet_actor(caster, owner=self.self_id, reason="骑宠施法者")
-                self.enter_ride_mode(mount_id=caster, reason="骑宠施法者", ts=ts, quiet=True)
-            elif (
-                self.is_ride_active(ts)
-                and caster is not None
-                and caster == self.self_id
-                and self.has_recent_own_skill_request(ts, skill_id, target)
-            ):
-                self.refresh_ride_mode(ts)
+                # Non-PC caster after our C2S: only enter ride if already riding
+                # or this actor is the known mount. Walking pets just get marked.
+                self.mark_pet_actor(caster, owner=self.self_id, reason="伙伴施法者")
+                if self.is_ride_active(ts) or self.is_ride_mount(caster):
+                    self.enter_ride_mode(mount_id=caster, reason="骑宠施法者", ts=ts, quiet=True)
+            # Self-named caster while sticky ride: do not refresh TTL here.
+            # Only mount-as-caster / ride pet_appear should extend ride mode.
             self.remember_action(ts, caster, target, skill_id, "skill")
             # Cast counting: prefer C2S request only. Cast-time skills fire skill_active
             # 1–3s later; counting both request+active doubles the skill cast total.
@@ -1501,18 +1505,24 @@ class DamageMeter(RideModeMixin, IdentityMixin):
                         max_hp_i = int(max_hp) if max_hp is not None else None
                     except (TypeError, ValueError):
                         max_hp_i = None
-                    walk_pet = (
+                    own_owner = (
                         self.self_id is not None
-                        and owner in (self.self_id, None, 0)
+                        and owner is not None
+                        and int(owner) == int(self.self_id)
+                    )
+                    walk_pet = (
+                        own_owner
                         and hp_i is not None
                         and hp_i > 0
                         and (max_hp_i is None or max_hp_i > 0)
                     )
+                    # Ride mount packets usually report hp=0 and max_hp=0 (absorbed model).
+                    # Missing HP fields are common on walk/combat pets — do NOT treat as ride
+                    # (was falsely sticking all self damage into 骑宠渠道 for minutes).
                     ride_like = (
-                        self.self_id is not None
-                        and owner in (self.self_id, None, 0)
-                        and not walk_pet
-                        and (hp_i in (None, 0) or max_hp_i in (None, 0))
+                        own_owner
+                        and hp_i == 0
+                        and max_hp_i == 0
                     )
                     if walk_pet and self.is_ride_active(ts):
                         self.exit_ride_mode(reason="walk_pet_appear", ts=ts)
@@ -1544,7 +1554,7 @@ class DamageMeter(RideModeMixin, IdentityMixin):
                 # Ride mounts are deleted when absorbed into the rider visual —
                 # keep sticky ride_mode; only clear if a non-mount walk pet leaves.
                 if self.is_ride_mount(actor):
-                    self.refresh_ride_mode(ts)
+                    self.refresh_ride_mode(ts, evidence=True)
                 self.log({
                     "ts": ts,
                     "kind": "pet_delete",
@@ -1724,24 +1734,35 @@ class DamageMeter(RideModeMixin, IdentityMixin):
                 break
 
         side = "other"
-        proxy = self.local_skill_proxy_source(ts, src, skill_id, dst)
+        # Classify 通常パートナー (walk pet) before ride heuristics.
+        # Wiki: walk partners fight as their own actor; ride partners are mounted.
+        if src is not None and self.is_walk_partner(src):
+            proxy = "pet"
+            # Pet auto-attack must not inherit the player's recent skill_id
+            # (that used to push pet hits into ride_skill / inflate totals).
+            if not self.is_ride_mount(src):
+                skill_id = None
+        else:
+            proxy = self.local_skill_proxy_source(ts, src, skill_id, dst)
         if proxy is None and self.self_id is not None and src == self.self_id:
             # Mounted combat still uses the player actor id on many attack_result packets.
             proxy = "ride" if self.is_ride_active(ts) else "self"
-            if proxy == "ride":
-                self.refresh_ride_mode(ts)
         if proxy is None and self.is_ride_mount(src):
             proxy = "ride"
-            self.refresh_ride_mode(ts)
+            self.refresh_ride_mode(ts, evidence=True)
         if proxy is None and self.maybe_mark_pet_from_damage(ts, src, dst):
-            # Prefer ride channel when sticky-mounted and the pet is our mount.
-            if self.is_ride_active(ts) and self.is_owned_pet_source(src):
+            # Freshly recognized walk pet — never sticky-ride.
+            if self.is_ride_mount(src) and self.is_ride_active(ts):
                 proxy = "ride"
-                self.refresh_ride_mode(ts)
+                self.refresh_ride_mode(ts, evidence=True)
             else:
                 proxy = "pet"
+                skill_id = None
 
         if proxy in ("self", "ride", "possession", "pet") and self.self_id is not None and damage > 0:
+            # Pet physical hits: force normal channel (no player skill inheritance).
+            if proxy == "pet" and not self.is_ride_mount(src):
+                skill_id = None
             channel = self.resolve_outgoing_channel(proxy, skill_id)
             credit_src = (
                 self.self_id if proxy in ("self", "possession") and src != self.self_id else src
