@@ -103,8 +103,8 @@ export function SettingsPage() {
     player_names: '',
     toggle_hotkey: '',
     skip_hotkey: '',
-    sync_enabled: false,
-    sync_url: '',
+    sync_enabled: true,
+    sync_url: 'https://eco-npc-dict.w3145965836.workers.dev',
     sync_token: '',
   });
   const [overlayForm, setOverlayForm] = useState({
@@ -144,10 +144,12 @@ export function SettingsPage() {
 
   useEffect(() => {
     const t = state.translation || {};
+    const provider = t.provider || 'deepseek';
+    const preset = providerPreset(provider);
     setTranslationForm({
-      provider: t.provider || 'deepseek',
-      model: t.model || '',
-      base_url: t.base_url || '',
+      provider,
+      model: t.model || preset?.model || (provider === 'deepseek' ? 'deepseek-chat' : ''),
+      base_url: t.base_url || preset?.url || '',
       api_key: t.api_key || '',
       target_lang: t.target_lang || 'zh-CN',
       first_wait: Number(t.first_wait ?? 0),
@@ -404,7 +406,7 @@ export function SettingsPage() {
             <div className="settings-block">
               <div className="form-heading">
                 <h2>翻译服务</h2>
-                <p>NPC 对话翻译使用的连接参数</p>
+                <p>NPC 对话翻译；推荐 DeepSeek + deepseek-chat（质量更好，可贡献共享词库）</p>
               </div>
               <div className="form-grid">
                 <label>
@@ -423,7 +425,7 @@ export function SettingsPage() {
                   >
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="deepseek">DeepSeek</SelectItem>
+                      <SelectItem value="deepseek">DeepSeek（推荐）</SelectItem>
                       <SelectItem value="openai">OpenAI</SelectItem>
                       <SelectItem value="openrouter">OpenRouter</SelectItem>
                       <SelectItem value="gemini">Gemini</SelectItem>
@@ -434,7 +436,11 @@ export function SettingsPage() {
                 </label>
                 <label>
                   <span>模型</span>
-                  <Input value={translationForm.model} onChange={(e) => setTranslationForm((f) => ({ ...f, model: e.target.value }))} />
+                  <Input
+                    value={translationForm.model}
+                    placeholder={translationForm.provider === 'deepseek' ? 'deepseek-chat' : ''}
+                    onChange={(e) => setTranslationForm((f) => ({ ...f, model: e.target.value }))}
+                  />
                 </label>
                 <label className="wide">
                   <span>接口地址</span>
@@ -493,7 +499,12 @@ export function SettingsPage() {
               </div>
               <div className="sub-settings">
                 <label className="toggle-row">
-                  <div><strong>共享词库</strong><span>自动同步已有译文</span></div>
+                  <div>
+                    <strong>共享词库</strong>
+                    <span>
+                      默认开启：拉取公共译文；上报仅接受可信模型（如 deepseek-chat）且通过脏文过滤的条目。本地 Ollama 等只写本机缓存。
+                    </span>
+                  </div>
                   <Switch checked={translationForm.sync_enabled} onCheckedChange={(v) => setTranslationForm((f) => ({ ...f, sync_enabled: v }))} />
                 </label>
                 <div className="form-grid sync-fields">

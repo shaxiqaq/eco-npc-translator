@@ -26,6 +26,7 @@ Living notes for ECO Toolbox. Prefer small, test-backed cleanups over rewrites.
 - Meter modularization: `eco_damage_ride` / `eco_damage_identity` mixins
 - Diagnostic pack: `SUMMARY.txt` + `eco_damage_meter.log` tails for remote support
 - `diagnostics.js`: zip + named log tails + remote summary helpers
+- **v0.2.15**: translation quality — default `deepseek-chat`, ECO glossary prompts, shared-dict upload gate (trusted models + dirty filter), default public sync
 
 ## Still optional
 

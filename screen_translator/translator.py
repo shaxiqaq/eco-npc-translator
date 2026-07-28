@@ -8,6 +8,7 @@ import json
 import uuid
 
 from .config import TranslationConfig
+from .prompts import ECO_SYSTEM_SINGLE, ECO_SYSTEM_BATCH, ECO_PROMPT_HEADER
 
 
 NO_TEXT_MESSAGE = "\u6ca1\u6709\u8bc6\u522b\u5230\u53ef\u7ffb\u8bd1\u7684\u6587\u5b57\u3002"
@@ -44,18 +45,7 @@ class OpenAITranslator(Translator):
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a game localization translator for RPG dialogue and UI text. "
-                        "Translate the entire OCR text into natural, fluent Chinese, with a tone that fits game dialogue. "
-                        "Do not translate word by word; rewrite awkward OCR text into idiomatic Chinese while preserving the original meaning. "
-                        "Never omit short fragments, repeated words, ellipses, names, or sentence endings. "
-                        "OCR may split contractions, for example \"I' m\", \"it' s\", \"don' t\", or \"he' s\"; recover them before translating. "
-                        "Keep character names and proper nouns readable, transliterating only when appropriate. "
-                        "Return only the translation, without explanations."
-                    ),
-                },
+                {"role": "system", "content": ECO_SYSTEM_SINGLE},
                 {
                     "role": "user",
                     "content": (
@@ -87,17 +77,7 @@ class OpenAITranslator(Translator):
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a game localization translator for RPG dialogue and UI text. "
-                        "Translate each numbered item into natural, fluent Chinese. "
-                        "Preserve the full meaning and do not omit short fragments, names, punctuation, or sentence endings. "
-                        "OCR may split contractions; recover them before translating. "
-                        "Return exactly one translated line per input item in the form 'number. translation'. "
-                        "Do not merge, skip, explain, or add extra text."
-                    ),
-                },
+                {"role": "system", "content": ECO_SYSTEM_BATCH},
                 {
                     "role": "user",
                     "content": (
@@ -122,7 +102,8 @@ class DeepSeekTranslator(Translator):
             api_key=config.api_key or os.environ.get("DEEPSEEK_API_KEY"),
             base_url=config.base_url or "https://api.deepseek.com",
         )
-        self._model = config.model or "deepseek-v4-flash"
+        # Prefer quality over flash for shared-dict contributions.
+        self._model = config.model or "deepseek-chat"
 
     def translate(self, text: str, source_language: str, target_language: str) -> str:
         if not text.strip():
@@ -131,18 +112,7 @@ class DeepSeekTranslator(Translator):
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a game localization translator for RPG dialogue and UI text. "
-                        "Translate the entire OCR text into natural, fluent Chinese, with a tone that fits game dialogue. "
-                        "Do not translate word by word; rewrite awkward OCR text into idiomatic Chinese while preserving the original meaning. "
-                        "Never omit short fragments, repeated words, ellipses, names, or sentence endings. "
-                        "OCR may split contractions, for example \"I' m\", \"it' s\", \"don' t\", or \"he' s\"; recover them before translating. "
-                        "Keep character names and proper nouns readable, transliterating only when appropriate. "
-                        "Return only the translation, without explanations."
-                    ),
-                },
+                {"role": "system", "content": ECO_SYSTEM_SINGLE},
                 {
                     "role": "user",
                     "content": (
@@ -174,17 +144,7 @@ class DeepSeekTranslator(Translator):
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a game localization translator for RPG dialogue and UI text. "
-                        "Translate each numbered item into natural, fluent Chinese. "
-                        "Preserve the full meaning and do not omit short fragments, names, punctuation, or sentence endings. "
-                        "OCR may split contractions; recover them before translating. "
-                        "Return exactly one translated line per input item in the form 'number. translation'. "
-                        "Do not merge, skip, explain, or add extra text."
-                    ),
-                },
+                {"role": "system", "content": ECO_SYSTEM_BATCH},
                 {
                     "role": "user",
                     "content": (
@@ -222,18 +182,7 @@ class OpenRouterTranslator(Translator):
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a game localization translator for RPG dialogue and UI text. "
-                        "Translate the entire OCR text into natural, fluent Chinese, with a tone that fits game dialogue. "
-                        "Do not translate word by word; rewrite awkward OCR text into idiomatic Chinese while preserving the original meaning. "
-                        "Never omit short fragments, repeated words, ellipses, names, or sentence endings. "
-                        "OCR may split contractions, for example \"I' m\", \"it' s\", \"don' t\", or \"he' s\"; recover them before translating. "
-                        "Keep character names and proper nouns readable, transliterating only when appropriate. "
-                        "Return only the translation, without explanations."
-                    ),
-                },
+                {"role": "system", "content": ECO_SYSTEM_SINGLE},
                 {
                     "role": "user",
                     "content": (
@@ -262,10 +211,7 @@ class GeminiTranslator(Translator):
             return NO_TEXT_MESSAGE
 
         prompt = (
-            "You are a precise screen translation engine.\n"
-            "Translate UI text naturally and concisely.\n"
-            "Preserve line breaks when helpful.\n"
-            "Return only the translation.\n\n"
+            f"{ECO_PROMPT_HEADER}"
             f"Source language: {source_language}\n"
             f"Target language: {target_language}\n\n"
             f"{text}"
@@ -292,10 +238,7 @@ class CloudflareWorkersAITranslator(Translator):
             return NO_TEXT_MESSAGE
 
         prompt = (
-            "You are a game localization translator for RPG dialogue and UI text.\n"
-            "Translate the entire OCR text naturally into the target language.\n"
-            "Preserve the full meaning and never omit short fragments.\n"
-            "Return only the translation.\n\n"
+            f"{ECO_PROMPT_HEADER}"
             f"Source language: {source_language}\n"
             f"Target language: {target_language}\n\n"
             f"{text}"
@@ -304,7 +247,7 @@ class CloudflareWorkersAITranslator(Translator):
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are a precise game translation engine.",
+                    "content": ECO_SYSTEM_SINGLE,
                 },
                 {
                     "role": "user",
@@ -430,10 +373,7 @@ class OllamaTranslator(Translator):
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You are a game localization translator for RPG dialogue and UI text. "
-                        "Translate naturally and return only the translation."
-                    ),
+                    "content": ECO_SYSTEM_SINGLE,
                 },
                 {
                     "role": "user",
@@ -472,11 +412,7 @@ class OllamaTranslator(Translator):
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "Translate each numbered item into natural Chinese. "
-                        "Return exactly one translated line per input item in the form 'number. translation'. "
-                        "Do not explain."
-                    ),
+                    "content": ECO_SYSTEM_BATCH,
                 },
                 {
                     "role": "user",

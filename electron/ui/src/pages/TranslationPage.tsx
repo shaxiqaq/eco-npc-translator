@@ -31,6 +31,9 @@ export function TranslationPage() {
               </h2>
               <p className="m-0 mt-1 text-xs text-[var(--muted-foreground)]">
                 {translator?.message || '完成翻译设置后即可启动'}
+                {running
+                  ? ' · 首次对话常为英文（后台入缓存），同一句再次出现应变中文'
+                  : ' · 推荐模型 deepseek-chat，译文质量更高并可贡献共享词库'}
               </p>
             </div>
           </div>
@@ -65,7 +68,12 @@ export function TranslationPage() {
               ['模型', translation.model || '-'],
               ['目标语言', translation.target_lang === 'zh-TW' ? '繁体中文' : '简体中文'],
               ['首屏等待', `${translation.first_wait || 0} 秒`],
-              ['共享词库', translation.sync_enabled ? '开启' : '关闭'],
+              [
+                '共享词库',
+                translation.sync_enabled
+                  ? `开启${translation.sync_url ? ` · ${String(translation.sync_url).replace(/^https?:\/\//, '').split('/')[0]}` : ''}`
+                  : '关闭（仅本地）',
+              ],
             ] as const).map(([label, value]) => (
               <div key={label} className="flex items-center justify-between gap-3 border-b border-[var(--line-soft)] pb-2 last:border-0 last:pb-0">
                 <dt className="text-[var(--muted-foreground)]">{label}</dt>

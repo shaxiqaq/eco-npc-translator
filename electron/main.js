@@ -23,6 +23,7 @@ const {
   zipDirectory,
   defaultDiagnosticLogDirs
 } = require('./lib/diagnostics');
+const { ensureSyncConfig, cloneDefaults: cloneSyncDefaults } = require('./lib/sync-defaults');
 const { buildBackendEnv } = require('./lib/backend-env');
 const { isProcessElevated, buildConnectionHealth } = require('./lib/system-health');
 const { createCharacterPresetStore } = require('./lib/character-presets');
@@ -336,8 +337,10 @@ function migrateLegacyWallpaperIfNeeded() {
 
 function translationSettings() {
   const root = localDataDir();
+  fs.mkdirSync(root, { recursive: true });
   const translation = readJson(path.join(root, 'translate_config.json'));
-  const sync = readJson(path.join(root, 'sync_config.json'));
+  // Public shared dictionary is on by default for all users.
+  const sync = ensureSyncConfig(path.join(root, 'sync_config.json'), { readJson, writeJson });
   return {
     provider: translation.provider || 'deepseek',
     model: translation.model || 'deepseek-chat',
@@ -2254,7 +2257,9 @@ ipcMain.handle('appearance:clear-background', (_event, target = 'main') => {
   };
 });
 ipcMain.handle('settings:save-translation', (_event, incoming) => {
-  const root = app.isPackaged ? dataDir() : backendDir();
+  // Must match ECO_DATA_DIR / localDataDir so the Python mitm backend reads the same file.
+  const root = localDataDir();
+  fs.mkdirSync(root, { recursive: true });
   const translation = {
     provider: incoming.provider,
     model: incoming.model,
@@ -2266,15 +2271,18 @@ ipcMain.handle('settings:save-translation', (_event, incoming) => {
     toggle_hotkey: incoming.toggle_hotkey || '',
     skip_hotkey: incoming.skip_hotkey || ''
   };
-  const sync = readJson(path.join(root, 'sync_config.json'));
-  Object.assign(sync, {
-    enabled: Boolean(incoming.sync_enabled),
-    url: incoming.sync_url || '',
-    token: incoming.sync_token || ''
-  });
-  if (!('pull_interval' in sync)) sync.pull_interval = 300;
-  if (!('flush_interval' in sync)) sync.flush_interval = 20;
-  if (!('pull_on_start' in sync)) sync.pull_on_start = true;
+  // Shared dict is public for all users; empty URL falls back to the official node.
+  const defaults = cloneSyncDefaults();
+  const prev = readJson(path.join(root, 'sync_config.json'), defaults);
+  const sync = {
+    // Only an explicit false turns sync off; missing / true → on.
+    enabled: incoming.sync_enabled === false ? false : true,
+    url: String(incoming.sync_url || '').trim() || defaults.url,
+    token: String(incoming.sync_token || '').trim() || defaults.token,
+    pull_interval: Number(prev.pull_interval) > 0 ? Number(prev.pull_interval) : defaults.pull_interval,
+    flush_interval: Number(prev.flush_interval) > 0 ? Number(prev.flush_interval) : defaults.flush_interval,
+    pull_on_start: prev.pull_on_start !== false
+  };
   writeJson(path.join(root, 'translate_config.json'), translation);
   writeJson(path.join(root, 'sync_config.json'), sync);
   addLog('translator', 'success', '翻译设置已保存，重新启动翻译后生效');
@@ -2475,6 +2483,12 @@ ipcMain.handle('xiaoya:open-folder', () => {
 app.whenReady().then(async () => {
   registerBackgroundProtocol();
   migrateLegacyWallpaperIfNeeded();
+  // Ensure public shared NPC dictionary is available for all installs.
+  try {
+    ensureSyncConfig(path.join(localDataDir(), 'sync_config.json'), { readJson, writeJson });
+  } catch (error) {
+    log.warn('ensureSyncConfig failed', error?.message || error);
+  }
   xiaoyaService = new XiaoyaCoreService({
     corePath: path.join(
       app.isPackaged ? process.resourcesPath : __dirname,

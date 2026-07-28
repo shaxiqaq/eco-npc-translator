@@ -469,42 +469,70 @@ def handler(msg, data):
     if p.get("t") == "need":
         sub = bytes.fromhex(p["sub"]); h = p["h"]; op = p.get("op"); sync = p.get("sync")
         tag = "选项菜单" if op == 1526 else "对话"
+
+        def _bg_translate_and_cache():
+            """Cache miss: translate in background and inject rebuilt sub for next display."""
+            try:
+                built = rebuild_1526(sub) if op == 1526 else rebuild_1017(sub)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                return
+            if not built:
+                return
+            try:
+                sref["s"].post({"type": "cache", "h": h, "sub": built.hex()})
+            except Exception:
+                return
+            logger.info("[缓存+] op%s(%s) hash=%s (%sB)", op, tag, h, len(built))
+
         if sync:
             # 1) 先纯查表: 命中缓存→同帧出中文(毫秒级)
-            try: newsub = rebuild_1526(sub, cache_only=True) if op == 1526 else rebuild_1017(sub, cache_only=True)
-            except Exception: import traceback; traceback.print_exc(); newsub = None
+            try:
+                newsub = rebuild_1526(sub, cache_only=True) if op == 1526 else rebuild_1017(sub, cache_only=True)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                newsub = None
             cached_hit = newsub is not None
             # 2) 未命中 且 开了短等待: 在 FIRST_WAIT 内抢翻出来, 第一次就中文
             if newsub is None and FIRST_WAIT > 0:
                 res = {}
                 def do():
-                    try: res["s"] = rebuild_1526(sub) if op == 1526 else rebuild_1017(sub)
-                    except Exception: import traceback; traceback.print_exc()
-                th = threading.Thread(target=do); th.start(); th.join(FIRST_WAIT)
+                    try:
+                        res["s"] = rebuild_1526(sub) if op == 1526 else rebuild_1017(sub)
+                    except Exception:
+                        import traceback
+                        traceback.print_exc()
+                th = threading.Thread(target=do)
+                th.start()
+                th.join(FIRST_WAIT)
                 newsub = res.get("s")
-                if newsub is None:           # 超时: 放行英文, 后台翻完回填(下次生效)
+                if newsub is None:
+                    # 超时: 放行英文, 后台翻完回填(下次生效)
                     def finish_to():
-                        th.join(); ns = res.get("s")
+                        th.join()
+                        ns = res.get("s")
                         if ns:
-                            try: sref["s"].post({"type": "cache", "h": h, "sub": ns.hex()})
-                            except Exception: pass
+                            try:
+                                sref["s"].post({"type": "cache", "h": h, "sub": ns.hex()})
+                            except Exception:
+                                pass
                             logger.info("[缓存+](超时,下次生效) op%s(%s) hash=%s", op, tag, h)
                     threading.Thread(target=finish_to, daemon=True).start()
+            # 2b) first_wait=0 且未命中: 必须后台翻译, 否则永远不进缓存(永远英文)
+            elif newsub is None:
+                threading.Thread(target=_bg_translate_and_cache, daemon=True).start()
             # 3) 回复 JS(中文 or 空=放行英文)
-            try: sref["s"].post({"type": "t%d" % h, "sub": newsub.hex() if newsub else ""})
-            except Exception: pass
+            try:
+                sref["s"].post({"type": "t%d" % h, "sub": newsub.hex() if newsub else ""})
+            except Exception:
+                pass
             if newsub:
                 tagdesc = "缓存" if cached_hit else "现翻"
                 logger.info("[首屏中文·%s] op%s(%s) hash=%s (%sB)", tagdesc, op, tag, h, len(newsub))
         else:
-            def work():
-                try: newsub = rebuild_1526(sub) if op == 1526 else rebuild_1017(sub)
-                except Exception: import traceback; traceback.print_exc(); return
-                if not newsub: return
-                try: sref["s"].post({"type": "cache", "h": h, "sub": newsub.hex()})
-                except Exception: return
-                logger.info("[缓存+] op%s(%s) hash=%s (%sB)", op, tag, h, len(newsub))
-            threading.Thread(target=work, daemon=True).start()
+            threading.Thread(target=_bg_translate_and_cache, daemon=True).start()
     elif p.get("t") == "hit":
         logger.info("[改包✓] 已替换为中文 hash=%s", p['h'])
 

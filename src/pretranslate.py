@@ -57,6 +57,7 @@ def main():
     args = ap.parse_args()
 
     cache = load_json(CACHE_FILE, {})
+    provider = load_provider()
 
     # 先把共享词库拉下来合并(别人翻过的就不用再花 API 翻了)
     sync = None
@@ -67,7 +68,8 @@ def main():
             for k, v in d.items():
                 if k and v and k not in cache: cache[k] = v; n += 1
             return n
-        sync = cache_sync.Sync(DATA_DIR, TARGET_LANG, "pretranslate", _merge)
+        # 用真实模型名上报，以便通过共享库可信模型门禁
+        sync = cache_sync.Sync(DATA_DIR, TARGET_LANG, provider.get("model") or "?", _merge)
         if sync.enabled:
             logger.info("先拉取共享词库...")
             sync._pull_once()
@@ -91,7 +93,7 @@ def main():
         logger.info("没有需要翻译的, 缓存已是最新。")
         return
 
-    eng = create_translator(TranslationConfig(**load_provider()))
+    eng = create_translator(TranslationConfig(**provider))
     t0 = time.time(); done = 0; bs = max(1, args.batch)
     for i in range(0, len(todo), bs):
         chunk = todo[i:i+bs]

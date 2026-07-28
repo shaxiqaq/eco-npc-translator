@@ -52,6 +52,7 @@ try {
         --add-data "$Src\_mitm.js;." `
         --add-data "$ScreenTranslator;screen_translator" `
         --hidden-import cache_sync `
+        --hidden-import eco_translation_quality `
         --hidden-import eco_log `
         --hidden-import eco_paths `
         --hidden-import eco_process `

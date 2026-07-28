@@ -19,15 +19,33 @@ SYNC_FILE = os.path.join(DATA_DIR, "sync_config.json")          # 共享词库�
 sys.path.insert(0, RES_DIR)                           # 优先用随程序打包的 screen_translator
 sys.path.append(r"C:\Users\31459\Documents\自动翻译")  # 后备: 开发机原路径
 
+# Keep in sync with electron/lib/sync-defaults.js and cache_sync.DEFAULT_SYNC_CONFIG
+DEFAULT_SYNC = {
+    "enabled": True,
+    "url": "https://eco-npc-dict.w3145965836.workers.dev",
+    "token": "eco_NWODgbGAcW7Zd5EXsuf6P-Kq",
+    "pull_interval": 300,
+    "flush_interval": 20,
+    "pull_on_start": True,
+}
+
+
 def load_sync():
-    try: return json.load(open(SYNC_FILE, encoding="utf-8"))
-    except Exception: return {}
+    try:
+        sc = json.load(open(SYNC_FILE, encoding="utf-8"))
+        if not isinstance(sc, dict):
+            return dict(DEFAULT_SYNC)
+        if not str(sc.get("url") or "").strip():
+            return dict(DEFAULT_SYNC)
+        return sc
+    except Exception:
+        return dict(DEFAULT_SYNC)
 
 # 服务商预设: 名称 -> provider/默认地址/常用模型/是否需要key/说明
 PRESETS = {
-    "DeepSeek (推荐, 快)": dict(provider="deepseek", base_url="https://api.deepseek.com",
-        models=["deepseek-v4-flash", "deepseek-chat"], need_key=True,
-        hint="官网 platform.deepseek.com 申请 key, 形如 sk-..."),
+    "DeepSeek (推荐)": dict(provider="deepseek", base_url="https://api.deepseek.com",
+        models=["deepseek-chat", "deepseek-v4-flash"], need_key=True,
+        hint="推荐 deepseek-chat（质量更好, 可上报共享词库）。官网 platform.deepseek.com 申请 key"),
     "OpenAI": dict(provider="openai", base_url="",
         models=["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"], need_key=True,
         hint="platform.openai.com 申请 key, 形如 sk-..."),
@@ -104,8 +122,8 @@ class App:
                   **note).grid(row=10, column=0, columnspan=3, sticky="w", padx=12)
 
         ttk.Separator(frm, orient="horizontal").grid(row=11, column=0, columnspan=3, sticky="ew", pady=8)
-        self.sync_var = tk.IntVar(value=0)
-        ttk.Checkbutton(frm, text="启用共享词库 (众包: 自动上报/拉取译文)", variable=self.sync_var)\
+        self.sync_var = tk.IntVar(value=1)
+        ttk.Checkbutton(frm, text="启用共享词库 (默认公共节点, 众包上报/拉取)", variable=self.sync_var)\
             .grid(row=12, column=0, columnspan=3, sticky="w", padx=12)
         ttk.Label(frm, text="节点地址").grid(row=13, column=0, sticky="w", **pad)
         self.e_url = ttk.Entry(frm, width=41); self.e_url.grid(row=13, column=1, columnspan=2, sticky="w", **pad)
@@ -143,8 +161,13 @@ class App:
         self.e_names.insert(0, ", ".join(names))
         self.e_hotkey.insert(0, cur.get("toggle_hotkey", "f9"))
         sc = load_sync()
-        self.sync_var.set(1 if sc.get("enabled") else 0)
-        if sc.get("url"): self.e_url.insert(0, sc["url"])
+        self.sync_var.set(0 if sc.get("enabled") is False else 1)
+        self.e_url.insert(0, sc.get("url") or DEFAULT_SYNC["url"])
+        if sc.get("token") or DEFAULT_SYNC.get("token"):
+            try:
+                self.e_token.insert(0, sc.get("token") or DEFAULT_SYNC["token"])
+            except Exception:
+                pass
         if sc.get("token"): self.e_token.insert(0, sc["token"])
 
     def on_provider(self, *_):
