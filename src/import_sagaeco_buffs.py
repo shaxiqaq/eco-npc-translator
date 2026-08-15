@@ -48,6 +48,8 @@ NAME_OVERRIDES = {
     "FaintResist": "昏厥抗性",
     "Sit": "坐下",
     "Spirit": "灵魂状态",
+    # Confirmed on live client (not in open Saga Buff.1 group0 list): overweight bit.
+    "Overweight": "超重",
     "Curse": "诅咒",
     "Revive": "复活",
     "PetUp": "宠物强化",

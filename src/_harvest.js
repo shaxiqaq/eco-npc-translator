@@ -1,5 +1,5 @@
 'use strict';
-// ECO 只读采集器: 解密 S->C, 把 op1017(对话)/op1526(菜单)/op1512(当前eventid) 原文上报 Python。
+// ECO 只读采集器: 解密双向流量, 被动记录合法点击请求和服务端对话上下文。
 // 不修改任何封包(read-only), 不注入, 零风险。AES 解密逻辑同 _mitm.js(已验证)。
 const SBOX=[],INV=[];
 (function(){let p=1,q=1;do{p=p^(p<<1)^(p&0x80?0x11b:0);p&=0xff;q^=q<<1;q^=q<<2;q^=q<<4;q&=0xff;if(q&0x80)q^=0x09;q&=0xff;const x=q^((q<<1)|(q>>7))^((q<<2)|(q>>6))^((q<<3)|(q>>5))^((q<<4)|(q>>4))^0x63;SBOX[p]=x&0xff;}while(p!==1);SBOX[0]=0x63;for(let i=0;i<256;i++)INV[SBOX[i]]=i;})();
@@ -15,7 +15,7 @@ function be16(a,i){return (a[i]<<8)|a[i+1];}
 function be32(a,i){return ((a[i]<<24)|(a[i+1]<<16)|(a[i+2]<<8)|a[i+3])>>>0;}
 
 const m=Process.findModuleByName('eco.exe');
-let KEYS=[]; let RK=null;
+let KEYS=[]; let RK=null; let RK_OUT=null;
 Interceptor.attach(m.base.add(0x18cc4),{onEnter(){try{
   const rkbytes=hx(this.context.esp.add(4).readPointer(),16);
   const k=[]; for(let i=0;i<16;i+=4){k.push(rkbytes[i+3],rkbytes[i+2],rkbytes[i+1],rkbytes[i]);}
@@ -57,6 +57,31 @@ function processFrame(buf, off){
   return 8+Lp;
 }
 
+function processClientFrame(buf, off){
+  if(off+8>buf.length) return null;
+  const Lp=be32(buf,off), num1=be32(buf,off+4);
+  if((Lp%16)||Lp<16||Lp>0x40000||num1>Lp||num1<2) return null;
+  if(off+8+Lp>buf.length) return null;
+  const ct=buf.slice(off+8,off+8+Lp);
+  let rk=RK_OUT, pt=null;
+  if(rk){ pt=ecbDec(rk,ct); if(!validPlain(pt,num1)) pt=null; }
+  if(!pt){
+    for(const ks of KEYS){const kk=ks.split(',').map(Number);const r=expandKey(kk);const d=ecbDec(r,ct);if(validPlain(d,num1)){rk=r;RK_OUT=r;pt=d;break;}}
+  }
+  if(!pt) return 8+Lp;
+  let pos=0;
+  while(pos<num1){
+    const sl=be16(pt,pos); if(sl<2||pos+2+sl>pt.length) break;
+    const sub=pt.slice(pos+2,pos+2+sl); pos+=2+sl;
+    const op=be16(sub,0);
+    if(op===1510){
+      const hexsub=sub.map(x=>('0'+x.toString(16)).slice(-2)).join('');
+      send({op:op, sub:hexsub});
+    }
+  }
+  return 8+Lp;
+}
+
 const pRecvfrom=exp('ws2_32.dll','recvfrom');
 if(pRecvfrom) Interceptor.attach(pRecvfrom,{
   onEnter(a){this.s=a[0].toUInt32();this.b=a[1];},
@@ -72,6 +97,18 @@ if(pRecvfrom) Interceptor.attach(pRecvfrom,{
         off+=consumed;
       }
     }catch(e){ /* 只读, 出错忽略 */ }
+  }
+});
+
+const pSendto=exp('ws2_32.dll','sendto');
+if(pSendto) Interceptor.attach(pSendto,{
+  onEnter(a){
+    const s=a[0].toUInt32(), b=a[1], n=a[2].toInt32();
+    if(n<=0||getPort(s)!==__MAP_PORT__) return;
+    try{
+      const buf=hx(b,n); let off=0;
+      while(off<buf.length){const consumed=processClientFrame(buf,off);if(consumed===null)break;off+=consumed;}
+    }catch(e){}
   }
 });
 send('READY');

@@ -1,6 +1,6 @@
 # ECO 工具箱
 
-面向《Emil Chronicle Online》(ECO) 的 **本地 Windows 工具箱**（当前版本 **v0.2.10**）。
+面向《Emil Chronicle Online》(ECO) 的 **本地 Windows 工具箱**（当前版本 **v0.2.19**）。
 
 | 功能 | 说明 |
 |---|---|
@@ -18,8 +18,8 @@
 
 从 GitHub Releases 下载安装包：
 
-**[ECO Toolbox v0.2.10](https://github.com/shaxiqaq/eco-npc-translator/releases/tag/v0.2.10)**  
-安装文件：`ECO-Toolbox-Setup-0.2.10.exe`
+**[最新安装包](https://github.com/shaxiqaq/eco-npc-translator/releases/latest)**  
+安装文件：`ECO-Toolbox-Setup-0.2.17.exe`（发布后可在 Releases 下载）
 
 安装版已内置 Python/Frida 后端与 `XiaoyaCore.exe`，**无需**再装 Python、Node.js 或 .NET Runtime。
 
@@ -36,6 +36,7 @@
 |---|---|
 | **总览** | 服务启停、状态监控开关、战斗指标、最近伤害与日志 |
 | **伤害统计** | 四类伤害筛选、流水、技能释放统计 |
+| **肝度统计** | 经验/职业经验速率与窗口 |
 | **状态监控** | 自定义持续/CD、本地技能库快捷添加、当前状态与变化记录 |
 | **NPC 翻译** | 运行状态与翻译动态 |
 | **小雅助手** | F1–F6 技能间隔、鼠标与延迟 |
@@ -134,12 +135,12 @@ npm.cmd run dist
 2. 打同名标签并推送：
 
 ```powershell
-git tag v0.2.10
+git tag v0.2.19
 git push origin main
-git push origin v0.2.10
+git push origin v0.2.19
 ```
 
-`.github/workflows/release.yml` 会在 Windows Runner 上测试、构建，并创建 Release（标签必须与 `package.json` 版本一致，例如 `v0.2.10`）。
+`.github/workflows/release.yml` 会在 Windows Runner 上测试、构建，并创建 Release（标签必须与 `package.json` 版本一致，例如 `v0.2.19`）。Release 正文请粘贴 `CHANGELOG.md` 对应版本的中文说明。
 
 ---
 

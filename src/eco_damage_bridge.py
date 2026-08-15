@@ -136,6 +136,13 @@ def command_loop(meter, stop_event, history_limit=80):
                 message=f"已重载自定义 buff 持续时间（{len(loaded)} 条）",
                 custom_durations=loaded,
             )
+        elif action == "warmup":
+            try:
+                import eco_npc_mitm as mitm
+                threading.Thread(target=mitm.warmup, daemon=True).start()
+                emit("notice", level="info", message="已请求预热翻译引擎")
+            except Exception as exc:
+                emit("notice", level="warn", message=f"预热失败：{exc}")
         elif action == "stop":
             stop_event.set()
 

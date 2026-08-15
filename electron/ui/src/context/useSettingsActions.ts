@@ -156,7 +156,7 @@ export function useSettingsActions(options: {
   const saveTranslation = useCallback(async (payload: TranslationSettings) => {
     await window.eco.saveTranslationSettings(payload);
     setState((prev) => ({ ...prev, translation: payload }));
-    showToast('翻译设置已保存');
+    showToast('翻译设置已保存，请重启 NPC 翻译后生效');
   }, [showToast, setState]);
 
   const saveOverlaySettings = useCallback(async (

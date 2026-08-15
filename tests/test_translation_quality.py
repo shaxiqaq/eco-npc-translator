@@ -9,9 +9,22 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 from eco_translation_quality import (  # noqa: E402
     is_clean_pair,
     is_trusted_model,
+    normalize_text,
     reject_reason,
     should_upload,
 )
+
+
+class NormalizeTextTest(unittest.TestCase):
+    def test_strips_space_nul_suffix(self):
+        self.assertEqual(normalize_text("Alright, now give me 1 \n[Kitin]. \x00"), "Alright, now give me 1 \n[Kitin].")
+
+    def test_strips_plain_nul(self):
+        self.assertEqual(normalize_text("How can I help you?\x00"), "How can I help you?")
+
+    def test_none_and_empty(self):
+        self.assertIsNone(normalize_text(None))
+        self.assertEqual(normalize_text(""), "")
 
 
 class TrustedModelTest(unittest.TestCase):
@@ -119,6 +132,40 @@ class ShouldUploadTest(unittest.TestCase):
                 "qwen2.5:7b",
             ),
             "untrusted_model",
+        )
+
+    def test_japanese_dialogue_uploadable(self):
+        self.assertTrue(
+            should_upload(
+                "あなたは誰？　私はダークフェザーです。",
+                "你是谁？我是暗羽。",
+                "deepseek-chat",
+                source_lang="ja",
+            )
+        )
+
+    def test_indonesian_dialogue_uploadable(self):
+        self.assertTrue(
+            should_upload(
+                "Apakah kamu ingin melepas IRIS Card sekarang?",
+                "你现在想卸下 IRIS 卡片吗？",
+                "deepseek-chat",
+                source_lang="id",
+            )
+        )
+
+    def test_block_short_yes_no(self):
+        self.assertFalse(should_upload("Yes", "是", "deepseek-chat"))
+        self.assertEqual(reject_reason("Yes", "是", "deepseek-chat"), "ambiguous_short")
+        self.assertFalse(should_upload("No", "不", "deepseek-chat"))
+
+    def test_block_already_chinese_source(self):
+        self.assertFalse(
+            should_upload("你想交换吗？再跟我谈谈吧。", "你想交换吗？再跟我谈谈吧。", "deepseek-chat")
+        )
+        self.assertEqual(
+            reject_reason("你想交换吗？再跟我谈谈吧。", "你想交换吗？再跟我谈谈吧。", "deepseek-chat"),
+            "source_zh",
         )
 
     def test_block_dirty_even_if_trusted(self):

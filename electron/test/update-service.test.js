@@ -46,7 +46,29 @@ class FakeUpdater extends EventEmitter {
 test('normalizes release notes and errors for renderer display', () => {
   assert.equal(normalizeReleaseNotes([{ note: '第一项' }, { note: '第二项' }]), '第一项\n\n第二项');
   assert.equal(normalizeReleaseNotes('单段说明'), '单段说明');
+  assert.equal(
+    normalizeReleaseNotes('**Full Changelog**: https://github.com/foo/bar/compare/v1.0.0...v1.1.0'),
+    '**Full Changelog**: https://github.com/foo/bar/compare/v1.0.0...v1.1.0'
+  );
   assert.equal(updateErrorMessage(new Error('network\n timeout')), 'network timeout');
+});
+
+test('strips GitHub atom-feed HTML from release notes', () => {
+  const html = '<p><strong>Full Changelog</strong>: <a class="commit-link" href="https://github.com/shaxiqaq/eco-npc-translator/compare/v0.2.15...v0.2.16"><tt>v0.2.15...v0.2.16</tt></a></p>';
+  assert.equal(
+    normalizeReleaseNotes(html),
+    'Full Changelog: https://github.com/shaxiqaq/eco-npc-translator/compare/v0.2.15...v0.2.16'
+  );
+
+  const rich = [
+    {
+      note: '<h2>What\'s Changed</h2><ul><li>Fix overlay by <a href="https://github.com/alice">@alice</a> in <a href="https://github.com/org/repo/pull/12">#12</a></li></ul><p>Use HP &lt; 50 &amp; ATK &gt; 10</p>'
+    }
+  ];
+  assert.equal(
+    normalizeReleaseNotes(rich),
+    'What\'s Changed\n\n• Fix overlay by @alice in #12\n\nUse HP < 50 & ATK > 10'
+  );
 });
 
 test('disabled update service reports unsupported state', async () => {
@@ -86,6 +108,23 @@ test('download progress reaches downloaded state and enables installation', asyn
 
   assert.equal(service.install().ok, true);
   assert.equal(updater.installCalls, 1);
+});
+
+test('update-available stores stripped GitHub HTML notes', async () => {
+  const updater = new FakeUpdater();
+  updater.checkForUpdates = async function checkForUpdates() {
+    this.checkCalls += 1;
+    this.emit('update-available', {
+      version: '0.2.16',
+      releaseNotes: '<p><strong>Full Changelog</strong>: <a href="https://github.com/shaxiqaq/eco-npc-translator/compare/v0.2.15...v0.2.16"><tt>v0.2.15...v0.2.16</tt></a></p>'
+    });
+  };
+  const service = new UpdateService({ updater, currentVersion: '0.2.10' });
+  await service.check();
+  assert.equal(
+    service.snapshot().releaseNotes,
+    'Full Changelog: https://github.com/shaxiqaq/eco-npc-translator/compare/v0.2.15...v0.2.16'
+  );
 });
 
 test('download is rejected when no update is available', async () => {

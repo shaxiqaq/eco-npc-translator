@@ -2,9 +2,22 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); }
-button, input, select { font: inherit; letter-spacing: 0; }
+button, input, select, textarea {
+  font-family: inherit;
+  letter-spacing: 0;
+}
 button { color: inherit; }
-svg { width: 18px; height: 18px; stroke-width: 1.8; flex: 0 0 auto; }
+/* Scope svg size to chrome only — global sizing breaks Mantine/lucide. */
+.sidebar svg,
+.nav-list svg,
+.topbar svg,
+.btn svg,
+.icon-btn svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+  flex: 0 0 auto;
+}
 
 ::selection { background: var(--accent-select); color: #fff8ea; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -22,8 +35,11 @@ svg { width: 18px; height: 18px; stroke-width: 1.8; flex: 0 0 auto; }
   position: relative;
   display: grid;
   grid-template-columns: 228px minmax(0, 1fr);
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
   isolation: isolate;
+  background: var(--bg);
 }
 .app-shell::before,
 .app-shell::after {
@@ -60,6 +76,7 @@ svg { width: 18px; height: 18px; stroke-width: 1.8; flex: 0 0 auto; }
 .main-content {
   position: relative;
   z-index: 1;
+  min-height: 0;
 }
 .sidebar {
   background: var(--sidebar);
@@ -67,6 +84,8 @@ svg { width: 18px; height: 18px; stroke-width: 1.8; flex: 0 0 auto; }
   padding: 22px 14px 16px;
   display: flex;
   flex-direction: column;
+  height: 100%;
+  overflow: hidden;
   backdrop-filter: var(--glass);
   -webkit-backdrop-filter: var(--glass);
   box-shadow: 8px 0 28px rgba(0, 0, 0, .18);
@@ -137,7 +156,13 @@ svg { width: 18px; height: 18px; stroke-width: 1.8; flex: 0 0 auto; }
 .status-dot.starting, .status-dot.stopping { background: var(--amber); box-shadow: 0 0 0 3px rgba(242,184,75,.12); }
 .status-dot.error { background: var(--red); box-shadow: 0 0 0 3px rgba(240,120,114,.12); }
 
-.main-content { min-width: 0; overflow-y: auto; background: transparent; }
+.main-content {
+  min-width: 0;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: transparent;
+}
 .topbar {
   height: 86px;
   border-bottom: 1px solid var(--line-soft);
@@ -569,7 +594,12 @@ svg { width: 18px; height: 18px; stroke-width: 1.8; flex: 0 0 auto; }
 .buff-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .buff-layout .data-section:last-child { grid-column: 1 / -1; }
 .buff-layout .section-heading.compact > div > span { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
-.buff-active-list, .buff-history-list { height: calc(100vh - 365px); min-height: 300px; overflow: auto; }
+/* Prefer max-height over fixed vh so lists stay visible above the fold */
+.buff-active-list, .buff-history-list {
+  max-height: min(420px, 50vh);
+  min-height: 0;
+  overflow: auto;
+}
 .damage-extra-columns { margin: 0 0 14px; gap: 12px; }
 .skill-cast-list, .skill-cast-history {
   max-height: 220px;

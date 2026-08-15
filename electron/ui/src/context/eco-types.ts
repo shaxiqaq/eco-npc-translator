@@ -18,7 +18,6 @@ export type EcoContextValue = {
   page: PageId;
   setPage: (page: PageId) => void;
   state: EcoAppState;
-  snapshot: Snapshot | null;
   toast: ToastState;
   showToast: (message: string) => void;
   historyFilter: string;
@@ -38,6 +37,7 @@ export type EcoContextValue = {
   toggleService: (name: 'damage' | 'translator') => Promise<void>;
   startAll: () => Promise<void>;
   stopAll: () => Promise<void>;
+  prestartServices: () => Promise<void>;
   resetDamage: () => Promise<void>;
   reidentifySelf: () => Promise<void>;
   /** Reconnect capture + clear meter + soft reidentify — one button for switch/account recovery. */

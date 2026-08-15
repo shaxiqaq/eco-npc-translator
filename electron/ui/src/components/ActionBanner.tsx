@@ -7,7 +7,7 @@ import {
   UserRoundSearch,
   WifiOff,
 } from 'lucide-react';
-import { useEco } from '@/context/EcoContext';
+import { useCombatIdentity, useEco } from '@/context/EcoContext';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
@@ -27,7 +27,6 @@ type Step =
 export function ActionBanner() {
   const {
     state,
-    snapshot,
     switchCharacter,
     startAll,
     refreshProcesses,
@@ -35,6 +34,7 @@ export function ActionBanner() {
     exportDiagnosticPack,
     showToast,
   } = useEco();
+  const { selfId, rebindPending } = useCombatIdentity();
 
   const health = state.connectionHealth;
   const selectedPid = state.selectedGamePid;
@@ -42,8 +42,7 @@ export function ActionBanner() {
   const monState = state.services?.monitoring?.state || 'stopped';
   const captureUp = ['running', 'starting'].includes(damageState)
     || ['running', 'starting'].includes(monState);
-  const hasSelf = snapshot?.self_id != null && snapshot.self_id !== '';
-  const rebindPending = Boolean(snapshot?.rebind_pending);
+  const hasSelf = selfId != null && selfId !== '';
   const needsAdmin = health?.elevated === false;
 
   let step: Step = 'ok';

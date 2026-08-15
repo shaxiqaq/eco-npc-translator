@@ -8,7 +8,7 @@ import json
 import uuid
 
 from .config import TranslationConfig
-from .prompts import ECO_SYSTEM_SINGLE, ECO_SYSTEM_BATCH, ECO_PROMPT_HEADER
+from .prompts import prompt_header, system_prompt_batch, system_prompt_single
 
 
 NO_TEXT_MESSAGE = "\u6ca1\u6709\u8bc6\u522b\u5230\u53ef\u7ffb\u8bd1\u7684\u6587\u5b57\u3002"
@@ -45,7 +45,7 @@ class OpenAITranslator(Translator):
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[
-                {"role": "system", "content": ECO_SYSTEM_SINGLE},
+                {"role": "system", "content": system_prompt_single(source_language)},
                 {
                     "role": "user",
                     "content": (
@@ -77,7 +77,7 @@ class OpenAITranslator(Translator):
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[
-                {"role": "system", "content": ECO_SYSTEM_BATCH},
+                {"role": "system", "content": system_prompt_batch(source_language)},
                 {
                     "role": "user",
                     "content": (
@@ -112,7 +112,7 @@ class DeepSeekTranslator(Translator):
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[
-                {"role": "system", "content": ECO_SYSTEM_SINGLE},
+                {"role": "system", "content": system_prompt_single(source_language)},
                 {
                     "role": "user",
                     "content": (
@@ -144,7 +144,7 @@ class DeepSeekTranslator(Translator):
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[
-                {"role": "system", "content": ECO_SYSTEM_BATCH},
+                {"role": "system", "content": system_prompt_batch(source_language)},
                 {
                     "role": "user",
                     "content": (
@@ -182,7 +182,7 @@ class OpenRouterTranslator(Translator):
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[
-                {"role": "system", "content": ECO_SYSTEM_SINGLE},
+                {"role": "system", "content": system_prompt_single(source_language)},
                 {
                     "role": "user",
                     "content": (
@@ -211,7 +211,7 @@ class GeminiTranslator(Translator):
             return NO_TEXT_MESSAGE
 
         prompt = (
-            f"{ECO_PROMPT_HEADER}"
+            f"{prompt_header(source_language)}"
             f"Source language: {source_language}\n"
             f"Target language: {target_language}\n\n"
             f"{text}"
@@ -238,7 +238,7 @@ class CloudflareWorkersAITranslator(Translator):
             return NO_TEXT_MESSAGE
 
         prompt = (
-            f"{ECO_PROMPT_HEADER}"
+            f"{prompt_header(source_language)}"
             f"Source language: {source_language}\n"
             f"Target language: {target_language}\n\n"
             f"{text}"
@@ -247,7 +247,7 @@ class CloudflareWorkersAITranslator(Translator):
             "messages": [
                 {
                     "role": "system",
-                    "content": ECO_SYSTEM_SINGLE,
+                    "content": system_prompt_single(source_language),
                 },
                 {
                     "role": "user",
@@ -373,7 +373,7 @@ class OllamaTranslator(Translator):
             "messages": [
                 {
                     "role": "system",
-                    "content": ECO_SYSTEM_SINGLE,
+                    "content": system_prompt_single(source_language),
                 },
                 {
                     "role": "user",
@@ -412,7 +412,7 @@ class OllamaTranslator(Translator):
             "messages": [
                 {
                     "role": "system",
-                    "content": ECO_SYSTEM_BATCH,
+                    "content": system_prompt_batch(source_language),
                 },
                 {
                     "role": "user",
@@ -615,6 +615,7 @@ def _to_deepl_language(language: str, source: bool = False) -> str:
         "zh-CN": "ZH-HANS",
         "zh-TW": "ZH-HANT",
         "en": "EN",
+        "id": "ID",
         "ja": "JA",
         "ko": "KO",
         "fr": "FR",
@@ -632,6 +633,7 @@ def _to_azure_language(language: str, source: bool = False) -> str:
         "zh-CN": "zh-Hans",
         "zh-TW": "zh-Hant",
         "en": "en",
+        "id": "id",
         "ja": "ja",
         "ko": "ko",
         "fr": "fr",

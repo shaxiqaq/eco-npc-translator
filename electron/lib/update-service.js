@@ -1,13 +1,75 @@
 const { EventEmitter } = require('node:events');
 
+const HTML_ENTITIES = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' '
+};
+
+function decodeHtmlEntities(text) {
+  return String(text).replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, entity) => {
+    const key = String(entity).toLowerCase();
+    if (key.startsWith('#x')) {
+      const code = Number.parseInt(key.slice(2), 16);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : match;
+    }
+    if (key.startsWith('#')) {
+      const code = Number.parseInt(key.slice(1), 10);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : match;
+    }
+    return Object.hasOwn(HTML_ENTITIES, key) ? HTML_ENTITIES[key] : match;
+  });
+}
+
+function looksLikeHtml(value) {
+  return /<\/?[a-z][a-z0-9]*\b[^>]*>/i.test(value);
+}
+
+function formatHtmlLink(href, innerHtml) {
+  const label = String(innerHtml).replace(/<[^>]+>/g, '').trim();
+  if (!label) return href;
+  if (label === href) return href;
+  // GitHub compare links render as <tt>v0.2.15...v0.2.16</tt>; keep the real URL.
+  if (/v?\d+\.\d+.*\.\.\./i.test(label) && href.includes(label)) return href;
+  return label;
+}
+
+function htmlToPlainText(html) {
+  let text = String(html).replace(/\r\n?/g, '\n');
+  text = text.replace(/<\s*br\s*\/?>/gi, '\n');
+  text = text.replace(/<\s*hr\s*\/?>/gi, '\n');
+  text = text.replace(/<\s*(?:p|div|h[1-6]|tr|table|blockquote|pre|ul|ol)\b[^>]*>/gi, '\n');
+  text = text.replace(/<\s*\/\s*(?:p|div|h[1-6]|tr|table|blockquote|pre|ul|ol)\s*>/gi, '\n');
+  text = text.replace(/<\s*li\b[^>]*>/gi, '• ');
+  text = text.replace(/<\s*\/\s*li\s*>/gi, '\n');
+  text = text.replace(
+    /<\s*a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\s*\/\s*a\s*>/gi,
+    (_, href, inner) => formatHtmlLink(href, inner)
+  );
+  text = text.replace(/<[^>]+>/g, '');
+  text = decodeHtmlEntities(text);
+  text = text.replace(/[ \t]+\n/g, '\n').replace(/\n[ \t]+/g, '\n');
+  text = text.replace(/[ \t]{2,}/g, ' ');
+  text = text.replace(/\n{3,}/g, '\n\n');
+  return text.trim();
+}
+
+function normalizeNote(note) {
+  if (typeof note !== 'string' || !note) return '';
+  return looksLikeHtml(note) ? htmlToPlainText(note) : note;
+}
+
 function normalizeReleaseNotes(value) {
   if (Array.isArray(value)) {
     return value
-      .map((item) => item?.note || item?.notes || '')
+      .map((item) => normalizeNote(item?.note || item?.notes || ''))
       .filter(Boolean)
       .join('\n\n');
   }
-  return typeof value === 'string' ? value : '';
+  return normalizeNote(value);
 }
 
 function updateErrorMessage(error) {

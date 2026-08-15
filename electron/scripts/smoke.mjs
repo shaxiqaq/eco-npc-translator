@@ -48,7 +48,14 @@ try {
     'battle-report',
     'error-codes',
     'crash-log',
-    'display-names'
+    'display-names',
+    'capture-host',
+    'translator-host',
+    'backend-protocol',
+    'overlay-snapshot',
+    'agent-host',
+    'backend-runtime',
+    'prestart'
   ];
   for (const name of mods) {
     require(path.join(electronRoot, 'lib', `${name}.js`));

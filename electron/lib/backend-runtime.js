@@ -1,9 +1,28 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 
+function packagedAgentExe(resourcesPath) {
+  return path.join(resourcesPath, 'backend', 'agent', 'eco_capture_agent', 'eco_capture_agent.exe');
+}
+
+function agentAvailable({
+  isPackaged,
+  resourcesPath,
+  srcDir,
+  fsImpl = fs,
+  env = process.env
+} = {}) {
+  if (String(env.ECO_SPLIT_BACKENDS || '') === '1') return false;
+  if (!isPackaged) {
+    return Boolean(srcDir && fsImpl.existsSync(path.join(srcDir, 'eco_capture_agent.py')));
+  }
+  return Boolean(resourcesPath && fsImpl.existsSync(packagedAgentExe(resourcesPath)));
+}
+
 /**
- * Resolve spawn command/args for damage bridge or NPC translator.
+ * Resolve spawn command/args for damage bridge, NPC translator, or unified agent.
  */
 function resolveBackendRuntime({
   name,
@@ -12,16 +31,29 @@ function resolveBackendRuntime({
   resourcesPath,
   srcDir,
   backendDir,
-  pythonCommand
+  pythonCommand,
+  extraArgs = []
 }) {
-  const processArgs = selectedGamePid ? ['--pid', String(selectedGamePid)] : [];
+  const processArgs = [
+    ...(selectedGamePid ? ['--pid', String(selectedGamePid)] : []),
+    ...extraArgs
+  ];
   if (!isPackaged) {
-    const scriptName = name === 'damage' ? 'eco_damage_bridge.py' : 'eco_npc_mitm.py';
+    const scriptName = name === 'agent'
+      ? 'eco_capture_agent.py'
+      : name === 'damage' ? 'eco_damage_bridge.py' : 'eco_npc_mitm.py';
     const scriptPath = path.join(srcDir, scriptName);
     return {
       command: pythonCommand || process.env.ECO_PYTHON || 'python',
       args: ['-u', scriptPath, ...processArgs],
       cwd: srcDir
+    };
+  }
+  if (name === 'agent') {
+    return {
+      command: packagedAgentExe(resourcesPath),
+      args: processArgs,
+      cwd: path.join(resourcesPath, 'backend', 'agent')
     };
   }
   if (name === 'damage') {
@@ -47,5 +79,7 @@ function launchLabel(runtime, isPackaged) {
 
 module.exports = {
   resolveBackendRuntime,
-  launchLabel
+  launchLabel,
+  agentAvailable,
+  packagedAgentExe
 };

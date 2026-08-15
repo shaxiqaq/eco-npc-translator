@@ -36,7 +36,12 @@ from screen_translator.translator import create_translator
 from screen_translator.config import TranslationConfig
 from eco_log import setup_logger
 
-SOURCE_LANG = "en"; TARGET_LANG = "zh-CN"
+def emit(kind, **payload):
+    """JSON line for Electron. Human logs still go through logger."""
+    message = {"type": kind, "service": payload.pop("service", "translator"), **payload}
+    print(json.dumps(message, ensure_ascii=False, separators=(",", ":")), flush=True)
+
+SOURCE_LANG = "auto"; TARGET_LANG = "zh-CN"
 CONFIG_FILE = os.path.join(DATA_DIR, "translate_config.json")   # 由配置工具生成(exe 同目录)
 
 # Precompile common regex for hot-path text cleaning
@@ -78,7 +83,26 @@ try:
     _cfg0 = json.load(open(CONFIG_FILE, encoding="utf-8"))
     FIRST_WAIT = float(_cfg0.get("first_wait", FIRST_WAIT))     # 可在配置工具里改
     TARGET_LANG = _cfg0.get("target_lang", TARGET_LANG)         # 简体 zh-CN / 繁体 zh-TW
+    SOURCE_LANG = _cfg0.get("source_lang", SOURCE_LANG) or "auto"
 except Exception: pass
+try:
+    from eco_source_lang import (
+        api_source_code,
+        cache_storage_key,
+        detect_source_lang,
+        parse_storage_key,
+        resolve_source_lang,
+    )
+except Exception:
+    api_source_code = lambda src: "en"
+    cache_storage_key = lambda text, src: text
+    detect_source_lang = lambda text: "en"
+    parse_storage_key = lambda key: ("en", key)
+    resolve_source_lang = lambda text, mode="auto": "en"
+try:
+    from eco_event_cache import EventCache
+except Exception:
+    EventCache = None
 SEEN_FILE = os.path.join(DATA_DIR, "npc_seen.json")   # 见过的英文原文语料(供离线预翻 pretranslate.py 用)
 
 # 翻译缓存
@@ -111,12 +135,12 @@ def flush_cache(force=False):
             return
         _write_cache_unlocked()
 
-def cache_put(k, v):
+def cache_put(k, v, source_lang="en"):
     global CACHE_DIRTY
     if not k or not v:
         return
     # Normalize key the same way as lookup (strip NULs etc.)
-    k = _norm_cache_key(k)
+    k = cache_storage_key(_norm_cache_key(k), source_lang)
     with clock:
         CACHE[k] = v
         CACHE_DIRTY += 1
@@ -125,39 +149,91 @@ def cache_put(k, v):
 
 def _norm_cache_key(text):
     """Stable cache key: drop NULs / odd controls that break lookups across packets."""
-    if not text:
-        return text
-    if "\x00" in text or any(ord(ch) < 32 and ch not in "\n\r\t" for ch in text):
-        text = "".join(ch for ch in text if ch in "\n\r\t" or ord(ch) >= 32)
-    return text.strip()
+    try:
+        from eco_translation_quality import normalize_text
+        return normalize_text(text)
+    except Exception:
+        if not text:
+            return text
+        if "\x00" in text or any(ord(ch) < 32 and ch not in "\n\r\t" for ch in text):
+            text = "".join(ch for ch in text if ch in "\n\r\t" or ord(ch) >= 32)
+        return text.strip()
 
-def cache_get(text):
+def _cache_lookup_candidates(text, source_lang=None):
+    """Keys rebuild() may have stored historically (NUL / trailing space / prefix)."""
+    raw = _norm_cache_key(text)
+    if not raw:
+        return []
+    src = resolve_source_lang(raw, source_lang or SOURCE_LANG)
+    keyed = cache_storage_key(raw, src)
+    out = []
+    for base in (keyed, raw, text):
+        if not base:
+            continue
+        for cand in (base, base + "\x00", base + " \x00", base + "\n\x00"):
+            if cand not in out:
+                out.append(cand)
+    return out
+
+def cache_get(text, source_lang=None):
     if not text:
         return None
-    k = _norm_cache_key(text)
     with clock:
-        hit = CACHE.get(k)
-        if hit:
-            return hit
-        # Compat: older entries may still contain trailing NUL
-        if k != text:
-            hit = CACHE.get(text)
+        for candidate in _cache_lookup_candidates(text, source_lang):
+            hit = CACHE.get(candidate)
             if hit:
                 return hit
-        nul_key = k + "\x00"
-        return CACHE.get(nul_key)
+        return None
+
+def rekey_loaded_cache():
+    """Rewrite dirty historical keys (\"text \\x00\") onto the lookup form rebuild() uses."""
+    global CACHE_DIRTY
+    with clock:
+        rebuilt = {}
+        changed = 0
+        for k, v in CACHE.items():
+            src, raw = parse_storage_key(k)
+            nk_raw = _norm_cache_key(raw)
+            nv = v
+            if v and (
+                "\x00" in v
+                or any(ord(ch) < 32 and ch not in "\n\r\t" for ch in v)
+            ):
+                nv = _norm_cache_key(v)
+            if not nk_raw or not nv:
+                changed += 1
+                continue
+            nk = cache_storage_key(nk_raw, src)
+            if nk != k:
+                changed += 1
+            if nk not in rebuilt:
+                rebuilt[nk] = nv
+        if changed:
+            CACHE.clear()
+            CACHE.update(rebuilt)
+            CACHE_DIRTY += 1
+            _write_cache_unlocked()
+        return changed
 
 atexit.register(lambda: flush_cache(force=True))
 
 # 共享词库同步(可选): 自动上报本地新译文 + 自动拉取别人贡献
-def _merge_pulled(d):
-    """把拉到的 {英文:中文} 合并进本地缓存(本地已有的不覆盖, 先到先得), 落盘, 返回新增数。"""
+def _merge_pulled(d, source_lang="en"):
+    """把拉到的 {原文:中文} 合并进本地缓存(本地已有的不覆盖, 先到先得), 落盘, 返回新增数。"""
     global CACHE_DIRTY
     new = 0
     with clock:
         for k, v in d.items():
-            if k and v and k not in CACHE:
-                CACHE[k] = v
+            if not k or not v:
+                continue
+            k = _norm_cache_key(k)
+            if v and ("\x00" in v or any(ord(ch) < 32 and ch not in "\n\r\t" for ch in v)):
+                v = _norm_cache_key(v)
+            if not k or not v:
+                continue
+            sk = cache_storage_key(k, source_lang)
+            if sk not in CACHE:
+                CACHE[sk] = v
                 new += 1
                 CACHE_DIRTY += 1
         if new and CACHE_DIRTY >= CACHE_FLUSH_EVERY:
@@ -175,6 +251,10 @@ except Exception as _e:
 try: SEEN = set(json.load(open(SEEN_FILE, encoding="utf-8")))
 except Exception: SEEN = set()
 seen_lock = threading.Lock()
+EVENT_CACHE = EventCache(os.path.join(DATA_DIR, "npc_event_cache.json")) if EventCache else None
+if EVENT_CACHE:
+    atexit.register(EVENT_CACHE.flush)
+CURRENT_EVENT = {"eid": None, "say_i": 0}
 def record_seen(texts):
     new = False
     with seen_lock:
@@ -188,47 +268,80 @@ _tr = {"v": None}
 def _engine():
     if _tr["v"] is None: _tr["v"] = create_translator(TranslationConfig(**PROVIDER))
     return _tr["v"]
-def translate(text, cache_only=False):
+def _remember_event(kind, source_lang, key, value):
+    if not EVENT_CACHE or not value:
+        return
+    try:
+        EVENT_CACHE.remember(CURRENT_EVENT.get("eid"), kind, source_lang, key, value)
+    except Exception:
+        pass
+
+def translate(text, cache_only=False, kind="say"):
     text = _norm_cache_key(text) if text else text
-    c = cache_get(text)
-    if c: return c
-    if cache_only: return None          # 纯查表: 未命中不调 API, 交给后台
+    src = resolve_source_lang(text, SOURCE_LANG)
+    if src == "zh":
+        return text
+    c = cache_get(text, src)
+    if c:
+        return c
+    if cache_only:
+        return None
     try:
         with _api_lock:
-            out = (_engine().translate(text, SOURCE_LANG, TARGET_LANG) or "").strip()
+            out = (_engine().translate(text, api_source_code(src), TARGET_LANG) or "").strip()
     except Exception as e:
-        logger.warning("[翻译失败] %s | %r", e, (text or "")[:60])
+        logger.warning("[翻译失败] src=%s %s | %r", src, e, (text or "")[:60])
         return None
     if out:
-        cache_put(text, out)
-        if SYNC: SYNC.enqueue(text, out)         # 本地新译文 -> 上报共享词库
+        cache_put(text, out, src)
+        if SYNC:
+            SYNC.enqueue(text, out, source_lang=src)
+        _remember_event(kind, src, text, out)
     else:
-        logger.warning("[翻译空结果] %r", (text or "")[:60])
+        logger.warning("[翻译空结果] src=%s %r", src, (text or "")[:60])
     return out
-def translate_batch(texts, cache_only=False):
+
+def translate_batch(texts, cache_only=False, kind="select"):
     """批量翻译(缓存命中跳过, 未命中一次 API 调用), 返回与 texts 等长的中文列表。
        cache_only=True 时未命中处保留 None, 不调用 API。"""
     texts = [_norm_cache_key(t) if t else t for t in texts]
-    res = [None] * len(texts); miss = []
+    res = [None] * len(texts)
+    miss = []
+    srcs = []
     for i, t in enumerate(texts):
-        c = cache_get(t)
-        if c: res[i] = c
-        else: miss.append(i)
+        src = resolve_source_lang(t, SOURCE_LANG)
+        srcs.append(src)
+        if src == "zh":
+            res[i] = t
+            continue
+        c = cache_get(t, src)
+        if c:
+            res[i] = c
+        else:
+            miss.append(i)
     if miss and not cache_only:
-        try:
-            with _api_lock:
-                outs = _engine().translate_many([texts[i] for i in miss], SOURCE_LANG, TARGET_LANG)
-        except Exception as e:
-            logger.warning("[批量翻译失败] %s | n=%s", e, len(miss))
-            outs = []
-        for j, i in enumerate(miss):
-            o = ((outs[j] if j < len(outs) else "") or "").strip()
-            res[i] = o
-            if o:
-                cache_put(texts[i], o)
-                if SYNC: SYNC.enqueue(texts[i], o)
-            else:
-                logger.warning("[批量翻译空结果] %r", (texts[i] or "")[:60])
+        grouped = {}
+        for i in miss:
+            grouped.setdefault(srcs[i], []).append(i)
+        for src, indexes in grouped.items():
+            try:
+                with _api_lock:
+                    outs = _engine().translate_many(
+                        [texts[i] for i in indexes], api_source_code(src), TARGET_LANG
+                    )
+            except Exception as e:
+                logger.warning("[批量翻译失败] src=%s %s | n=%s", src, e, len(indexes))
+                outs = []
+            for j, i in enumerate(indexes):
+                o = ((outs[j] if j < len(outs) else "") or "").strip()
+                res[i] = o
+                if o:
+                    cache_put(texts[i], o, src)
+                    if SYNC:
+                        SYNC.enqueue(texts[i], o, source_lang=src)
+                    _remember_event(kind, src, texts[i], o)
+                else:
+                    logger.warning("[批量翻译空结果] src=%s %r", src, (texts[i] or "")[:60])
     return res
 
 def clean_from_subdata(sub):
@@ -336,8 +449,10 @@ def rebuild_1017(sub, cache_only=False):
     tail = sub[p:]                      # motion2 + nameLen1 + name + padding
     eng = _clean_text("".join(s.decode("utf-8", "replace") for s in segs))
     eng_key, pcname = templatize(eng)                # 角色名 -> {PC}, 模板化后翻译/缓存/共享
+    if resolve_source_lang(eng_key, SOURCE_LANG) == "zh":
+        return None
     if not cache_only: record_seen([eng_key])
-    zh = translate(eng_key, cache_only)
+    zh = translate(eng_key, cache_only, kind="say")
     if not zh: return None
     zh = untemplatize(zh, pcname)                     # 显示前把真名填回
     lines = wrap_cjk(zh, 20)                          # 每段一行, 防止框内折行重叠
@@ -381,8 +496,10 @@ def rebuild_1526(sub, cache_only=False):
     texts = [q_eng] + opt_eng
     keyed = [templatize(t) for t in texts]            # [(模板, 真名), ...]
     keys = [k for k, _ in keyed]; pcnames = [n for _, n in keyed]
+    if all(resolve_source_lang(k, SOURCE_LANG) == "zh" for k in keys if k):
+        return None
     if not cache_only: record_seen(keys)
-    zhs = translate_batch(keys, cache_only)           # 一次 API 调用翻问题+所有选项(模板化)
+    zhs = translate_batch(keys, cache_only, kind="select")
     if cache_only and any(z is None for z in zhs): return None    # 任一未命中则整条不出, 交后台
     disp = [untemplatize(zhs[i] or texts[i], pcnames[i]) for i in range(len(texts))]   # 填回真名
     q_zh = disp[0].encode("utf-8")[:250]
@@ -397,7 +514,7 @@ def rebuild_1526(sub, cache_only=False):
     return bytes(out)
 
 # ===== 内置采集器(并入 MITM, 取代单独的 eco_harvester) =====
-# JS 会把 op1500/1501/1511/1512(上下文) 和 op1017/1526 的英文原文额外上报;
+# JS 会把客户端 op1510 合法请求、服务端上下文和 op1017/1526 英文原文额外上报;
 # 这里后台线程消费这些消息, 按 eventid 聚合, 产出 harvest_dict.json + harvest.jsonl。
 # 全程走后台队列, 不阻塞翻译回包(避免扣住游戏网络线程被踢)。
 HARVEST_JL = os.path.join(DATA_DIR, "harvest.jsonl")
@@ -435,6 +552,7 @@ def _parse_1526_harvest(sub):
 class _Harvest:
     def __init__(self):
         self.cur_event = None; self.cur_npc_id = None
+        self.cur_event_source = None; self.pending_event = None
         self.last_event_by_actor = {}
         self.seen = set(); self.agg = {}
         self.n_say = self.n_sel = 0; self.dirty = False
@@ -458,8 +576,16 @@ class _Harvest:
         except Exception: pass
 
     def feed(self, op, sub):
-        if op == 1500: self.cur_event = None; self.cur_npc_id = None; return
-        if op == 1501: return
+        if op == 1510:
+            if len(sub) >= 8: self.pending_event = int.from_bytes(sub[2:6], "big")
+            return
+        if op == 1500:
+            self.cur_event = self.pending_event
+            self.cur_event_source = "client_request" if self.pending_event is not None else None
+            self.pending_event = None; self.cur_npc_id = None; return
+        if op == 1501:
+            self.cur_event = None; self.cur_event_source = None; self.cur_npc_id = None
+            return
         if op == 1511:
             if len(sub) >= 6: self.cur_npc_id = int.from_bytes(sub[2:6], "big")
             return
@@ -467,32 +593,47 @@ class _Harvest:
             if len(sub) >= 10:
                 actor = int.from_bytes(sub[2:6], "big"); eid = int.from_bytes(sub[6:10], "big")
                 self.last_event_by_actor[actor] = eid; self.cur_event = eid
+                self.cur_event_source = "server_1512"
             return
         if op == 1017:
             actor, name, en = _parse_1017_harvest(sub)
             if not en: return
-            eid = self.cur_event or self.last_event_by_actor.get(actor) or actor
+            if self.cur_event is not None:
+                eid, event_source = self.cur_event, self.cur_event_source
+            elif actor in self.last_event_by_actor:
+                eid, event_source = self.last_event_by_actor[actor], "server_1512_actor_cache"
+            else:
+                eid, event_source = actor, "actor_fallback"
             k = str(eid); key = (k, "say", en)
             if key in self.seen: return
             self.seen.add(key)
-            self._append_jl({"eventid": eid, "actor": actor, "npc": name, "kind": "say",
-                             "en": en, "ts": int(time.time())})
+            src = detect_source_lang(en)
+            self._append_jl({"eventid": eid, "event_source": event_source,
+                             "actor": actor, "npc": name, "kind": "say",
+                             "en": en, "src": src, "ts": int(time.time())})
             e = self._entry(eid)
             if name and not e["npc"]: e["npc"] = name
-            e["says"].append(en); self.dirty = True; self.n_say += 1
-            logger.info(f"[采集·say] eid={eid} npc={name!r} | {en[:50]!r}")
+            e["says"].append(en)
+            e.setdefault("say_langs", []).append(src)
+            self.dirty = True; self.n_say += 1
+            logger.info(f"[采集·say] eid={eid} src={src} npc={name!r} | {en[:50]!r}")
         elif op == 1526:
             q, opts = _parse_1526_harvest(sub)
             if not q and not opts: return
-            eid = self.cur_event or self.cur_npc_id
+            if self.cur_event is not None:
+                eid, event_source = self.cur_event, self.cur_event_source
+            else:
+                eid, event_source = self.cur_npc_id, "npc_view_fallback"
             k = str(eid); key = (k, "sel", q + "|" + "|".join(opts))
             if key in self.seen: return
             self.seen.add(key)
-            self._append_jl({"eventid": eid, "kind": "select", "en": q, "options": opts,
-                             "ts": int(time.time())})
-            e = self._entry(eid); e["selects"].append({"q": q, "options": opts})
+            src = detect_source_lang(q or " ".join(opts))
+            self._append_jl({"eventid": eid, "event_source": event_source,
+                             "kind": "select", "en": q, "options": opts,
+                             "src": src, "ts": int(time.time())})
+            e = self._entry(eid); e["selects"].append({"q": q, "options": opts, "src": src})
             self.dirty = True; self.n_sel += 1
-            logger.info(f"[采集·sel] eid={eid} | {q[:40]!r} 选项{opts}")
+            logger.info(f"[采集·sel] eid={eid} src={src} | {q[:40]!r} 选项{opts}")
 
     def flush(self):
         if self.dirty:
@@ -515,9 +656,11 @@ def _harvest_worker():
         if h.dirty and time.time() - last_flush >= 3.0:
             h.flush(); last_flush = time.time()
 
+_FIRST_WAIT_MS = max(0, min(3000, int(round(FIRST_WAIT * 1000))))
 JS = (open(os.path.join(RES_DIR, "_mitm.js"), encoding="utf-8").read()
       .replace("__MAP_PORT__", str(MAP_PORT))
-      .replace("__SYNC__", "true" if SYNC_FIRST else "false"))
+      .replace("__SYNC__", "true" if SYNC_FIRST else "false")
+      .replace("__FIRST_WAIT_MS__", str(_FIRST_WAIT_MS)))
 
 sref = {"s": None}
 _dlg = {"pages": 0, "menu": False}   # 当前对话状态: 页数(op1017计数) + 是否含选项菜单
@@ -528,14 +671,44 @@ def handler(msg, data):
         return
     p = msg["payload"]
     if p == "READY":
-        logger.info("[*] hook 就位。去和 NPC 对话：首次英文(后台缓存，不卡住游戏线程)，同一句再出现应变中文。")
+        if FIRST_WAIT > 0:
+            logger.info(
+                "[*] hook 就位。首屏等待 %.2fs（短对话首次尽量出中文；多段同帧仍先英文）。改设置后需重启翻译。",
+                FIRST_WAIT,
+            )
+        else:
+            logger.info("[*] hook 就位。去和 NPC 对话：首次原文(后台缓存)，同一句再出现应变中文。")
         return
     t = p.get("t")
-    if t == "ctx" or t == "harvest":          # 采集消息: 丢后台队列, 绝不阻塞翻译回包
+    if t in ("ctx", "harvest", "request"):   # 采集消息: 丢后台队列, 绝不阻塞翻译回包
         op = p.get("op")
-        if op == 1500:   _dlg["pages"] = 0; _dlg["menu"] = False   # 事件开始: 重置本段对话
-        elif op == 1017: _dlg["pages"] += 1                        # 每页一个 op1017
-        elif op == 1526: _dlg["menu"] = True                       # 含选项菜单
+        if op == 1500:
+            _dlg["pages"] = 0; _dlg["menu"] = False
+            CURRENT_EVENT["say_i"] = 0
+        elif op == 1501:
+            CURRENT_EVENT["eid"] = None
+            CURRENT_EVENT["say_i"] = 0
+        elif op == 1017:
+            _dlg["pages"] += 1
+            CURRENT_EVENT["say_i"] = CURRENT_EVENT.get("say_i", 0) + 1
+        elif op == 1526:
+            _dlg["menu"] = True
+        elif op == 1510:
+            try:
+                raw = bytes.fromhex(p.get("sub") or "")
+                if len(raw) >= 8:
+                    CURRENT_EVENT["eid"] = int.from_bytes(raw[2:6], "big")
+                    CURRENT_EVENT["say_i"] = 0
+            except Exception:
+                pass
+        elif op == 1512:
+            try:
+                raw = bytes.fromhex(p.get("sub") or "")
+                if len(raw) >= 10:
+                    CURRENT_EVENT["eid"] = int.from_bytes(raw[6:10], "big")
+                    CURRENT_EVENT["say_i"] = 0
+            except Exception:
+                pass
         try: _hq.put_nowait((op, bytes.fromhex(p["sub"])))
         except Exception: pass
         return
@@ -564,16 +737,14 @@ def handler(msg, data):
             flush_cache(force=False)
             logger.info("[缓存+] op%s(%s) hash=%s (%sB)", op, tag, h, len(built))
 
-        # JS no longer blocks the game thread waiting for t{h}.
-        # Always translate in background and post type=cache for next display.
-        # (sync / first_wait paths kept only if an older hook still waits — rare.)
+        # JS only sets sync=true for short frames when first_wait > 0.
+        # Always post t{h} in that path so recvfrom cannot wait forever.
         if sync and FIRST_WAIT > 0:
-            # Optional short wait path for older mitm builds that still use recv().wait
+            newsub = None
             try:
                 newsub = rebuild_1526(sub, cache_only=True) if op == 1526 else rebuild_1017(sub, cache_only=True)
             except Exception as e:
                 logger.warning("[查表重建异常] op%s: %s", op, e)
-                newsub = None
             if newsub is None:
                 res = {}
                 def do():
@@ -589,14 +760,16 @@ def handler(msg, data):
                     threading.Thread(target=_bg_translate_and_cache, daemon=True).start()
             try:
                 sref["s"].post({"type": "t%d" % h, "sub": newsub.hex() if newsub else ""})
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("[首屏回包失败] hash=%s: %s", h, e)
             if newsub:
                 try:
                     sref["s"].post({"type": "cache", "h": h, "sub": newsub.hex()})
                 except Exception:
                     pass
-                logger.info("[首屏中文] op%s(%s) hash=%s (%sB)", op, tag, h, len(newsub))
+                logger.info("[首屏中文] op%s(%s) hash=%s (%sB) wait=%.2fs", op, tag, h, len(newsub), FIRST_WAIT)
+            else:
+                logger.info("[首屏超时] op%s(%s) hash=%s wait=%.2fs，本句先英文", op, tag, h, FIRST_WAIT)
         else:
             threading.Thread(target=_bg_translate_and_cache, daemon=True).start()
     elif p.get("t") == "hit":
@@ -605,11 +778,15 @@ def handler(msg, data):
 def warmup():
     """开机预热: 提前建好 openai 客户端 + 完成首次 TLS 握手, 让第一句真实对话不吃冷启动"""
     try:
+        emit("notice", level="info", message="正在预热翻译引擎…")
         t0 = time.time()
-        _engine().translate("Hello.", SOURCE_LANG, TARGET_LANG)
-        logger.info(f"[*] 引擎预热完成 ({time.time()-t0:.1f}s)")
+        _engine().translate("Hello.", "en", TARGET_LANG)
+        elapsed = time.time() - t0
+        logger.info(f"[*] 引擎预热完成 ({elapsed:.1f}s)")
+        emit("notice", level="success", message=f"引擎预热完成（{elapsed:.1f}s），可以对话")
     except Exception as e:
         logger.error("[*] 预热失败(忽略): %s", e)
+        emit("notice", level="warn", message=f"引擎预热失败：{e}")
 
 def main():
     parser = argparse.ArgumentParser(description="ECO NPC 实时翻译")
@@ -623,6 +800,12 @@ def main():
             logger.info(" 请在 ECO 工具箱的“设置 -> 翻译服务”中完成配置。")
             logger.info(" 保存后重新启动 NPC 翻译即可。")
             logger.info("=" * 50)
+            emit(
+                "status",
+                state="error",
+                error_kind="translator-config",
+                message="请先完成翻译设置",
+            )
             return
         logger.info(" 正在打开配置工具，请选择服务商并填入 API Key 后保存。")
         logger.info(" 保存后重新启动本程序即可。")
@@ -644,15 +827,24 @@ def main():
         logger.info("[*] 目标进程 %s（%s）", pid, how)
     except Exception as exc:
         logger.error("%s", exc)
+        emit("status", state="error", message=str(exc))
         return 2
 
     threading.Thread(target=warmup, daemon=True).start()
     threading.Thread(target=_harvest_worker, daemon=True).start()   # 内置采集器(后台)
     logger.info("[*] 内置采集器已启动: 边翻译边按 eventid 攒字典 -> harvest_dict.json")
+    try:
+        n_rekey = rekey_loaded_cache()
+        if n_rekey:
+            logger.info("[缓存] 已规范化 %s 条旧键（去掉 NUL/尾空白），避免昨天的译文查不到", n_rekey)
+    except Exception as exc:
+        logger.warning("[缓存] 规范化旧键失败(忽略): %s", exc)
     if SYNC:
         SYNC.start()                       # 启动共享词库同步(拉取+定时上报)
         SYNC.push_all(CACHE)               # 把整个本地缓存补传一遍(含被跳过翻译/命中缓存的)
+    logger.info("[*] 源语言=%s  目标=%s", SOURCE_LANG or "auto", TARGET_LANG)
     logger.info("[*] attach %s", pid)
+    emit("status", state="starting", message=f"正在连接游戏进程 {pid}", pid=pid)
     session = dev.attach(pid)
     script = session.create_script(JS)
     script.on("message", handler)
@@ -660,9 +852,28 @@ def main():
     sref["s"] = script
     sref["session"] = session
     setup_hotkey()
+    emit("status", state="running", message=f"NPC 翻译正在运行（进程 {pid}）", pid=pid)
 
     stop_event = threading.Event()
     cleaned = {"done": False}
+
+    def _control_loop():
+        while not stop_event.is_set():
+            line = sys.stdin.readline()
+            if not line:
+                stop_event.set()
+                return
+            try:
+                command = json.loads(line)
+            except Exception:
+                continue
+            action = command.get("action")
+            if action == "warmup":
+                threading.Thread(target=warmup, daemon=True).start()
+            elif action == "stop":
+                stop_event.set()
+
+    threading.Thread(target=_control_loop, daemon=True).start()
 
     def cleanup_frida(reason="stop"):
         """Unload hooks then detach so eco.exe is not crashed on agent teardown.
@@ -679,6 +890,11 @@ def main():
         logger.info("[*] 正在安全断开 Frida (%s)...", reason)
         try:
             flush_cache(force=True)
+        except Exception:
+            pass
+        try:
+            if EVENT_CACHE:
+                EVENT_CACHE.flush()
         except Exception:
             pass
         scr = sref.get("s")
@@ -722,6 +938,7 @@ def main():
         sref["s"] = None
         sref["session"] = None
         logger.info("[*] 已断开，游戏进程应继续运行")
+        emit("status", state="stopped", message=f"NPC 翻译已安全停止（{reason}）")
 
     def stdin_stop_watcher():
         """Electron pipes stdin; a line with action=stop requests graceful exit."""
@@ -770,7 +987,7 @@ def toggle():
     _state["on"] = not _state["on"]
     try: sref["s"].post({"type": "toggle", "on": _state["on"]})
     except Exception: pass
-    logger.info("[切换] 当前显示: %s", "中文" if _state["on"] else "英文原文")
+    logger.info("[切换] 当前显示: %s", "中文" if _state["on"] else "原文")
 
 def skip_dialogue():
     """一键跳过整段对话: 按当前页数发等量 Enter, 刚好翻到底关掉(不多按, 不会误开聊天框)。

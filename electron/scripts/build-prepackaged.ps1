@@ -11,19 +11,39 @@ $Target = [IO.Path]::GetFullPath((Join-Path $Release $TargetName))
 $Stage = [IO.Path]::GetFullPath((Join-Path $Electron "build-manual\app"))
 
 $DamageExecutable = Join-Path $Electron "dist-python\damage\eco_damage_bridge\eco_damage_bridge.exe"
+$AgentExecutable = Join-Path $Electron "dist-python\agent\eco_capture_agent\eco_capture_agent.exe"
+$TranslatorExecutable = Join-Path $Electron "dist-python\translator\eco_npc_mitm\eco_npc_mitm.exe"
 $BackendInputs = @(
     "eco_buffs.py",
+    "eco_capture_agent.py",
     "eco_damage_bridge.py",
     "eco_damage_capture.py",
+    "eco_damage_classify.py",
     "eco_damage_meter.py",
-    "eco_npc_mitm.py"
+    "eco_npc_mitm.py",
+    "cache_sync.py",
+    "eco_translation_quality.py"
 ) | ForEach-Object {
     $srcPath = Join-Path $Repo "src\$_"
     if (Test-Path -LiteralPath $srcPath) { $srcPath } else { Join-Path $Repo $_ }
 }
-$NeedsBackendBuild = -not (Test-Path -LiteralPath $DamageExecutable)
+$ScreenTranslatorDir = Join-Path $Repo "screen_translator"
+if (Test-Path -LiteralPath $ScreenTranslatorDir) {
+    Get-ChildItem -LiteralPath $ScreenTranslatorDir -Filter "*.py" | ForEach-Object {
+        $BackendInputs += $_.FullName
+    }
+}
+$NeedsBackendBuild = -not (
+    (Test-Path -LiteralPath $DamageExecutable) -and
+    (Test-Path -LiteralPath $AgentExecutable) -and
+    (Test-Path -LiteralPath $TranslatorExecutable)
+)
 if (-not $NeedsBackendBuild) {
-    $BuiltAt = (Get-Item -LiteralPath $DamageExecutable).LastWriteTimeUtc
+    $BuiltAt = @(
+        (Get-Item -LiteralPath $DamageExecutable).LastWriteTimeUtc,
+        (Get-Item -LiteralPath $AgentExecutable).LastWriteTimeUtc,
+        (Get-Item -LiteralPath $TranslatorExecutable).LastWriteTimeUtc
+    ) | Measure-Object -Minimum | Select-Object -ExpandProperty Minimum
     $NeedsBackendBuild = $BackendInputs | Where-Object {
         (Test-Path -LiteralPath $_) -and (Get-Item -LiteralPath $_).LastWriteTimeUtc -gt $BuiltAt
     } | Select-Object -First 1
@@ -91,11 +111,31 @@ updaterCacheDirName: eco-toolbox-updater
 )
 
 $Backend = Join-Path $Resources "backend"
-New-Item -ItemType Directory -Path (Join-Path $Backend "damage"), (Join-Path $Backend "translator") -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $Backend "damage"), (Join-Path $Backend "translator"), (Join-Path $Backend "agent") -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $Electron "dist-python\damage\eco_damage_bridge") `
     -Destination (Join-Path $Backend "damage") -Recurse
 Copy-Item -LiteralPath (Join-Path $Electron "dist-python\translator\eco_npc_mitm") `
     -Destination (Join-Path $Backend "translator") -Recurse
+Copy-Item -LiteralPath (Join-Path $Electron "dist-python\agent\eco_capture_agent") `
+    -Destination (Join-Path $Backend "agent") -Recurse
+
+$BundledData = Join-Path $Resources "data"
+New-Item -ItemType Directory -Path $BundledData -Force | Out-Null
+@(
+    "skill_names.json",
+    "skill_names_ja.json",
+    "buff_names.json",
+    "buff_meta.json",
+    "mob_names.json",
+    "defensive_skill_ids.json",
+    "job_timer_presets.json",
+    "exp_table.json"
+) | ForEach-Object {
+    $src = Join-Path $Repo "data\$_"
+    if (Test-Path -LiteralPath $src) {
+        Copy-Item -LiteralPath $src -Destination (Join-Path $BundledData $_) -Force
+    }
+}
 
 if (-not (Test-Path -LiteralPath (Join-Path $Electron "dist-native\icon-helper\EcoIconHelper.exe"))) {
     & (Join-Path $PSScriptRoot "build-icon-helper.ps1")

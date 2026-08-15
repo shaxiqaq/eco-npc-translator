@@ -8,7 +8,7 @@ import {
   ChevronDown,
   ChevronRight,
 } from 'lucide-react';
-import { useEco } from '@/context/EcoContext';
+import { useEco, useSnapshot } from '@/context/EcoContext';
 import { formatNumber } from '@/lib/format';
 import {
   CAPTURE_COLORS,
@@ -133,7 +133,6 @@ const accentText: Record<string, string> = {
 
 export function DamagePage() {
   const {
-    snapshot,
     historyFilter,
     setHistoryFilter,
     state,
@@ -142,6 +141,7 @@ export function DamagePage() {
     switchCharacter,
     showToast,
   } = useEco();
+  const snapshot = useSnapshot();
   const report = state.battleReport;
   const capture = state.settings?.capture || {};
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});

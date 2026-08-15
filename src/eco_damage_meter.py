@@ -1254,448 +1254,467 @@ class DamageMeter(RideModeMixin, IdentityMixin):
 
     def handle_parsed(self, parsed, ts):
         typ = parsed.get("type")
-        if typ == "player_exp":
-            was_ready = (
-                self.exp_tracker.cexp_pct_x10 is not None
-                or self.exp_tracker.jexp_pct_x10 is not None
-            )
-            event = self.exp_tracker.apply_exp(
-                cexp_pct_x10=parsed.get("cexp_pct_x10"),
-                jexp_pct_x10=parsed.get("jexp_pct_x10"),
-                cexp_abs=parsed.get("cexp_abs"),
-                jexp_abs=parsed.get("jexp_abs"),
-                ts=ts,
-            )
-            now_ready = (
-                self.exp_tracker.cexp_pct_x10 is not None
-                or self.exp_tracker.jexp_pct_x10 is not None
-            )
-            if now_ready and not was_ready:
-                c_bar = (self.exp_tracker.cexp_pct_x10 or 0) / 10.0
-                j_bar = (self.exp_tracker.jexp_pct_x10 or 0) / 10.0
+        handler = type(self)._PARSED_HANDLERS.get(typ)
+        if handler is not None:
+            return handler(self, parsed, ts)
+
+    def _on_player_exp(self, parsed, ts):
+        was_ready = (
+            self.exp_tracker.cexp_pct_x10 is not None
+            or self.exp_tracker.jexp_pct_x10 is not None
+        )
+        event = self.exp_tracker.apply_exp(
+            cexp_pct_x10=parsed.get("cexp_pct_x10"),
+            jexp_pct_x10=parsed.get("jexp_pct_x10"),
+            cexp_abs=parsed.get("cexp_abs"),
+            jexp_abs=parsed.get("jexp_abs"),
+            ts=ts,
+        )
+        now_ready = (
+            self.exp_tracker.cexp_pct_x10 is not None
+            or self.exp_tracker.jexp_pct_x10 is not None
+        )
+        if now_ready and not was_ready:
+            c_bar = (self.exp_tracker.cexp_pct_x10 or 0) / 10.0
+            j_bar = (self.exp_tracker.jexp_pct_x10 or 0) / 10.0
+            self.events.appendleft((
+                now_label(),
+                f"经验同步 基础{c_bar:.1f}% 职业{j_bar:.1f}%",
+            ))
+            self.pending_notices.append({
+                "level": "success",
+                "message": f"肝度统计已就绪（基础 {c_bar:.1f}% / 职业 {j_bar:.1f}%）",
+            })
+        if event:
+            c_pct = (event.get("cexp_pct_x10") or 0) / 10.0
+            j_pct = (event.get("jexp_pct_x10") or 0) / 10.0
+            parts = []
+            if c_pct > 0:
+                parts.append(f"基础+{c_pct:.1f}%")
+            if j_pct > 0:
+                parts.append(f"职业+{j_pct:.1f}%")
+            if event.get("cexp_abs"):
+                parts.append(f"CEXP+{event['cexp_abs']}")
+            if event.get("jexp_abs"):
+                parts.append(f"JEXP+{event['jexp_abs']}")
+            if parts:
+                self.events.appendleft((now_label(), "经验 " + " ".join(parts)))
+        self.log({
+            "ts": ts,
+            "kind": "player_exp",
+            "cexp_pct_x10": parsed.get("cexp_pct_x10"),
+            "jexp_pct_x10": parsed.get("jexp_pct_x10"),
+            "cexp_abs": parsed.get("cexp_abs"),
+            "jexp_abs": parsed.get("jexp_abs"),
+            "gain": event,
+            "ready": now_ready,
+        })
+        return
+
+    def _on_player_level(self, parsed, ts):
+        prev_lv = self.exp_tracker.level
+        first_level = prev_lv is None
+        self.exp_tracker.apply_level(
+            level=parsed.get("level"),
+            job_level=parsed.get("job_level"),
+            job_level_2x=parsed.get("job_level_2x"),
+            job_level_2t=parsed.get("job_level_2t"),
+            job_level_joint=parsed.get("job_level_joint"),
+            ts=ts,
+        )
+        new_lv = self.exp_tracker.level
+        if first_level and new_lv is not None:
+            self.events.appendleft((now_label(), f"等级同步 Lv.{new_lv}"))
+        if prev_lv is not None and new_lv is not None and new_lv > prev_lv:
+            self.events.appendleft((now_label(), f"升级 → Lv.{new_lv}"))
+            self.pending_notices.append({
+                "level": "success",
+                "message": f"角色升级到 Lv.{new_lv}",
+            })
+        self.log({
+            "ts": ts,
+            "kind": "player_level",
+            "level": parsed.get("level"),
+            "job_level": parsed.get("job_level"),
+            "job_level_2x": parsed.get("job_level_2x"),
+            "job_level_2t": parsed.get("job_level_2t"),
+            "job_level_joint": parsed.get("job_level_joint"),
+        })
+        return
+
+    def _on_attack_request(self, parsed, ts):
+        target = parsed.get("target")
+        if target is not None and target != 0xFFFFFFFF:
+            self.recent_targets.append((ts, target))
+        # Always record local C2S attack — used to rebind after account switch.
+        if target is not None:
+            self.remember_action(ts, self.own_actor(), target, None, "attack", own=True)
+        return
+
+    def _on_possession_result(self, parsed, ts):
+        # SagaECO: FromID = possessor, ToID = host. result 0 = success (typical).
+        from_id = parsed.get("from_id")
+        to_id = parsed.get("to_id")
+        result = parsed.get("result")
+        try:
+            result_i = int(result) if result is not None else -1
+        except (TypeError, ValueError):
+            result_i = -1
+        # Success paths: result==0 or missing; ignore explicit failures.
+        ok = result is None or result_i == 0
+        if ok and to_id not in (None, 0, 0xFFFFFFFF):
+            # Local player is usually the possessor (from_id); host body is to_id.
+            if self.self_id is None and from_id and self.is_likely_character_actor(from_id):
+                self.bind_self(from_id, reason="possession_from")
+            if self.self_id is None or from_id in (self.self_id, None) or to_id != self.self_id:
+                self.possession_host_id = int(to_id)
                 self.events.appendleft((
                     now_label(),
-                    f"经验同步 基础{c_bar:.1f}% 职业{j_bar:.1f}%",
+                    f"依凭中 → 宿主#{self.possession_host_id}",
                 ))
                 self.pending_notices.append({
-                    "level": "success",
-                    "message": f"肝度统计已就绪（基础 {c_bar:.1f}% / 职业 {j_bar:.1f}%）",
+                    "level": "info",
+                    "message": f"已进入依凭（宿主 #{self.possession_host_id}），技能将计入你的伤害",
                 })
-            if event:
-                c_pct = (event.get("cexp_pct_x10") or 0) / 10.0
-                j_pct = (event.get("jexp_pct_x10") or 0) / 10.0
-                parts = []
-                if c_pct > 0:
-                    parts.append(f"基础+{c_pct:.1f}%")
-                if j_pct > 0:
-                    parts.append(f"职业+{j_pct:.1f}%")
-                if event.get("cexp_abs"):
-                    parts.append(f"CEXP+{event['cexp_abs']}")
-                if event.get("jexp_abs"):
-                    parts.append(f"JEXP+{event['jexp_abs']}")
-                if parts:
-                    self.events.appendleft((now_label(), "经验 " + " ".join(parts)))
-            self.log({
-                "ts": ts,
-                "kind": "player_exp",
-                "cexp_pct_x10": parsed.get("cexp_pct_x10"),
-                "jexp_pct_x10": parsed.get("jexp_pct_x10"),
-                "cexp_abs": parsed.get("cexp_abs"),
-                "jexp_abs": parsed.get("jexp_abs"),
-                "gain": event,
-                "ready": now_ready,
-            })
-            return
-        if typ == "player_level":
-            prev_lv = self.exp_tracker.level
-            first_level = prev_lv is None
-            self.exp_tracker.apply_level(
-                level=parsed.get("level"),
-                job_level=parsed.get("job_level"),
-                job_level_2x=parsed.get("job_level_2x"),
-                job_level_2t=parsed.get("job_level_2t"),
-                job_level_joint=parsed.get("job_level_joint"),
-                ts=ts,
-            )
-            new_lv = self.exp_tracker.level
-            if first_level and new_lv is not None:
-                self.events.appendleft((now_label(), f"等级同步 Lv.{new_lv}"))
-            if prev_lv is not None and new_lv is not None and new_lv > prev_lv:
-                self.events.appendleft((now_label(), f"升级 → Lv.{new_lv}"))
-                self.pending_notices.append({
-                    "level": "success",
-                    "message": f"角色升级到 Lv.{new_lv}",
-                })
-            self.log({
-                "ts": ts,
-                "kind": "player_level",
-                "level": parsed.get("level"),
-                "job_level": parsed.get("job_level"),
-                "job_level_2x": parsed.get("job_level_2x"),
-                "job_level_2t": parsed.get("job_level_2t"),
-                "job_level_joint": parsed.get("job_level_joint"),
-            })
-            return
-        if typ == "attack_request":
-            target = parsed.get("target")
-            if target is not None and target != 0xFFFFFFFF:
-                self.recent_targets.append((ts, target))
-            # Always record local C2S attack — used to rebind after account switch.
-            if target is not None:
-                self.remember_action(ts, self.own_actor(), target, None, "attack", own=True)
-            return
-        if typ == "possession_result":
-            # SagaECO: FromID = possessor, ToID = host. result 0 = success (typical).
-            from_id = parsed.get("from_id")
-            to_id = parsed.get("to_id")
-            result = parsed.get("result")
-            try:
-                result_i = int(result) if result is not None else -1
-            except (TypeError, ValueError):
-                result_i = -1
-            # Success paths: result==0 or missing; ignore explicit failures.
-            ok = result is None or result_i == 0
-            if ok and to_id not in (None, 0, 0xFFFFFFFF):
-                # Local player is usually the possessor (from_id); host body is to_id.
-                if self.self_id is None and from_id and self.is_likely_character_actor(from_id):
-                    self.bind_self(from_id, reason="possession_from")
-                if self.self_id is None or from_id in (self.self_id, None) or to_id != self.self_id:
-                    self.possession_host_id = int(to_id)
-                    self.events.appendleft((
-                        now_label(),
-                        f"依凭中 → 宿主#{self.possession_host_id}",
-                    ))
-                    self.pending_notices.append({
-                        "level": "info",
-                        "message": f"已进入依凭（宿主 #{self.possession_host_id}），技能将计入你的伤害",
-                    })
-            self.log({
-                "ts": ts,
-                "kind": "possession",
-                "event": "result",
-                "from_id": from_id,
-                "to_id": to_id,
-                "result": result,
-                "host": self.possession_host_id,
-                "self_id": self.self_id,
-            })
-            return
-        if typ == "possession_cancel":
-            prev = self.possession_host_id
-            self.possession_host_id = None
-            if prev is not None:
-                self.events.appendleft((now_label(), f"依凭解除（原宿主#{prev}）"))
-            self.log({
-                "ts": ts,
-                "kind": "possession",
-                "event": "cancel",
-                "from_id": parsed.get("from_id"),
-                "to_id": parsed.get("to_id"),
-                "previous_host": prev,
-            })
-            return
-        if typ == "skill_cast_request":
-            # C2S is always from the logged-in client. Record even when target is
-            # 0xFFFFFFFF (ground / self / no-lock) so S2C can rebind self_id.
-            target = parsed.get("target")
-            if target == 0xFFFFFFFF:
-                target = None
-            actor = self.own_actor()
-            if target is not None:
-                self.recent_targets.append((ts, target))
-            self.remember_action(ts, actor, target, parsed.get("skill_id"), "skill", own=True)
-            # Count own cast on client request (includes 0-damage skills like パリイ).
-            self.record_own_skill_cast(ts, parsed.get("skill_id"), target, source="request")
-            self.log({
-                "ts": ts,
-                "kind": "skill_action",
-                "source": "request",
-                "actor": actor,
-                "target": target,
-                "skill_id": parsed.get("skill_id"),
-                "skill": self.skill_label(parsed.get("skill_id")),
-                "raw_op": parsed.get("_op"),
-                "raw_dir": parsed.get("_dir"),
-                "raw_sub": parsed.get("_sub"),
-            })
-            return
-        if typ in ("skill_cast_result", "skill_active"):
-            # Local C2S request proves the following S2C caster is the logged-in character.
-            # Critical for account/character switch on the same eco.exe (same Frida session).
-            caster = parsed.get("caster")
-            skill_id = parsed.get("skill_id")
-            target = parsed.get("target")
-            # Rebind only when S2C caster looks like a PC (account switch),
-            # never ride-mount / 依凭 host.
-            if (
-                caster is not None
-                and caster != self.self_id
-                and not self.is_possession_host(caster)
-                and self.is_likely_character_actor(caster)
-                and (
-                    self.has_recent_own_skill_request(ts, skill_id, target)
-                    or any(
-                        self.has_recent_own_skill_request(ts, skill_id, d)
-                        for d in (parsed.get("affected") or [])[:4]
-                    )
-                )
-            ):
-                self.observe_local_caster(caster, reason=typ)
-            elif (
-                caster is not None
-                and self.self_id is not None
-                and caster != self.self_id
-                and self.has_recent_own_skill_request(ts, skill_id, target)
-                and not self.is_likely_character_actor(caster)
-            ):
-                # Non-PC caster after our C2S: only enter ride if already riding
-                # or this actor is the known mount. Walking pets just get marked.
-                self.mark_pet_actor(caster, owner=self.self_id, reason="伙伴施法者")
-                if self.is_ride_active(ts) or self.is_ride_mount(caster):
-                    self.enter_ride_mode(mount_id=caster, reason="骑宠施法者", ts=ts, quiet=True)
-            # Self-named caster while sticky ride: do not refresh TTL here.
-            # Only mount-as-caster / ride pet_appear should extend ride mode.
-            self.remember_action(ts, caster, target, skill_id, "skill")
-            # Cast counting: prefer C2S request only. Cast-time skills fire skill_active
-            # 1–3s later; counting both request+active doubles the skill cast total.
-            own_cast = (
-                (self.self_id is not None and caster == self.self_id)
-                or self.has_recent_own_skill_request(ts, skill_id, target)
-            )
-            if own_cast:
-                saw_request = self.has_recent_own_skill_request(
-                    ts, skill_id, target, max_age=15.0
-                )
-                if not saw_request:
-                    # Missed C2S (or non-local packet path) — bootstrap cast count from S2C.
-                    self.record_own_skill_cast(ts, skill_id, target, source=typ)
-            if typ == "skill_active":
-                self.apply_skill_result_damage(ts, parsed)
-            self.log({
-                "ts": ts,
-                "kind": "skill_action",
-                "source": typ,
-                "actor": caster,
-                "target": target,
-                "skill_id": skill_id,
-                "skill": self.skill_label(skill_id),
-                "raw_op": parsed.get("_op"),
-                "raw_dir": parsed.get("_dir"),
-                "raw_sub": parsed.get("_sub"),
-            })
-            return
-        if typ == "pet_appear":
-            actor = parsed.get("actor")
-            owner = parsed.get("owner")
-            if actor is not None:
-                if self.self_id is None and owner in self.self_candidates:
-                    self.bind_self(owner, reason="pet_owner_candidate")
-                own_pet = self.self_id is None or owner in (self.self_id, None, 0)
-                hp = parsed.get("hp")
-                max_hp = parsed.get("max_hp")
-                if own_pet:
-                    self.mark_pet_actor(actor, owner=owner if owner else self.self_id, reason="宠物出现包")
-                    # Ride mounts commonly appear with hp/max_hp == 0 then delete (absorbed).
-                    # Walking companion pets usually show real HP → exit sticky ride.
-                    try:
-                        hp_i = int(hp) if hp is not None else None
-                    except (TypeError, ValueError):
-                        hp_i = None
-                    try:
-                        max_hp_i = int(max_hp) if max_hp is not None else None
-                    except (TypeError, ValueError):
-                        max_hp_i = None
-                    own_owner = (
-                        self.self_id is not None
-                        and owner is not None
-                        and int(owner) == int(self.self_id)
-                    )
-                    walk_pet = (
-                        own_owner
-                        and hp_i is not None
-                        and hp_i > 0
-                        and (max_hp_i is None or max_hp_i > 0)
-                    )
-                    # Ride mount packets usually report hp=0 and max_hp=0 (absorbed model).
-                    # Missing HP fields are common on walk/combat pets — do NOT treat as ride
-                    # (was falsely sticking all self damage into 骑宠渠道 for minutes).
-                    ride_like = (
-                        own_owner
-                        and hp_i == 0
-                        and max_hp_i == 0
-                    )
-                    if walk_pet and self.is_ride_active(ts):
-                        self.exit_ride_mode(reason="walk_pet_appear", ts=ts)
-                    elif ride_like:
-                        self.enter_ride_mode(
-                            mount_id=actor,
-                            reason="宠物出现包",
-                            ts=ts,
-                            quiet=self.is_ride_active(ts),
-                        )
-                if hp is not None:
-                    self.hp_by_actor[actor] = hp
-                self.log({
-                    "ts": ts,
-                    "kind": "pet_appear",
-                    "actor": actor,
-                    "owner": owner,
-                    "hp": hp,
-                    "max_hp": parsed.get("max_hp"),
-                    "ride_mode": self.is_ride_active(ts),
-                    "raw_op": parsed.get("_op"),
-                    "raw_dir": parsed.get("_dir"),
-                    "raw_sub": parsed.get("_sub"),
-                })
-            return
-        if typ == "pet_delete":
-            actor = parsed.get("actor")
-            if actor is not None:
-                # Ride mounts are deleted when absorbed into the rider visual —
-                # keep sticky ride_mode; only clear if a non-mount walk pet leaves.
-                if self.is_ride_mount(actor):
-                    self.refresh_ride_mode(ts, evidence=True)
-                self.log({
-                    "ts": ts,
-                    "kind": "pet_delete",
-                    "actor": actor,
-                    "was_pet": actor in self.pet_actors,
-                    "ride_mode": self.is_ride_active(ts),
-                    "raw_op": parsed.get("_op"),
-                    "raw_dir": parsed.get("_dir"),
-                    "raw_sub": parsed.get("_sub"),
-                })
-            return
-        if typ == "battle_status":
-            self.mark_self_candidate(parsed.get("actor"), 1)
-            return
-        if typ == "actor_buff":
-            actor = parsed.get("actor")
-            masks = parsed.get("masks") or []
-            if actor is None:
-                return
-            self.actor_buff_masks[actor] = (masks, ts)
-            if actor != self.self_id:
-                self.sync_buffs_to_self(ts)
-                return
-            skill_action = self.find_recent_own_buff_skill(ts, actor)
-            skill = None
-            if skill_action is not None:
-                skill = {
-                    "skill_id": skill_action.get("skill_id"),
-                    "name": self.skill_label(skill_action.get("skill_id")),
-                }
-            buff_events = self.buff_tracker.update(actor, masks, ts, skill=skill)
-            if skill_action is not None and any(
-                event.get("skill_id") == skill_action.get("skill_id")
-                and event.get("event") in ("gained", "refreshed")
-                for event in buff_events
-            ):
-                skill_action["buff_match_used"] = True
-            for event in buff_events:
-                self.log({
-                    "ts": ts,
-                    "kind": "buff",
-                    "event": event.get("event"),
-                    "actor": actor,
-                    "key": event.get("key"),
-                    "name": event.get("name"),
-                    "source_name": event.get("source_name"),
-                    "category": event.get("category"),
-                    "skill_id": event.get("skill_id"),
-                    "confidence": event.get("confidence"),
-                    "duration": event.get("duration"),
-                    "timing": event.get("timing"),
-                    "raw_op": parsed.get("_op"),
-                    "raw_dir": parsed.get("_dir"),
-                    "raw_sub": parsed.get("_sub"),
-                })
-            return
-        if typ == "hpmpsp":
-            actor = parsed.get("actor")
-            hp = parsed.get("hp")
-            prev = self.hp_by_actor.get(actor)
-            self.hp_by_actor[actor] = hp
-            if prev is not None and hp != prev:
-                self.events.appendleft((now_label(), f"HP actor={actor} {prev}->{hp} ({hp - prev:+d})"))
-                self.apply_hp_delta_damage(ts, actor, prev, hp)
-            elif prev is None and self.find_pending_hp_skill_action(ts, actor):
-                self.events.appendleft((now_label(), f"技能目标#{actor} 首次HP={hp}，缺少上一帧HP，等待下一次变化"))
-            return
-        if typ == "actor_name":
-            actor = parsed.get("actor")
-            name = parsed.get("name")
-            if actor is not None and name:
-                self.actor_names[actor] = name
-                self.unknown_combat_actors.pop(actor, None)
-                self.log({
-                    "ts": ts,
-                    "kind": "actor_name",
-                    "actor": actor,
-                    "name": name,
-                })
-            return
-        if typ == "mob_appear":
-            actor = parsed.get("actor")
-            mob_id = parsed.get("mob_id")
-            if actor is not None and mob_id is not None:
-                self.actor_mobs[actor] = mob_id
-                self.mob_template_counts[mob_id] += 1
-                appear_hp = parsed.get("hp")
-                if appear_hp is not None:
-                    self.hp_by_actor[actor] = appear_hp
-                self.unknown_combat_actors.pop(actor, None)
-                self.log({
-                    "ts": ts,
-                    "kind": "mob_appear",
-                    "actor": actor,
-                    "mob_id": mob_id,
-                    "mob_name": self.mob_names.get(mob_id),
-                })
-            return
-        if typ == "mob_delete":
-            # Keep the last actor -> mob template mapping for the session.
-            # Damage packets can arrive close to deletion, and keeping it helps
-            # history remain readable.
-            return
-        if typ == "combat_context":
-            # Field often carries local actor; use with recent C2S for rebind.
-            ctx_actor = parsed.get("u32_2")
-            if ctx_actor:
-                try:
-                    ctx_actor = int(ctx_actor)
-                except (TypeError, ValueError):
-                    ctx_actor = None
-            if ctx_actor and ctx_actor > 0:
-                self.mark_self_candidate(ctx_actor, 2)
-                # Cold start only: field layout is soft evidence. Locked-self rebind
-                # relies on skill_cast_result / attack_result (stronger C2S+S2C pair).
-                if (
-                    self.self_id is None
-                    and self.auto_self
-                    and ctx_actor < 10000
-                    and self.has_recent_own_combat_request(ts, max_age=3.0)
-                ):
-                    self.observe_local_caster(ctx_actor, reason="combat_context")
-            self.log({
-                "ts": ts,
-                "kind": "combat_context",
-                "op": parsed.get("op"),
-                "raw_op": parsed.get("_op"),
-                "raw_dir": parsed.get("_dir"),
-                "raw_sub": parsed.get("_sub"),
-                "u16_2": parsed.get("u16_2"),
-                "u32_2": parsed.get("u32_2"),
-                "u32_6": parsed.get("u32_6"),
-                "u32_10": parsed.get("u32_10"),
-                "u32_14": parsed.get("u32_14"),
-                "u32_18": parsed.get("u32_18"),
-                "recent_skill_actions": list(self.recent_actions)[:8],
-            })
-            return
-        if typ != "attack_result":
-            return
+        self.log({
+            "ts": ts,
+            "kind": "possession",
+            "event": "result",
+            "from_id": from_id,
+            "to_id": to_id,
+            "result": result,
+            "host": self.possession_host_id,
+            "self_id": self.self_id,
+        })
+        return
 
+    def _on_possession_cancel(self, parsed, ts):
+        prev = self.possession_host_id
+        self.possession_host_id = None
+        if prev is not None:
+            self.events.appendleft((now_label(), f"依凭解除（原宿主#{prev}）"))
+        self.log({
+            "ts": ts,
+            "kind": "possession",
+            "event": "cancel",
+            "from_id": parsed.get("from_id"),
+            "to_id": parsed.get("to_id"),
+            "previous_host": prev,
+        })
+        return
+
+    def _on_skill_cast_request(self, parsed, ts):
+        # C2S is always from the logged-in client. Record even when target is
+        # 0xFFFFFFFF (ground / self / no-lock) so S2C can rebind self_id.
+        target = parsed.get("target")
+        if target == 0xFFFFFFFF:
+            target = None
+        actor = self.own_actor()
+        if target is not None:
+            self.recent_targets.append((ts, target))
+        self.remember_action(ts, actor, target, parsed.get("skill_id"), "skill", own=True)
+        # Count own cast on client request (includes 0-damage skills like パリイ).
+        self.record_own_skill_cast(ts, parsed.get("skill_id"), target, source="request")
+        self.log({
+            "ts": ts,
+            "kind": "skill_action",
+            "source": "request",
+            "actor": actor,
+            "target": target,
+            "skill_id": parsed.get("skill_id"),
+            "skill": self.skill_label(parsed.get("skill_id")),
+            "raw_op": parsed.get("_op"),
+            "raw_dir": parsed.get("_dir"),
+            "raw_sub": parsed.get("_sub"),
+        })
+        return
+
+    def _on_skill_cast_event(self, parsed, ts):
+        typ = parsed.get("type")
+        # Local C2S request proves the following S2C caster is the logged-in character.
+        # Critical for account/character switch on the same eco.exe (same Frida session).
+        caster = parsed.get("caster")
+        skill_id = parsed.get("skill_id")
+        target = parsed.get("target")
+        # Rebind only when S2C caster looks like a PC (account switch),
+        # never ride-mount / 依凭 host.
+        if (
+            caster is not None
+            and caster != self.self_id
+            and not self.is_possession_host(caster)
+            and self.is_likely_character_actor(caster)
+            and (
+                self.has_recent_own_skill_request(ts, skill_id, target)
+                or any(
+                    self.has_recent_own_skill_request(ts, skill_id, d)
+                    for d in (parsed.get("affected") or [])[:4]
+                )
+            )
+        ):
+            self.observe_local_caster(caster, reason=typ)
+        elif (
+            caster is not None
+            and self.self_id is not None
+            and caster != self.self_id
+            and self.has_recent_own_skill_request(ts, skill_id, target)
+            and not self.is_likely_character_actor(caster)
+        ):
+            # Non-PC caster after our C2S: only enter ride if already riding
+            # or this actor is the known mount. Walking pets just get marked.
+            self.mark_pet_actor(caster, owner=self.self_id, reason="伙伴施法者")
+            if self.is_ride_active(ts) or self.is_ride_mount(caster):
+                self.enter_ride_mode(mount_id=caster, reason="骑宠施法者", ts=ts, quiet=True)
+        # Self-named caster while sticky ride: do not refresh TTL here.
+        # Only mount-as-caster / ride pet_appear should extend ride mode.
+        self.remember_action(ts, caster, target, skill_id, "skill")
+        # Cast counting: prefer C2S request only. Cast-time skills fire skill_active
+        # 1–3s later; counting both request+active doubles the skill cast total.
+        own_cast = (
+            (self.self_id is not None and caster == self.self_id)
+            or self.has_recent_own_skill_request(ts, skill_id, target)
+        )
+        if own_cast:
+            saw_request = self.has_recent_own_skill_request(
+                ts, skill_id, target, max_age=15.0
+            )
+            if not saw_request:
+                # Missed C2S (or non-local packet path) — bootstrap cast count from S2C.
+                self.record_own_skill_cast(ts, skill_id, target, source=typ)
+        if typ == "skill_active":
+            self.apply_skill_result_damage(ts, parsed)
+        self.log({
+            "ts": ts,
+            "kind": "skill_action",
+            "source": typ,
+            "actor": caster,
+            "target": target,
+            "skill_id": skill_id,
+            "skill": self.skill_label(skill_id),
+            "raw_op": parsed.get("_op"),
+            "raw_dir": parsed.get("_dir"),
+            "raw_sub": parsed.get("_sub"),
+        })
+        return
+
+    def _on_pet_appear(self, parsed, ts):
+        actor = parsed.get("actor")
+        owner = parsed.get("owner")
+        if actor is not None:
+            if self.self_id is None and owner in self.self_candidates:
+                self.bind_self(owner, reason="pet_owner_candidate")
+            own_pet = self.self_id is None or owner in (self.self_id, None, 0)
+            hp = parsed.get("hp")
+            max_hp = parsed.get("max_hp")
+            if own_pet:
+                self.mark_pet_actor(actor, owner=owner if owner else self.self_id, reason="宠物出现包")
+                # Ride mounts commonly appear with hp/max_hp == 0 then delete (absorbed).
+                # Walking companion pets usually show real HP → exit sticky ride.
+                try:
+                    hp_i = int(hp) if hp is not None else None
+                except (TypeError, ValueError):
+                    hp_i = None
+                try:
+                    max_hp_i = int(max_hp) if max_hp is not None else None
+                except (TypeError, ValueError):
+                    max_hp_i = None
+                own_owner = (
+                    self.self_id is not None
+                    and owner is not None
+                    and int(owner) == int(self.self_id)
+                )
+                walk_pet = (
+                    own_owner
+                    and hp_i is not None
+                    and hp_i > 0
+                    and (max_hp_i is None or max_hp_i > 0)
+                )
+                # Ride mount packets usually report hp=0 and max_hp=0 (absorbed model).
+                # Missing HP fields are common on walk/combat pets — do NOT treat as ride
+                # (was falsely sticking all self damage into 骑宠渠道 for minutes).
+                ride_like = (
+                    own_owner
+                    and hp_i == 0
+                    and max_hp_i == 0
+                )
+                if walk_pet and self.is_ride_active(ts):
+                    self.exit_ride_mode(reason="walk_pet_appear", ts=ts)
+                elif ride_like:
+                    self.enter_ride_mode(
+                        mount_id=actor,
+                        reason="宠物出现包",
+                        ts=ts,
+                        quiet=self.is_ride_active(ts),
+                    )
+            if hp is not None:
+                self.hp_by_actor[actor] = hp
+            self.log({
+                "ts": ts,
+                "kind": "pet_appear",
+                "actor": actor,
+                "owner": owner,
+                "hp": hp,
+                "max_hp": parsed.get("max_hp"),
+                "ride_mode": self.is_ride_active(ts),
+                "raw_op": parsed.get("_op"),
+                "raw_dir": parsed.get("_dir"),
+                "raw_sub": parsed.get("_sub"),
+            })
+        return
+
+    def _on_pet_delete(self, parsed, ts):
+        actor = parsed.get("actor")
+        if actor is not None:
+            # Ride mounts are deleted when absorbed into the rider visual —
+            # keep sticky ride_mode; only clear if a non-mount walk pet leaves.
+            if self.is_ride_mount(actor):
+                self.refresh_ride_mode(ts, evidence=True)
+            self.log({
+                "ts": ts,
+                "kind": "pet_delete",
+                "actor": actor,
+                "was_pet": actor in self.pet_actors,
+                "ride_mode": self.is_ride_active(ts),
+                "raw_op": parsed.get("_op"),
+                "raw_dir": parsed.get("_dir"),
+                "raw_sub": parsed.get("_sub"),
+            })
+        return
+
+    def _on_battle_status(self, parsed, ts):
+        self.mark_self_candidate(parsed.get("actor"), 1)
+        return
+
+    def _on_actor_buff(self, parsed, ts):
+        actor = parsed.get("actor")
+        masks = parsed.get("masks") or []
+        if actor is None:
+            return
+        self.actor_buff_masks[actor] = (masks, ts)
+        if actor != self.self_id:
+            self.sync_buffs_to_self(ts)
+            return
+        skill_action = self.find_recent_own_buff_skill(ts, actor)
+        skill = None
+        if skill_action is not None:
+            skill = {
+                "skill_id": skill_action.get("skill_id"),
+                "name": self.skill_label(skill_action.get("skill_id")),
+            }
+        buff_events = self.buff_tracker.update(actor, masks, ts, skill=skill)
+        if skill_action is not None and any(
+            event.get("skill_id") == skill_action.get("skill_id")
+            and event.get("event") in ("gained", "refreshed")
+            for event in buff_events
+        ):
+            skill_action["buff_match_used"] = True
+        for event in buff_events:
+            self.log({
+                "ts": ts,
+                "kind": "buff",
+                "event": event.get("event"),
+                "actor": actor,
+                "key": event.get("key"),
+                "name": event.get("name"),
+                "source_name": event.get("source_name"),
+                "category": event.get("category"),
+                "skill_id": event.get("skill_id"),
+                "confidence": event.get("confidence"),
+                "duration": event.get("duration"),
+                "timing": event.get("timing"),
+                "raw_op": parsed.get("_op"),
+                "raw_dir": parsed.get("_dir"),
+                "raw_sub": parsed.get("_sub"),
+            })
+        return
+
+    def _on_hpmpsp(self, parsed, ts):
+        actor = parsed.get("actor")
+        hp = parsed.get("hp")
+        prev = self.hp_by_actor.get(actor)
+        self.hp_by_actor[actor] = hp
+        if prev is not None and hp != prev:
+            self.events.appendleft((now_label(), f"HP actor={actor} {prev}->{hp} ({hp - prev:+d})"))
+            self.apply_hp_delta_damage(ts, actor, prev, hp)
+        elif prev is None and self.find_pending_hp_skill_action(ts, actor):
+            self.events.appendleft((now_label(), f"技能目标#{actor} 首次HP={hp}，缺少上一帧HP，等待下一次变化"))
+        return
+
+    def _on_actor_name(self, parsed, ts):
+        actor = parsed.get("actor")
+        name = parsed.get("name")
+        if actor is not None and name:
+            self.actor_names[actor] = name
+            self.unknown_combat_actors.pop(actor, None)
+            self.log({
+                "ts": ts,
+                "kind": "actor_name",
+                "actor": actor,
+                "name": name,
+            })
+        return
+
+    def _on_mob_appear(self, parsed, ts):
+        actor = parsed.get("actor")
+        mob_id = parsed.get("mob_id")
+        if actor is not None and mob_id is not None:
+            self.actor_mobs[actor] = mob_id
+            self.mob_template_counts[mob_id] += 1
+            appear_hp = parsed.get("hp")
+            if appear_hp is not None:
+                self.hp_by_actor[actor] = appear_hp
+            self.unknown_combat_actors.pop(actor, None)
+            self.log({
+                "ts": ts,
+                "kind": "mob_appear",
+                "actor": actor,
+                "mob_id": mob_id,
+                "mob_name": self.mob_names.get(mob_id),
+            })
+        return
+
+    def _on_mob_delete(self, parsed, ts):
+        # Keep the last actor -> mob template mapping for the session.
+        # Damage packets can arrive close to deletion, and keeping it helps
+        # history remain readable.
+        return
+
+    def _on_combat_context(self, parsed, ts):
+        # Field often carries local actor; use with recent C2S for rebind.
+        ctx_actor = parsed.get("u32_2")
+        if ctx_actor:
+            try:
+                ctx_actor = int(ctx_actor)
+            except (TypeError, ValueError):
+                ctx_actor = None
+        if ctx_actor and ctx_actor > 0:
+            self.mark_self_candidate(ctx_actor, 2)
+            # Cold start only: field layout is soft evidence. Locked-self rebind
+            # relies on skill_cast_result / attack_result (stronger C2S+S2C pair).
+            if (
+                self.self_id is None
+                and self.auto_self
+                and ctx_actor < 10000
+                and self.has_recent_own_combat_request(ts, max_age=3.0)
+            ):
+                self.observe_local_caster(ctx_actor, reason="combat_context")
+        self.log({
+            "ts": ts,
+            "kind": "combat_context",
+            "op": parsed.get("op"),
+            "raw_op": parsed.get("_op"),
+            "raw_dir": parsed.get("_dir"),
+            "raw_sub": parsed.get("_sub"),
+            "u16_2": parsed.get("u16_2"),
+            "u32_2": parsed.get("u32_2"),
+            "u32_6": parsed.get("u32_6"),
+            "u32_10": parsed.get("u32_10"),
+            "u32_14": parsed.get("u32_14"),
+            "u32_18": parsed.get("u32_18"),
+            "recent_skill_actions": list(self.recent_actions)[:8],
+        })
+        return
+
+    def _on_attack_result(self, parsed, ts):
         src = parsed.get("src")
         dst = parsed.get("dst")
         damage = parsed.get("damage") or 0
@@ -1854,6 +1873,7 @@ class DamageMeter(RideModeMixin, IdentityMixin):
             "taken_total": self.total_taken,
             "proxy": proxy,
         })
+
 
     def on_message(self, message, data):
         if message.get("type") != "send":
@@ -2090,6 +2110,29 @@ def main():
         logger.info(f"Saved {out_path}")
     return 0
 
+
+
+
+DamageMeter._PARSED_HANDLERS = {
+        "player_exp": DamageMeter._on_player_exp,
+        "player_level": DamageMeter._on_player_level,
+        "attack_request": DamageMeter._on_attack_request,
+        "possession_result": DamageMeter._on_possession_result,
+        "possession_cancel": DamageMeter._on_possession_cancel,
+        "skill_cast_request": DamageMeter._on_skill_cast_request,
+        "skill_cast_result": DamageMeter._on_skill_cast_event,
+        "skill_active": DamageMeter._on_skill_cast_event,
+        "pet_appear": DamageMeter._on_pet_appear,
+        "pet_delete": DamageMeter._on_pet_delete,
+        "battle_status": DamageMeter._on_battle_status,
+        "actor_buff": DamageMeter._on_actor_buff,
+        "hpmpsp": DamageMeter._on_hpmpsp,
+        "actor_name": DamageMeter._on_actor_name,
+        "mob_appear": DamageMeter._on_mob_appear,
+        "mob_delete": DamageMeter._on_mob_delete,
+        "combat_context": DamageMeter._on_combat_context,
+        "attack_result": DamageMeter._on_attack_result,
+}
 
 if __name__ == "__main__":
     raise SystemExit(main())

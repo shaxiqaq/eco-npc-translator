@@ -1,7 +1,7 @@
 import { ExternalLink, Sparkles, Sword, Shield, Timer, Hourglass, Tag } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSkillIcon } from '@/hooks/useSkillIcon';
-import { useEco } from '@/context/EcoContext';
+import { useSkillNameMode } from '@/context/EcoContext';
 
 const FALLBACKS = {
   sparkles: Sparkles,
@@ -71,8 +71,7 @@ export function SkillName({
   showWiki?: boolean;
 }) {
   const { name, nameClient, nameJa, wikiUrl } = useSkillIcon(skillId);
-  const { state } = useEco();
-  const mode = String(state.settings?.appearance?.skillNameMode || 'client');
+  const mode = useSkillNameMode();
   const text = pickDisplayName({
     mode,
     preferName,

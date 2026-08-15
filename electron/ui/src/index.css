@@ -27,10 +27,16 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+:root {
+  --eco-font: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", Tahoma, sans-serif;
+  --eco-font-mono: Consolas, "Cascadia Mono", "Microsoft YaHei UI", monospace;
+}
+
 html,
 body,
 #root {
   height: 100%;
+  width: 100%;
   margin: 0;
 }
 
@@ -38,15 +44,26 @@ body {
   color-scheme: dark;
   background: var(--bg);
   color: var(--text);
-  font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  font-family: var(--eco-font);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: 0;
   overflow: hidden;
-  -webkit-font-smoothing: antialiased;
+  /* Windows: antialiased thins YaHei strokes */
+  -webkit-font-smoothing: auto;
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  min-height: 0;
 }
 
 .page-host {
   display: block;
   padding: 20px 28px 30px;
   min-height: 0;
+  width: 100%;
 }
 
 .sr-only {
@@ -91,12 +108,10 @@ body {
   justify-content: center;
 }
 
-/* Prefer shadcn button look over legacy .btn when both apply */
 button.inline-flex {
   letter-spacing: 0;
 }
 
-/* Softer page rhythm when using Card-based sections */
 .page-stack {
   display: flex;
   flex-direction: column;

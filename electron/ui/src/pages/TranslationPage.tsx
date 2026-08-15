@@ -1,12 +1,13 @@
-import { Languages, ArrowRight } from 'lucide-react';
+import { Languages, ArrowRight, Zap } from 'lucide-react';
 import { useEco } from '@/context/EcoContext';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { PageStack, DataCard, EmptyState, TextLink } from '@/components/layout';
 import { serviceText } from '@/lib/damage';
 
 export function TranslationPage() {
-  const { state, setPage, setSettingsTab } = useEco();
+  const { state, setPage, setSettingsTab, prestartServices } = useEco();
   const translator = state.services?.translator;
   const running = ['running', 'starting'].includes(translator?.state || '');
   const translation = state.translation || {};
@@ -41,6 +42,10 @@ export function TranslationPage() {
             <Badge variant={running ? 'success' : translator?.state === 'error' ? 'warning' : 'secondary'}>
               {serviceText(translator)}
             </Badge>
+            <Button type="button" size="sm" onClick={() => void prestartServices()}>
+              <Zap className="h-4 w-4" />
+              {running ? '再预热一次' : '预启动翻译'}
+            </Button>
             <TextLink onClick={() => setPage('overview')}>
               启停请到「总览」
             </TextLink>
@@ -67,6 +72,16 @@ export function TranslationPage() {
               ['翻译服务', translation.provider || '未配置'],
               ['模型', translation.model || '-'],
               ['目标语言', translation.target_lang === 'zh-TW' ? '繁体中文' : '简体中文'],
+              [
+                '游戏原文',
+                translation.source_lang === 'ja'
+                  ? '日文'
+                  : translation.source_lang === 'id'
+                    ? '印尼文'
+                    : translation.source_lang === 'en'
+                      ? '英文'
+                      : '自动识别',
+              ],
               ['首屏等待', `${translation.first_wait || 0} 秒`],
               [
                 '共享词库',

@@ -28,12 +28,22 @@ Living notes for ECO Toolbox. Prefer small, test-backed cleanups over rewrites.
 - `diagnostics.js`: zip + named log tails + remote summary helpers
 - **v0.2.15**: translation quality — default `deepseek-chat`, ECO glossary prompts, shared-dict upload gate (trusted models + dirty filter), default public sync
 - **v0.2.16**: ride vs walk-partner classification (wiki-aligned), safer NPC mitm (no game-thread wait), delayed graceful quit before app exit
+- Graceful shutdown extracted to `electron/lib/app-shutdown.js` (+ unit tests)
+- Pure damage classify: `src/eco_damage_classify.py` used by ride mixin
+- IPC channel name registry: `electron/lib/ipc-channels.js`
+- Settings tabs split → `ui/src/pages/settings/*` (appearance / translation / overlay / startup / data / updates)
+- IPC handlers extracted → `electron/lib/ipc/register-handlers.js` (51 handlers; main wires ctx)
+- UI: classic CSS grid shell + shadcn/Radix controls (Mantine experiment fully reverted; fonts YaHei, no antialiased thinning)
+- Update dialog: GitHub HTML notes → plain text; download units KB/MB
+- Overlay snapshot slimmed; SkillName isolated from combat tick context
+- Architecture: deleted unused `main.ts`/`services/` draft; IPC split by domain (no `with`); CaptureHost + TranslatorHost; translator JSON status; unified `eco_capture_agent.py`; `handle_parsed` dispatch table
+- **v0.2.17**: unified Frida agent is the default attach path; GitHub notes + in-app changelog in Chinese
 
 ## Still optional
 
 | Item | Why | Effort |
 |------|-----|--------|
-| Further split remaining IPC out of `main.js` | Readability | Medium |
+| Split `register-handlers` further if a domain file grows | Optional | Small |
 | Gradual TypeScript for preload/IPC contracts | Fewer wrong payloads | Medium |
 | Delete `electron/renderer-legacy` after confirmation | Repo noise | Small |
 | E2E with Playwright against demo | Regression | Medium |

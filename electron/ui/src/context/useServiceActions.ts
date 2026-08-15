@@ -34,6 +34,16 @@ export function useServiceActions(options: {
     await refreshState();
   }, [refreshState]);
 
+  const prestartServices = useCallback(async () => {
+    if (!window.eco.prestartServices) {
+      showToast('当前版本不支持预启动');
+      return;
+    }
+    const result = await window.eco.prestartServices();
+    showToast(result?.ok ? '已预启动：挂钩中，引擎预热后即可对话' : result?.error || '预启动失败');
+    await refreshState();
+  }, [showToast, refreshState]);
+
   const resetDamage = useCallback(async () => {
     await window.eco.resetDamage();
     showToast('伤害统计已清空（角色识别保持不变）');
@@ -134,6 +144,7 @@ export function useServiceActions(options: {
     toggleService,
     startAll,
     stopAll,
+    prestartServices,
     resetDamage,
     reidentifySelf,
     switchCharacter,

@@ -9,7 +9,7 @@ import {
   UserRoundSearch,
   UserRound,
 } from 'lucide-react';
-import { useEco } from '@/context/EcoContext';
+import { useEco, useSnapshot } from '@/context/EcoContext';
 import { formatDuration, formatExpRate, formatNumber, formatPercent } from '@/lib/format';
 import { historyType, serviceText } from '@/lib/damage';
 import { Button } from '@/components/ui/button';
@@ -67,13 +67,13 @@ function ServiceChip({
 export function OverviewPage() {
   const {
     state,
-    snapshot,
     setPage,
     toggleService,
     setStatusMonitoring,
     setOverlayVisible,
     switchCharacter,
   } = useEco();
+  const snapshot = useSnapshot();
 
   const damageRunning = ['running', 'starting'].includes(state.services?.damage?.state || '');
   const translatorRunning = ['running', 'starting'].includes(state.services?.translator?.state || '');

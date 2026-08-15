@@ -30,6 +30,12 @@ import { useXiaoyaActions } from '@/context/useXiaoyaActions';
 import { useSettingsActions } from '@/context/useSettingsActions';
 
 const EcoContext = createContext<EcoContextValue | null>(null);
+const EcoSnapshotContext = createContext<Snapshot | null>(null);
+const EcoIdentityContext = createContext<{ selfId: unknown; rebindPending: boolean }>({
+  selfId: null,
+  rebindPending: false,
+});
+const SkillNameModeContext = createContext('client');
 
 export function EcoProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
@@ -190,12 +196,20 @@ export function EcoProvider({ children }: { children: ReactNode }) {
     await settingsActions.checkForUpdates(dismissedUpdateVersion);
   }, [settingsActions.checkForUpdates]);
 
+  const identity = useMemo(
+    () => ({
+      selfId: snapshot?.self_id ?? null,
+      rebindPending: Boolean(snapshot?.rebind_pending),
+    }),
+    [snapshot?.self_id, snapshot?.rebind_pending],
+  );
+  const skillNameMode = String(state.settings?.appearance?.skillNameMode || 'client');
+
   const value = useMemo<EcoContextValue>(() => ({
     ready,
     page,
     setPage,
     state,
-    snapshot,
     toast,
     showToast,
     historyFilter,
@@ -246,16 +260,39 @@ export function EcoProvider({ children }: { children: ReactNode }) {
     applyCharacterPreset: settingsActions.applyCharacterPreset,
     deleteCharacterPreset: settingsActions.deleteCharacterPreset,
   }), [
-    ready, page, state, snapshot, toast, showToast, historyFilter, logFilter, overlayEditing,
+    ready, page, state, toast, showToast, historyFilter, logFilter, overlayEditing,
     settingsTab, xiaoyaSkills, customBuffRows, updateDialogOpen, refreshState,
     serviceActions, xiaoyaActions, settingsActions, checkForUpdates,
   ]);
 
-  return <EcoContext.Provider value={value}>{children}</EcoContext.Provider>;
+  return (
+    <SkillNameModeContext.Provider value={skillNameMode}>
+      <EcoIdentityContext.Provider value={identity}>
+        <EcoSnapshotContext.Provider value={snapshot}>
+          <EcoContext.Provider value={value}>{children}</EcoContext.Provider>
+        </EcoSnapshotContext.Provider>
+      </EcoIdentityContext.Provider>
+    </SkillNameModeContext.Provider>
+  );
 }
 
 export function useEco() {
   const ctx = useContext(EcoContext);
   if (!ctx) throw new Error('useEco must be used within EcoProvider');
   return ctx;
+}
+
+/** Combat meter payload. Only pages that render live numbers should subscribe. */
+export function useSnapshot() {
+  return useContext(EcoSnapshotContext);
+}
+
+/** self_id / rebind — updates only when identity changes, not every damage tick. */
+export function useCombatIdentity() {
+  return useContext(EcoIdentityContext);
+}
+
+/** Appearance skill-name mode, isolated from snapshot ticks. */
+export function useSkillNameMode() {
+  return useContext(SkillNameModeContext);
 }

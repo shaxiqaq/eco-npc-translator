@@ -57,7 +57,7 @@ function attachHook(target, callbacks){
   return listener;
 }
 // 收割密钥(word-swap). KEYMAP: keyStr -> expanded round key (avoid re-expand on each frame).
-const KEYMAP={}; let RK=null;
+const KEYMAP={}; let RK=null; let RK_OUT=null;
 attachHook(m.base.add(0x18cc4),{
   onEnter(){
     if(!enterHook()) return;
@@ -128,7 +128,7 @@ function processFrame(buf, off){
   }
   if(!pt) return {consumed:8+Lp,newBytes:null};
   // 解析子包, 找 op1017
-  let pos=0, modified=false; const subs=[];
+  let pos=0, modified=false, waitedThisFrame=false; const subs=[];
   while(pos<num1){
     const sl=be16(pt,pos); if(sl<2||pos+2+sl>pt.length) break;
     const sub=pt.slice(pos+2,pos+2+sl); subs.push(sub); pos+=2+sl;
@@ -150,14 +150,37 @@ function processFrame(buf, off){
       if(cached&&looksLikeSub(cached,op)){
         subs[i]=cached; modified=true; send({t:'hit',h:h});
       } else {
-        // IMPORTANT: never block the game network thread (no recv().wait).
-        // Waiting here for Python translation has frozen/crashed eco.exe under
-        // multi-packet dialogue (several op1017+1526 in one recvfrom).
-        // Miss → keep English this frame; Python fills CACHE for the next time.
+        // Default: never block recvfrom (multi-packet dialogue used to freeze eco.exe).
+        // Optional first-wait: only for short frames (≤2 dialogue subs) when configured.
+        const firstWaitMs=__FIRST_WAIT_MS__;
+        let dialogueCount=0;
+        for(let j=0;j<subs.length;j++){
+          const o=be16(subs[j],0);
+          if(o===1017||o===1526) dialogueCount++;
+        }
+        const allowSync=firstWaitMs>0&&dialogueCount>0&&dialogueCount<=2&&!processFrame._waiting&&!waitedThisFrame;
         const now=Date.now();
         if(!PENDING[h]||(now-PENDING[h])>15000){
           PENDING[h]=now;
-          send({t:'need',h:h,op:op,sub:hexsub,sync:false});
+          send({t:'need',h:h,op:op,sub:hexsub,sync:allowSync});
+        }
+        if(allowSync){
+          waitedThisFrame=true;
+          processFrame._waiting=true;
+          try{
+            // Frida recv(type, cb): a lone string is the callback, not the type.
+            let reply=null;
+            recv('t'+h, function(value){ reply=value; }).wait();
+            const hex=(reply&&(reply.sub||(reply.payload&&reply.payload.sub)))||'';
+            if(hex){
+              const bytes=fromHex(hex);
+              if(looksLikeSub(bytes,op)){
+                subs[i]=bytes; modified=true; CACHE[h]=bytes; send({t:'hit',h:h});
+              }
+            }
+          }catch(e){ /* timeout/empty → keep English this frame */ }
+          processFrame._waiting=false;
+          delete PENDING[h];
         }
       }
     }
@@ -181,6 +204,33 @@ function validPlain(pt,num1){
   let pos=0,cnt=0;
   while(pos<num1){if(pos+2>pt.length)return false;const sl=be16(pt,pos);if(sl<2||pos+2+sl>pt.length)return false;pos+=2+sl;cnt++;}
   return cnt>0;
+}
+
+// Passive C->S observer. It never changes bytes; op1510 is the NPC/event ID
+// the unmodified client requested after a legitimate click/trigger.
+function processClientFrame(buf, off){
+  if(off+8>buf.length) return null;
+  const Lp=be32(buf,off), num1=be32(buf,off+4);
+  if((Lp%16)||Lp<16||Lp>0x40000||num1>Lp||num1<2) return null;
+  if(off+8+Lp>buf.length) return null;
+  const ct=buf.slice(off+8,off+8+Lp);
+  let rk=RK_OUT, pt=null;
+  if(rk){pt=ecbDec(rk,ct);if(!validPlain(pt,num1))pt=null;}
+  if(!pt){
+    for(const key of Object.keys(KEYMAP)){
+      const candidate=KEYMAP[key], d=ecbDec(candidate,ct);
+      if(validPlain(d,num1)){rk=candidate;RK_OUT=candidate;pt=d;break;}
+    }
+  }
+  if(!pt) return 8+Lp;
+  let pos=0;
+  while(pos<num1){
+    const sl=be16(pt,pos);if(sl<2||pos+2+sl>pt.length)break;
+    const sub=pt.slice(pos+2,pos+2+sl);pos+=2+sl;
+    const op=be16(sub,0);
+    if(op===1510) send({t:'request',op:op,sub:toHex(sub)});
+  }
+  return 8+Lp;
 }
 
 const pRecvfrom=exp('ws2_32.dll','recvfrom');
@@ -213,6 +263,19 @@ if(pRecvfrom) attachHook(pRecvfrom,{
         }
       }catch(e){ /* 出错原样放行 */ }
     }finally{ leaveHook(); }
+  }
+});
+
+const pSendto=exp('ws2_32.dll','sendto');
+if(pSendto) attachHook(pSendto,{
+  onEnter(a){
+    if(!enterHook()) return;
+    try{
+      const s=a[0].toUInt32(), b=a[1], n=a[2].toInt32();
+      if(n<=0||getPort(s)!==__MAP_PORT__) return;
+      const buf=hx(b,n);let off=0;
+      while(off<buf.length){const consumed=processClientFrame(buf,off);if(consumed===null)break;off+=consumed;}
+    }catch(e){}finally{leaveHook();}
   }
 });
 

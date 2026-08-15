@@ -1,16 +1,24 @@
 'use strict';
 
+const { overlaySnapshot } = require('./overlay-snapshot');
+
 /**
  * Throttled multi-window IPC broadcaster.
  * Heavy payloads (snapshot / logs) must use dedicated channels, not app:state.
  */
-function createStateBus({ getWindows, buildLightState, buildFullState }) {
+function createStateBus({ getWindows, getOverlayWindow, buildLightState, buildFullState }) {
   let timer = null;
   let pendingForce = false;
   const THROTTLE_MS = 80;
 
   function windows() {
     return (getWindows() || []).filter((win) => win && !win.isDestroyed());
+  }
+
+  function overlayWindow() {
+    if (typeof getOverlayWindow !== 'function') return null;
+    const win = getOverlayWindow();
+    return win && !win.isDestroyed() ? win : null;
   }
 
   function send(channel, payload) {
@@ -56,7 +64,15 @@ function createStateBus({ getWindows, buildLightState, buildFullState }) {
 
   function broadcastSnapshot(snapshot) {
     if (!snapshot) return;
-    send('damage:snapshot', snapshot);
+    const overlay = overlayWindow();
+    const slim = overlay ? overlaySnapshot(snapshot) : null;
+    for (const win of windows()) {
+      try {
+        win.webContents.send('damage:snapshot', overlay && win === overlay ? slim : snapshot);
+      } catch {
+        // ignore destroyed races
+      }
+    }
   }
 
   function broadcastLog(entry) {

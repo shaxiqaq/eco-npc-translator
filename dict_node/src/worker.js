@@ -1,6 +1,7 @@
 // ECO 共享 NPC 词库 — Cloudflare Worker + D1
 // 接口:
 //   GET  /pull?lang=zh-CN&since=<ts>&limit=5000   拉取 ts 之后的词条(增量)
+//   lang 对英文原文仍是目标语言(zh-CN)；日文/印尼文用 zh-CN-ja / zh-CN-id 隔离
 //   POST /contribute  {lang, token, items:[{k,v,model}]}   上报新词条(先到先得)
 //   GET  /stats?lang=zh-CN                         统计
 // 鉴权: 若设置了 secret TOKEN, 则读写都要带对应 token(pull 用 ?token=, contribute 放 body)

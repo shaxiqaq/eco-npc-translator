@@ -108,7 +108,7 @@ class App:
         ttk.Label(frm, text="首屏等待(秒)").grid(row=5, column=0, sticky="w", **pad)
         self.cb_wait = ttk.Combobox(frm, values=["0", "1.0", "1.5", "2.0", "2.5", "3.0"], width=8)
         self.cb_wait.grid(row=5, column=1, sticky="w", **pad)
-        ttk.Label(frm, text="0 = 不等(第一次英文最流畅); 越大越能让第一次就显中文, 但会略停顿",
+        ttk.Label(frm, text="0 = 不等(第一次原文最流畅); 越大越能让第一次就显中文, 但会略停顿",
                   **note).grid(row=6, column=0, columnspan=3, sticky="w", padx=12)
 
         ttk.Label(frm, text="角色名").grid(row=7, column=0, sticky="w", **pad)
@@ -118,7 +118,7 @@ class App:
 
         ttk.Label(frm, text="切换热键").grid(row=9, column=0, sticky="w", **pad)
         self.e_hotkey = ttk.Entry(frm, width=12); self.e_hotkey.grid(row=9, column=1, sticky="w", **pad)
-        ttk.Label(frm, text="中 / 英 切换键, 默认 f9; 留空 = 关闭切换",
+        ttk.Label(frm, text="中 / 原文 切换键, 默认 f9; 留空 = 关闭切换",
                   **note).grid(row=10, column=0, columnspan=3, sticky="w", padx=12)
 
         ttk.Separator(frm, orient="horizontal").grid(row=11, column=0, columnspan=3, sticky="ew", pady=8)

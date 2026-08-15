@@ -1,6 +1,6 @@
 import { Plus, Save, Tag } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { useEco } from '@/context/EcoContext';
+import { useEco, useSnapshot } from '@/context/EcoContext';
 import { SkillIcon } from '@/components/SkillIcon';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,13 +12,13 @@ import { cn } from '@/lib/utils';
 export function CustomBuffEditor({ compact = false }: { compact?: boolean }) {
   const {
     state,
-    snapshot,
     customBuffRows,
     setCustomBuffRows,
     saveCustomBuffs,
     addCustomBuffRow,
     addSkillFromLibrary,
   } = useEco();
+  const snapshot = useSnapshot();
   const [filter, setFilter] = useState('');
 
   const library = useMemo(() => {

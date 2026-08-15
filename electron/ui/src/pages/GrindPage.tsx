@@ -1,5 +1,5 @@
 import { RotateCcw, Flame, Gauge, Timer, TrendingUp, Sparkles, Activity } from 'lucide-react';
-import { useEco } from '@/context/EcoContext';
+import { useEco, useSnapshot } from '@/context/EcoContext';
 import {
   formatDurationLong,
   formatEventTime,
@@ -65,7 +65,8 @@ const STATUS_BADGE: Record<string, { label: string; variant: 'default' | 'second
 };
 
 export function GrindPage() {
-  const { snapshot, state, resetDamage, showToast } = useEco();
+  const { state, resetDamage, showToast } = useEco();
+  const snapshot = useSnapshot();
   const grind = snapshot?.grind;
   const damageRunning = ['running', 'starting'].includes(state.services?.damage?.state || '')
     || ['running', 'starting'].includes(state.services?.monitoring?.state || '');

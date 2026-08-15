@@ -34,5 +34,10 @@
   "0:0x00100000": {
     "description": "坐下（Sit）：休息状态。",
     "wiki_category": "positive"
+  },
+  "0:0x00800000": {
+    "description": "超重：负重超过上限时的状态（客户端 bit 0:0x00800000）。",
+    "wiki_category": "abnormal",
+    "force_category": true
   }
 }

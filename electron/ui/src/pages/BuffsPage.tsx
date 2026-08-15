@@ -1,5 +1,5 @@
 import { ShieldCheck } from 'lucide-react';
-import { useEco } from '@/context/EcoContext';
+import { useEco, useSnapshot } from '@/context/EcoContext';
 import { formatDuration, formatEventTime, formatNumber } from '@/lib/format';
 import { isBuffExpiring } from '@/lib/buff-warning';
 import { CustomBuffEditor } from '@/components/CustomBuffEditor';
@@ -91,11 +91,11 @@ function filterActiveTimers(list: Array<Record<string, unknown>> = [], category:
 
 export function BuffsPage() {
   const {
-    snapshot,
     state,
     setPage,
     setStatusMonitoring,
   } = useEco();
+  const snapshot = useSnapshot();
 
   const monitoring = state.settings?.overlay?.monitoring !== false;
   const items = monitoring ? [...(snapshot?.buffs || [])] as Array<Record<string, unknown>> : [];
@@ -152,11 +152,9 @@ export function BuffsPage() {
         </Card>
       )}
 
-      {/* 自定义倒计时唯一配置入口 */}
-      <CustomBuffEditor />
-
+      {/* Live status first — same data source as the floating overlay */}
       <div className="grid grid-cols-2 gap-2.5 xl:grid-cols-5">
-        <MetricCard label="当前状态" value={formatNumber(items.length)} hint="实时读取状态包" accent="white" />
+        <MetricCard label="当前状态" value={formatNumber(items.length)} hint="与悬浮窗同一数据源" accent="white" />
         <MetricCard label="增益" value={formatNumber(counts.positive)} hint="对角色有利" accent="green" />
         <MetricCard label="减益" value={formatNumber(counts.negative)} hint="属性降低效果" accent="red" />
         <MetricCard label="异常" value={formatNumber(counts.abnormal)} hint="行动异常效果" accent="blue" />
@@ -165,17 +163,21 @@ export function BuffsPage() {
 
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
         <DataCard
-          title="当前生效"
-          description={`${items.length} 项`}
+          title="当前生效（同悬浮窗）"
+          description={
+            monitoring
+              ? `${items.length} 项 · 游戏状态包实时读取`
+              : '监控已关闭'
+          }
           action={<Badge variant="secondary" className="gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[var(--green)]" />实时</Badge>}
           bare
         >
           {!monitoring ? (
             <EmptyState>状态监控已关闭，打开右上角开关后恢复显示</EmptyState>
           ) : !items.length ? (
-            <EmptyState>尚未检测到角色状态</EmptyState>
+            <EmptyState>尚未检测到角色状态（进图、切图或释放技能后会刷新）</EmptyState>
           ) : (
-            <div className="buff-active-list max-h-[360px] overflow-auto">
+            <div className="buff-active-list max-h-[min(420px,50vh)] overflow-auto">
               {items.map((item, index) => {
                 const category = buffCategory(item);
                 return (
@@ -185,8 +187,11 @@ export function BuffsPage() {
                       fallback="shield"
                       expiring={isBuffExpiring(item as { expires_at?: number }, warning)}
                     />
-                    <span className="buff-category">{category.label}</span>
-                    <div className="buff-name"><strong>{pickGameFacingName(item)}</strong></div>
+                    <span className={cn('buff-category', category.cls)}>{category.label}</span>
+                    <div className="buff-name">
+                      <strong>{pickGameFacingName(item)}</strong>
+                      {item.key ? <small>{String(item.key)}</small> : null}
+                    </div>
                     <div className="buff-time">
                       <strong>{buffTime(item)}</strong>
                       <span>{buffTimingSource(item)}</span>
@@ -200,16 +205,16 @@ export function BuffsPage() {
 
         <DataCard
           title="技能持续 / CD"
-          description={`${skillTimers.length} 项`}
+          description={`${skillTimers.length} 项 · 需在下方自定义倒计时里配置`}
           action={<Badge variant="secondary" className="gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[var(--green)]" />实时</Badge>}
           bare
         >
           {!monitoring ? (
             <EmptyState>状态监控已关闭</EmptyState>
           ) : !skillTimers.length ? (
-            <EmptyState>在自定义倒计时中填写持续/CD 后，释放对应技能即可显示</EmptyState>
+            <EmptyState>在下方「自定义倒计时」填写持续/CD 秒数后，释放对应技能即可显示</EmptyState>
           ) : (
-            <div className="buff-active-list max-h-[360px] overflow-auto">
+            <div className="buff-active-list max-h-[min(420px,50vh)] overflow-auto">
               {skillTimers.map((item, index) => {
                 const category = buffCategory(item);
                 return (
@@ -241,7 +246,7 @@ export function BuffsPage() {
           ) : !history.length ? (
             <EmptyState>尚无状态变化记录</EmptyState>
           ) : (
-            <div className="buff-history-list max-h-[360px] overflow-auto">
+            <div className="buff-history-list max-h-[min(420px,50vh)] overflow-auto">
               {history.map((item, index) => {
                 const category = buffCategory(item);
                 return (
@@ -260,6 +265,9 @@ export function BuffsPage() {
           )}
         </DataCard>
       </div>
+
+      {/* Config below live data so overlay-matching list is always visible first */}
+      <CustomBuffEditor />
     </PageStack>
   );
 }

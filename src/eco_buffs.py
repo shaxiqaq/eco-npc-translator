@@ -30,6 +30,25 @@ COMPOSITE_BUFFS = (
     },
 )
 
+# Live-client status bits missing from open Saga Buff.1 lists / stale AppData copies.
+# Applied last so they always win over outdated buff_names.json under ECO_DATA_DIR.
+HARDCODED_BUFF_NAMES = {
+    "0:0x00800000": {
+        "name": "超重",
+        "source_name": "Overweight",
+        "category": "abnormal",
+        "description": "超重：负重超过上限时的状态。",
+    },
+    # effect.ssp skill 715 = "Sit" → skillicon SI_0715 (icon field 0 uses skill id).
+    "0:0x00100000": {
+        "name": "坐下",
+        "source_name": "Sit",
+        "category": "positive",
+        "skill_id": 715,
+        "description": "坐下（Sit）：休息状态。",
+    },
+}
+
 
 def load_buff_names(path=BUFF_NAMES):
     try:
@@ -59,6 +78,10 @@ def load_buff_names(path=BUFF_NAMES):
             elif extra.get("wiki_category") and extra.get("force_category"):
                 entry["category"] = extra["wiki_category"]
             names[str(key)] = entry
+    for key, extra in HARDCODED_BUFF_NAMES.items():
+        entry = dict(names.get(key) or {})
+        entry.update(extra)
+        names[key] = entry
     return names
 
 

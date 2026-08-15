@@ -4,7 +4,7 @@ ECO 只读采集器(地基版): 你正常跟 NPC 对话, 它把每句英文连�
 不改包、不注入、零风险。验证「对话 ↔ eventid」能否打通。
 
 产出:
-  harvest.jsonl    —— 每条记录一行 {eventid, actor, npc, kind, en, options, ts}
+  harvest.jsonl    —— 每条记录一行 {eventid, event_source, actor, npc, kind, en, options, ts}
   harvest_dict.json—— 按 eventid 聚合 {eventid: {npc, says:[...], selects:[...]}}
 用法: python eco_harvester.py   (eco.exe 在线; 进城找 NPC 对话/翻菜单)
 """
@@ -46,6 +46,11 @@ def parse_1512(sub):
     eventid = int.from_bytes(sub[6:10], "big")
     return actor, eventid
 
+def parse_1510(sub):
+    """客户端合法点击请求: [op2][eventid4][x1][y1]。"""
+    if len(sub) < 8: return None, None, None
+    return int.from_bytes(sub[2:6], "big"), sub[6], sub[7]
+
 def parse_1017(sub):
     """[op2][npc4][flag2][segN1]{[len1][seg]}*N [motion2][nameLen1][name..]"""
     try:
@@ -81,6 +86,8 @@ class Harvester:
     def __init__(self):
         self.last_event_by_actor = {}      # actor -> eventid (来自 op1512)
         self.cur_event = None              # 本次交互 op1512 的 eventid(可能没有)
+        self.cur_event_source = None
+        self.pending_event = None          # 客户端 op1510 合法点击请求
         self.cur_npc_id = None             # 本次交互 op1511 的 NPC id(兜底用)
         self.seen = set()                  # 去重 (eventid, kind, text)
         self.agg = {}                      # eventid -> {npc, says[], selects[]}
@@ -137,9 +144,16 @@ class Harvester:
             return
         op = p.get("op"); sub = bytes.fromhex(p["sub"])
         with self.lock:
+            if op == 1510:
+                eid, _x, _y = parse_1510(sub)
+                self.pending_event = eid
+                return
             if op == 1500:                       # 事件开始: 重置本次交互上下文
-                self.cur_event = None; self.cur_npc_id = None; return
+                self.cur_event = self.pending_event
+                self.cur_event_source = "client_request" if self.pending_event is not None else None
+                self.pending_event = None; self.cur_npc_id = None; return
             if op == 1501:                       # 事件结束
+                self.cur_event = None; self.cur_event_source = None; self.cur_npc_id = None
                 return
             if op == 1511:                       # CHANGE_VIEW: 头4字节 = 当前NPC id
                 if len(sub) >= 6: self.cur_npc_id = int.from_bytes(sub[2:6], "big")
@@ -148,16 +162,23 @@ class Harvester:
                 actor, eid = parse_1512(sub)
                 if actor is not None:
                     self.last_event_by_actor[actor] = eid; self.cur_event = eid
+                    self.cur_event_source = "server_1512"
                 return
             if op == 1017:
                 actor, name, en = parse_1017(sub)
                 if not en: return
                 # eventid 多源兜底: 执行中eventid > 该actor的eventid > NPC自身id
-                eid = self.cur_event or self.last_event_by_actor.get(actor) or actor
+                if self.cur_event is not None:
+                    eid, event_source = self.cur_event, self.cur_event_source
+                elif actor in self.last_event_by_actor:
+                    eid, event_source = self.last_event_by_actor[actor], "server_1512_actor_cache"
+                else:
+                    eid, event_source = actor, "actor_fallback"
                 key = (str(eid), "say", en)
                 if key in self.seen: return
                 self.seen.add(key)
-                rec = {"eventid": eid, "actor": actor, "npc": name, "kind": "say",
+                rec = {"eventid": eid, "event_source": event_source,
+                       "actor": actor, "npc": name, "kind": "say",
                        "en": en, "ts": int(time.time())}
                 self._write_jl(rec)
                 e = self._agg_entry(eid)
@@ -170,11 +191,15 @@ class Harvester:
             elif op == 1526:
                 q, opts = parse_1526(sub)
                 if not q and not opts: return
-                eid = self.cur_event or self.cur_npc_id
+                if self.cur_event is not None:
+                    eid, event_source = self.cur_event, self.cur_event_source
+                else:
+                    eid, event_source = self.cur_npc_id, "npc_view_fallback"
                 key = (str(eid), "sel", q + "|" + "|".join(opts))
                 if key in self.seen: return
                 self.seen.add(key)
-                rec = {"eventid": eid, "kind": "select", "en": q, "options": opts,
+                rec = {"eventid": eid, "event_source": event_source,
+                       "kind": "select", "en": q, "options": opts,
                        "ts": int(time.time())}
                 self._write_jl(rec)
                 e = self._agg_entry(eid)

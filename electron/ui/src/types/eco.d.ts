@@ -179,6 +179,7 @@ export type AppSettings = {
     tray?: boolean;
     minimizeToTray?: boolean;
     autoReconnect?: boolean;
+    prestartOnGame?: boolean;
   };
   hotkeys?: {
     toggleOverlay?: string;
@@ -222,6 +223,7 @@ export type TranslationSettings = {
   base_url?: string;
   api_key?: string;
   target_lang?: string;
+  source_lang?: string;
   first_wait?: number;
   player_names?: string[];
   toggle_hotkey?: string;
@@ -363,6 +365,7 @@ export type EcoApi = {
   selectXiaoyaProcess: (pid: number) => Promise<{ ok: boolean; selectedXiaoyaPid?: number; error?: string }>;
   startService: (name: ServiceName) => Promise<{ ok: boolean; error?: string }>;
   stopService: (name: ServiceName) => Promise<{ ok: boolean; error?: string }>;
+  prestartServices: () => Promise<{ ok: boolean; error?: string }>;
   resetDamage: () => Promise<unknown>;
   reidentifySelf: () => Promise<{ ok: boolean; error?: string }>;
   getBattleReport: () => Promise<{ ok: boolean; report?: BattleReportSummary }>;

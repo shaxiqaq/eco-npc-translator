@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('eco', {
   selectXiaoyaProcess: (pid) => ipcRenderer.invoke('game-processes:select-xiaoya', pid),
   startService: (name) => ipcRenderer.invoke('service:start', name),
   stopService: (name) => ipcRenderer.invoke('service:stop', name),
+  prestartServices: () => ipcRenderer.invoke('service:prestart'),
   resetDamage: () => ipcRenderer.invoke('damage:reset'),
   reidentifySelf: () => ipcRenderer.invoke('damage:reidentify-self'),
   getBattleReport: () => ipcRenderer.invoke('battle:get-report'),

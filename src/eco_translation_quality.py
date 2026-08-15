@@ -61,6 +61,17 @@ _LATIN_RE = re.compile(r"[A-Za-z\u00C0-\u024F]")
 _ALPHA_RE = re.compile(r"[A-Za-z]")
 
 
+def normalize_text(text: Optional[str]) -> Optional[str]:
+    """Strip NULs / odd controls so cache keys match across packets and the shared dict."""
+    if text is None:
+        return None
+    if not text:
+        return text
+    if "\x00" in text or any(ord(ch) < 32 and ch not in "\n\r\t" for ch in text):
+        text = "".join(ch for ch in text if ch in "\n\r\t" or ord(ch) >= 32)
+    return text.strip()
+
+
 def normalize_model(model: Optional[str]) -> str:
     return (model or "").strip().lower()
 
@@ -84,8 +95,13 @@ def _looks_chinese_target(lang: Optional[str]) -> bool:
     return lang.startswith("zh")
 
 
-def is_clean_pair(k: Optional[str], v: Optional[str], target_lang: str = "zh-CN") -> bool:
-    """英文原文 + 译文是否足够干净、值得共享。"""
+def is_clean_pair(
+    k: Optional[str],
+    v: Optional[str],
+    target_lang: str = "zh-CN",
+    source_lang: Optional[str] = None,
+) -> bool:
+    """原文 + 译文是否足够干净、值得共享。"""
     if k is None or v is None:
         return False
     k = str(k).strip()
@@ -99,9 +115,35 @@ def is_clean_pair(k: Optional[str], v: Optional[str], target_lang: str = "zh-CN"
     if _CTRL_RE.search(k) or _CTRL_RE.search(v):
         return False
 
-    # 源文应像对话：至少有字母
-    if not _LATIN_RE.search(k):
+    try:
+        from eco_source_lang import detect_source_lang, is_ambiguous_short, resolve_source_lang
+    except Exception:
+        detect_source_lang = None
+        is_ambiguous_short = None
+        resolve_source_lang = None
+
+    src = source_lang
+    if resolve_source_lang is not None:
+        src = resolve_source_lang(k, source_lang or "auto")
+    elif not src:
+        src = "en"
+
+    # Already-Chinese source, or Yes/No class keys, must not enter the shared dict.
+    if src == "zh":
         return False
+    if is_ambiguous_short is not None and is_ambiguous_short(k):
+        return False
+
+    if src == "ja":
+        if not (_CJK_RE.search(k) or re.search(r"[\u3040-\u30ff]", k)):
+            return False
+    elif src == "id":
+        if not _LATIN_RE.search(k):
+            return False
+    else:
+        # 源文应像对话：至少有字母
+        if not _LATIN_RE.search(k):
+            return False
     # 过短的无意义源（单字母等），菜单项至少 2 字符
     if len(k) < 2:
         return False
@@ -137,11 +179,12 @@ def should_upload(
     v: Optional[str],
     model: Optional[str] = None,
     target_lang: str = "zh-CN",
+    source_lang: Optional[str] = None,
 ) -> bool:
     """本地可缓存；返回 True 才允许进入共享上报队列。"""
     if not is_trusted_model(model):
         return False
-    return is_clean_pair(k, v, target_lang=target_lang)
+    return is_clean_pair(k, v, target_lang=target_lang, source_lang=source_lang)
 
 
 def reject_reason(
@@ -149,10 +192,21 @@ def reject_reason(
     v: Optional[str],
     model: Optional[str] = None,
     target_lang: str = "zh-CN",
+    source_lang: Optional[str] = None,
 ) -> Optional[str]:
     """调试用：拒绝原因；通过则返回 None。"""
     if not is_trusted_model(model):
         return "untrusted_model"
-    if not is_clean_pair(k, v, target_lang=target_lang):
+    if not is_clean_pair(k, v, target_lang=target_lang, source_lang=source_lang):
+        try:
+            from eco_source_lang import is_ambiguous_short, resolve_source_lang
+
+            src = resolve_source_lang(k, source_lang or "auto")
+            if src == "zh":
+                return "source_zh"
+            if is_ambiguous_short(k):
+                return "ambiguous_short"
+        except Exception:
+            pass
         return "dirty_text"
     return None

@@ -46,7 +46,9 @@ const {
   stopChildGracefully: stopChildGracefullyImpl,
   sleep: lifecycleSleep
 } = require('./lib/child-lifecycle');
-const { resolveBackendRuntime, launchLabel } = require('./lib/backend-runtime');
+const { createAppShutdown } = require('./lib/app-shutdown');
+const { resolveBackendRuntime, launchLabel, agentAvailable } = require('./lib/backend-runtime');
+const { planPrestartOnGame } = require('./lib/prestart');
 const { resolveSelectedPids } = require('./lib/process-selection');
 const { createBattleReportTracker } = require('./lib/battle-report');
 const { createDisplayNameService } = require('./lib/display-names');
@@ -59,6 +61,10 @@ const {
   overlayBounds: computeOverlayBounds
 } = require('./lib/overlay-geometry');
 const { demoSnapshot } = require('./lib/demo-snapshot');
+const { createCaptureHost } = require('./lib/capture-host');
+const { createTranslatorHost } = require('./lib/translator-host');
+const { createAgentHost } = require('./lib/agent-host');
+const { writeCommand } = require('./lib/backend-protocol');
 
 const log = createLogger('main');
 
@@ -100,6 +106,7 @@ const serviceState = {
 // Shared Frida capture backend can serve either damage collection or status monitoring.
 // These intents are independent; the process stays up while either is wanted.
 let damageCollectionWanted = false;
+let translatorWanted = false;
 const logs = [];
 let mainWindow = null;
 let overlayWindow = null;
@@ -113,8 +120,39 @@ let selectedXiaoyaPid = null;
 let updateService = null;
 let skillIconService = null;
 let xiaoyaService = null;
-let gracefulQuitStarted = false;
-let gracefulQuitComplete = false;
+let appShutdown = null;
+function getAppShutdown() {
+  if (!appShutdown) {
+    appShutdown = createAppShutdown({
+      getMainWindow: () => mainWindow,
+      getOverlayWindow: () => overlayWindow,
+      setMainWindow: (w) => { mainWindow = w; },
+      setOverlayWindow: (w) => { overlayWindow = w; },
+      services,
+      stopChildGracefully,
+      setServiceState,
+      addLog,
+      stopDemo,
+      flushSettings: () => getSettingsStore().flush(),
+      stopXiaoya: async () => {
+        if (xiaoyaService) await xiaoyaService.stop();
+      },
+      disposeXiaoya: () => {
+        if (xiaoyaService) xiaoyaService.dispose();
+      },
+      isDemo,
+      sleep: lifecycleSleep,
+      quitApp: () => app.quit()
+    });
+  }
+  return appShutdown;
+}
+function gracefulQuitStarted() {
+  return getAppShutdown().isQuitStarted();
+}
+function gracefulQuitComplete() {
+  return getAppShutdown().isQuitComplete();
+}
 let appTray = null;
 let processWatchTimer = null;
 let elevatedCache = null;
@@ -163,7 +201,8 @@ const defaultAppSettings = {
     monitoring: true,
     tray: true,
     minimizeToTray: true,
-    autoReconnect: true
+    autoReconnect: true,
+    prestartOnGame: true
   },
   hotkeys: {
     toggleOverlay: 'CommandOrControl+Shift+O',
@@ -349,6 +388,7 @@ function translationSettings() {
     api_key: translation.api_key || '',
     first_wait: Number(translation.first_wait || 0),
     target_lang: translation.target_lang || 'zh-CN',
+    source_lang: translation.source_lang || 'auto',
     player_names: Array.isArray(translation.player_names) ? translation.player_names : [],
     toggle_hotkey: translation.toggle_hotkey || 'f9',
     skip_hotkey: translation.skip_hotkey || 'f8',
@@ -567,6 +607,7 @@ function publicState(options = {}) {
 
 const stateBus = createStateBus({
   getWindows: () => [mainWindow, overlayWindow],
+  getOverlayWindow: () => overlayWindow,
   buildLightState,
   buildFullState
 });
@@ -680,7 +721,8 @@ async function selectGameProcess(pid, options = {}) {
   const wantCapture = wantDamageCollection || wantMonitoring
     || Boolean(services.damage)
     || ['running', 'starting'].includes(serviceState.damage?.state || '');
-  const translatorWasRunning = Boolean(services.translator)
+  const translatorWasRunning = Boolean(translatorWanted)
+    || Boolean(services.translator)
     || ['running', 'starting'].includes(serviceState.translator?.state || '');
 
   if (autoRestart && processSelectionLocked()) {
@@ -862,14 +904,23 @@ function reportServiceError(name, rawMessage, context = {}) {
   return classified;
 }
 
-function runtimeFor(name) {
+function runtimeFor(name, extraArgs = []) {
   return resolveBackendRuntime({
     name,
     selectedGamePid,
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
     srcDir: srcDir(),
-    backendDir: backendDir()
+    backendDir: backendDir(),
+    extraArgs
+  });
+}
+
+function useUnifiedAgent() {
+  return agentAvailable({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    srcDir: srcDir()
   });
 }
 
@@ -899,160 +950,155 @@ function handleDamageMessage(message) {
   if (message.type === 'notice') addCaptureLog(message.level || 'info', message.message || '');
 }
 
+function classifiedResult(classified) {
+  return { ok: false, error: classified.message, errorCode: classified.code };
+}
+
+const captureHost = createCaptureHost({
+  spawnImpl: spawn,
+  createInterface: readline.createInterface.bind(readline),
+  fs,
+  getSelectedPid: () => selectedGamePid,
+  getGameProcesses: () => gameProcesses,
+  isDemo: () => isDemo,
+  startDemo,
+  stopDemo,
+  hasDemoTimer: () => Boolean(demoTimer),
+  resolveRuntime: (name) => runtimeFor(name),
+  buildEnv: buildBackendEnv,
+  getSrcDir: () => srcDir(),
+  getDataDir: () => localDataDir(),
+  getCaptureSettings: () => ({
+    categories: appSettings().capture,
+    skillNameMode: appSettings().appearance?.skillNameMode || 'client'
+  }),
+  setDamageState: (state, message, extra = {}) => {
+    if (extra.keepError && serviceState.damage?.state === 'error' && state === 'stopped') return;
+    if (extra.refresh) {
+      setServiceState('damage', 'running', message, {
+        pid: extra.pid,
+        log: serviceState.damage?.log
+      });
+      return;
+    }
+    setServiceState('damage', state, message, extra.pid != null ? { pid: extra.pid } : {});
+  },
+  reportDamageError: (raw, context) => classifiedResult(reportServiceError('damage', raw, context)),
+  log: addCaptureLog,
+  onMessage: handleDamageMessage,
+  stopChildGracefully,
+  getChild: () => services.damage,
+  setChild: (child) => { services.damage = child; },
+  captureNeeded: captureBackendNeeded,
+  captureRoleMessage,
+  getAttachedPid: () => serviceState.damage?.pid,
+  broadcastIdle: () => broadcastState()
+});
+
+const translatorHost = createTranslatorHost({
+  spawnImpl: spawn,
+  createInterface: readline.createInterface.bind(readline),
+  fs,
+  getSelectedPid: () => selectedGamePid,
+  resolveRuntime: (name) => runtimeFor(name),
+  buildEnv: buildBackendEnv,
+  getSrcDir: () => srcDir(),
+  getDataDir: () => localDataDir(),
+  isPackaged: () => app.isPackaged,
+  setTranslatorState: (state, message, extra = {}) => {
+    if (extra.keepError && serviceState.translator?.state === 'error' && state === 'stopped') return;
+    if (extra.onlyIfStarting && serviceState.translator?.state !== 'starting') return;
+    setServiceState('translator', state, message, extra.pid != null ? { pid: extra.pid } : {});
+  },
+  reportTranslatorError: (raw, context) => classifiedResult(reportServiceError('translator', raw, context)),
+  log: (level, message) => addLog('translator', level, message),
+  stopChildGracefully,
+  getChild: () => services.translator,
+  setChild: (child) => { services.translator = child; }
+});
+
+function handleTranslatorMessage(message) {
+  if (!message || typeof message !== 'object') return;
+  if (message.type === 'status') {
+    if (message.state === 'error') {
+      reportServiceError('translator', message.message || '翻译失败', {
+        kind: message.error_kind || message.error_code === 'ECO_E03' ? 'access' : undefined
+      });
+      return;
+    }
+    setServiceState(
+      'translator',
+      message.state,
+      message.message || '',
+      message.pid != null ? { pid: message.pid } : {}
+    );
+    return;
+  }
+  if (message.message) addLog('translator', message.level || 'info', message.message);
+}
+
+const agentHost = createAgentHost({
+  spawnImpl: spawn,
+  createInterface: readline.createInterface.bind(readline),
+  fs,
+  getSelectedPid: () => selectedGamePid,
+  getGameProcesses: () => gameProcesses,
+  resolveRuntime: (name, extraArgs) => runtimeFor(name, extraArgs),
+  buildEnv: buildBackendEnv,
+  getSrcDir: () => srcDir(),
+  getDataDir: () => localDataDir(),
+  getCaptureSettings: () => ({
+    categories: appSettings().capture,
+    skillNameMode: appSettings().appearance?.skillNameMode || 'client'
+  }),
+  captureNeeded: captureBackendNeeded,
+  translateWanted: () => translatorWanted,
+  captureRoleMessage,
+  setDamageState: (state, message, extra = {}) => {
+    if (extra.keepError && serviceState.damage?.state === 'error' && state === 'stopped') return;
+    if (extra.refresh) {
+      setServiceState('damage', 'running', message, {
+        pid: extra.pid,
+        log: serviceState.damage?.log
+      });
+      return;
+    }
+    setServiceState('damage', state, message, extra.pid != null ? { pid: extra.pid } : {});
+  },
+  setTranslatorState: (state, message, extra = {}) => {
+    if (extra.keepError && serviceState.translator?.state === 'error' && state === 'stopped') return;
+    setServiceState('translator', state, message, extra.pid != null ? { pid: extra.pid } : {});
+  },
+  reportDamageError: (raw, context) => classifiedResult(reportServiceError('damage', raw, context)),
+  reportTranslatorError: (raw, context) => classifiedResult(reportServiceError('translator', raw, context)),
+  onDamageMessage: handleDamageMessage,
+  onTranslatorMessage: handleTranslatorMessage,
+  log: addCaptureLog,
+  stopChildGracefully,
+  setDamageChild: (next) => { services.damage = next; },
+  setTranslatorChild: (next) => { services.translator = next; },
+  getAttachedPid: () => serviceState.damage?.pid || serviceState.translator?.pid,
+  broadcastIdle: () => broadcastState()
+});
+
 function startCaptureBackend() {
-  if (services.damage) return { ok: true };
-  if (!selectedGamePid) {
-    const classified = reportServiceError(
-      'damage',
-      '没有可用的游戏进程，请启动游戏并刷新顶部进程列表',
-      { kind: 'no-process' }
-    );
-    return { ok: false, error: classified.message, errorCode: classified.code };
-  }
-  if (!(gameProcesses || []).some((process) => process.pid === selectedGamePid)) {
-    const classified = reportServiceError(
-      'damage',
-      `所选进程 ${selectedGamePid} 已不在列表中，请刷新后重新选择`,
-      { kind: 'process-gone' }
-    );
-    return { ok: false, error: classified.message, errorCode: classified.code };
-  }
-  if (isDemo) {
-    startDemo();
-    return { ok: true };
-  }
-
-  const runtime = runtimeFor('damage');
-  setServiceState('damage', 'starting', isMonitoringWanted() && !damageCollectionWanted
-    ? '正在启动状态监控…'
-    : '正在启动伤害采集…');
-  const label = launchLabel(runtime, app.isPackaged);
-  addCaptureLog('info', `启动 ${label}，连接游戏进程 ${selectedGamePid}`);
-  try {
-    if (!app.isPackaged) {
-      const scriptPath = runtime.args?.[1];
-      if (scriptPath && !fs.existsSync(scriptPath)) {
-        const classified = reportServiceError('damage', `找不到后端脚本：${scriptPath}`, { kind: 'script-missing' });
-        return { ok: false, error: classified.message, errorCode: classified.code };
-      }
-    }
-    const child = spawn(runtime.command, runtime.args, {
-      cwd: runtime.cwd || srcDir(),
-      windowsHide: true,
-      env: buildBackendEnv({
-        srcDir: srcDir(),
-        backendDir: backendDir(),
-        dataDir: localDataDir()
-      }),
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-    services.damage = child;
-
-    if (child.stdin.writable) {
-      child.stdin.write(`${JSON.stringify({
-        action: 'set-categories',
-        categories: appSettings().capture
-      })}\n`);
-      const nameMode = appSettings().appearance?.skillNameMode || 'client';
-      child.stdin.write(`${JSON.stringify({
-        action: 'set-skill-name-mode',
-        mode: nameMode
-      })}\n`);
-    }
-    const lines = readline.createInterface({ input: child.stdout });
-    lines.on('line', (line) => {
-      try {
-        handleDamageMessage(JSON.parse(line));
-      } catch {
-        if (line.trim()) addCaptureLog('info', line.trim());
-      }
-    });
-
-    const errors = readline.createInterface({ input: child.stderr });
-    errors.on('line', (line) => line.trim() && addCaptureLog('error', line.trim()));
-
-    child.on('error', (error) => {
-      reportServiceError('damage', error.message, { kind: 'spawn' });
-    });
-    child.on('exit', (code) => {
-      services.damage = null;
-      if (serviceState.damage.state !== 'error') {
-        setServiceState('damage', 'stopped', code === 0 ? '已停止' : `已退出（代码 ${code}）`);
-      }
-      // If an intent is still wanted (e.g. crash), leave state for UI; user can re-toggle.
-    });
-    return { ok: true };
-  } catch (error) {
-    services.damage = null;
-    const classified = reportServiceError('damage', error.message, { kind: 'spawn' });
-    return { ok: false, error: classified.message, errorCode: classified.code };
-  }
+  if (useUnifiedAgent()) return agentHost.reconcile();
+  return captureHost.start();
 }
 
 async function stopCaptureBackend({ waitMs = 12000, force = false } = {}) {
-  if (isDemo) {
-    stopDemo();
-    return { ok: true };
-  }
-  const child = services.damage;
-  if (!child) {
-    services.damage = null;
-    setServiceState('damage', 'stopped', '已停止');
-    return { ok: true };
-  }
-  try {
-    await stopChildGracefully('damage', child, { waitMs });
-  } finally {
-    // Always drop the handle so the next start cannot reuse a dead/wrong PID session.
-    if (services.damage === child) services.damage = null;
-    if (serviceState.damage?.state !== 'error') {
-      setServiceState('damage', 'stopped', '已停止');
-    }
-  }
-  return { ok: true };
+  if (useUnifiedAgent()) return agentHost.stop({ waitMs, force });
+  return captureHost.stop({ waitMs, force });
 }
 
 function capturePidMismatch() {
-  const attached = serviceState.damage?.pid;
-  if (!services.damage || attached == null || selectedGamePid == null) return false;
-  return Number(attached) !== Number(selectedGamePid);
+  if (useUnifiedAgent()) return agentHost.pidMismatch();
+  return captureHost.pidMismatch();
 }
 
 async function reconcileCaptureBackend({ waitMs = 12000, forceRestart = false } = {}) {
-  const needed = captureBackendNeeded();
-  if (needed) {
-    const mismatch = capturePidMismatch();
-    if ((forceRestart || mismatch) && (services.damage || (isDemo && demoTimer))) {
-      if (mismatch) {
-        addCaptureLog(
-          'warn',
-          `采集挂接 PID ${serviceState.damage?.pid} 与当前游戏 ${selectedGamePid} 不一致，正在重新挂接…`
-        );
-      } else if (forceRestart) {
-        addCaptureLog('info', `正在按当前游戏进程 ${selectedGamePid} 重新启动采集…`);
-      }
-      await stopCaptureBackend({ waitMs });
-    }
-    if (!services.damage && !(isDemo && demoTimer)) {
-      return startCaptureBackend();
-    }
-    if (services.damage && serviceState.damage.state === 'running') {
-      // Keep the real attached pid from the bridge; never overwrite with a mismatched selected pid.
-      const pid = serviceState.damage.pid != null ? serviceState.damage.pid : selectedGamePid;
-      setServiceState('damage', 'running', captureRoleMessage(), {
-        pid,
-        log: serviceState.damage.log
-      });
-    } else {
-      broadcastState();
-    }
-    return { ok: true };
-  }
-  if (services.damage || (isDemo && demoTimer)) {
-    return stopCaptureBackend({ waitMs });
-  }
-  broadcastState();
-  return { ok: true };
+  if (useUnifiedAgent()) return agentHost.reconcile({ waitMs, forceRestart });
+  return captureHost.reconcile({ waitMs, forceRestart });
 }
 
 function startService(name) {
@@ -1061,74 +1107,56 @@ function startService(name) {
     damageCollectionWanted = true;
     return reconcileCaptureBackend();
   }
-  if (services[name]) return { ok: true };
+  translatorWanted = true;
+  if (useUnifiedAgent()) return agentHost.reconcile();
+  return translatorHost.start();
+}
+
+function requestTranslatorWarmup() {
+  const child = services.translator || services.damage;
+  if (writeCommand(child, { action: 'warmup' })) {
+    addLog('translator', 'info', '已请求预热翻译引擎');
+    return true;
+  }
+  return false;
+}
+
+async function maybePrestartOnGame() {
+  const settings = appSettings();
+  const plan = planPrestartOnGame({
+    enabled: settings.startup?.prestartOnGame !== false,
+    processBecameAlive: true,
+    selectedPid: selectedGamePid,
+    startupTranslator: Boolean(settings.startup?.translator),
+    translatorUp: ['running', 'starting'].includes(serviceState.translator?.state || ''),
+    captureNeeded: captureBackendNeeded(),
+    captureUp: Boolean(services.damage) || ['running', 'starting'].includes(serviceState.damage?.state || '')
+  });
+  if (plan.capture) {
+    addLog('app', 'info', '发现游戏进程，正在预启动采集…');
+    await reconcileCaptureBackend();
+  }
+  if (plan.translator) {
+    addLog('translator', 'info', '发现游戏进程，正在预启动 NPC 翻译并预热引擎…');
+    translatorWanted = true;
+    const result = useUnifiedAgent() ? await agentHost.reconcile() : translatorHost.start();
+    if (result?.ok !== false) requestTranslatorWarmup();
+  }
+}
+
+async function prestartServices() {
   if (!selectedGamePid) {
-    const classified = reportServiceError(name, '没有可用的 eco.exe，请启动游戏并刷新进程列表', { kind: 'no-process' });
-    return { ok: false, error: classified.message, errorCode: classified.code };
+    return { ok: false, error: '请先选择游戏进程' };
   }
-
-  const runtime = runtimeFor(name);
-  setServiceState(name, 'starting', '正在启动');
-  const label = launchLabel(runtime, app.isPackaged);
-  addLog(name, 'info', `启动 ${label}，连接游戏进程 ${selectedGamePid}`);
-  try {
-    if (!app.isPackaged) {
-      const scriptPath = runtime.args?.[1];
-      if (scriptPath && !fs.existsSync(scriptPath)) {
-        const classified = reportServiceError(name, `找不到后端脚本：${scriptPath}`, { kind: 'script-missing' });
-        return { ok: false, error: classified.message, errorCode: classified.code };
-      }
-    }
-    const child = spawn(runtime.command, runtime.args, {
-      cwd: runtime.cwd || srcDir(),
-      windowsHide: true,
-      env: buildBackendEnv({
-        srcDir: srcDir(),
-        backendDir: backendDir(),
-        dataDir: localDataDir()
-      }),
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-    services[name] = child;
-
-    const lines = readline.createInterface({ input: child.stdout });
-    lines.on('line', (line) => {
-      if (line.trim()) addLog(name, 'info', line.trim());
-      if (line.includes('attach')) setServiceState(name, 'running', `NPC 翻译正在运行（进程 ${selectedGamePid}）`, { pid: selectedGamePid });
-      if (line.includes('没有运行中的 eco.exe')) {
-        reportServiceError(name, '没有找到 eco.exe，请先进入游戏', { kind: 'no-process' });
-      }
-      if (line.includes('指定的 eco.exe 进程不存在')) {
-        reportServiceError(name, '所选游戏进程已经退出，请刷新后重选', { kind: 'process-gone' });
-      }
-      if (line.includes('还没有配置翻译服务')) {
-        reportServiceError(name, '请先完成翻译设置', { kind: 'translator-config' });
-      }
-    });
-
-    const errors = readline.createInterface({ input: child.stderr });
-    errors.on('line', (line) => line.trim() && addLog(name, 'error', line.trim()));
-
-    child.on('error', (error) => {
-      reportServiceError(name, error.message, { kind: 'spawn' });
-    });
-    child.on('exit', (code) => {
-      services[name] = null;
-      if (serviceState[name].state !== 'error') {
-        setServiceState(name, 'stopped', code === 0 ? '已停止' : `已退出（代码 ${code}）`);
-      }
-    });
-    setTimeout(() => {
-      if (services[name] === child && serviceState[name].state === 'starting') {
-        setServiceState(name, 'running', `NPC 翻译正在运行（进程 ${selectedGamePid}）`, { pid: selectedGamePid });
-      }
-    }, 1600);
-    return { ok: true };
-  } catch (error) {
-    services[name] = null;
-    const classified = reportServiceError(name, error.message, { kind: 'spawn' });
-    return { ok: false, error: classified.message, errorCode: classified.code };
+  if (!selectedProcessAlive && !isDemo) {
+    await checkSelectedProcessAlive();
   }
+  translatorWanted = true;
+  const started = useUnifiedAgent() ? await agentHost.reconcile() : await Promise.resolve(translatorHost.start());
+  if (started && started.ok === false) return started;
+  requestTranslatorWarmup();
+  addLog('translator', 'success', '预启动已发出：挂钩 + 引擎预热');
+  return { ok: true };
 }
 
 function stopChildGracefully(name, child, options = {}) {
@@ -1151,6 +1179,11 @@ function stopService(name, { waitMs = 12000, forceKill = true, settleMs = 400 } 
     damageCollectionWanted = false;
     return reconcileCaptureBackend({ waitMs });
   }
+  if (name === 'translator') {
+    translatorWanted = false;
+    if (useUnifiedAgent()) return agentHost.reconcile({ waitMs });
+    return translatorHost.stop({ waitMs, forceKill, settleMs });
+  }
   const child = services[name];
   if (!child) return Promise.resolve({ ok: true });
   return stopChildGracefully(name, child, { waitMs, forceKill, settleMs }).finally(() => {
@@ -1160,122 +1193,26 @@ function stopService(name, { waitMs = 12000, forceKill = true, settleMs = 400 } 
 
 async function stopAllBackends({ waitMs = 12000 } = {}) {
   damageCollectionWanted = false;
+  translatorWanted = false;
+  if (useUnifiedAgent()) {
+    await agentHost.stop({ waitMs });
+    return { ok: true };
+  }
   // Force-stop capture even if monitoring intent is still set (app is quitting).
   await stopCaptureBackend({ waitMs, force: true });
   await stopService('translator', { waitMs });
   return { ok: true };
 }
 
-/**
- * Quit-time teardown: stop every Frida feature in a safe order, wait for hooks
- * to unload, then allow the Electron process to exit.
- * Prefer long cooperative waits; force-kill only as last resort.
- */
 async function stopAllBackendsForQuit() {
   damageCollectionWanted = false;
-  const waitMs = 16000;
-  const settle = (ms) => lifecycleSleep(ms);
-
-  addLog('app', 'info', '安全退出：依次关闭 NPC 翻译 → 伤害/状态采集 → 小雅…');
-
-  // 1) Translator hooks recvfrom — unload first (most crash-sensitive).
-  if (services.translator) {
-    const child = services.translator;
-    await stopChildGracefully('translator', child, {
-      waitMs,
-      forceKill: false,
-      settleMs: 600
-    });
-    if (services.translator === child) services.translator = null;
-    setServiceState('translator', 'stopped', '已停止');
-  }
-  await settle(700);
-
-  // 2) Damage / monitoring capture backend.
-  if (services.damage) {
-    const child = services.damage;
-    await stopChildGracefully('damage', child, {
-      waitMs,
-      forceKill: false,
-      settleMs: 600
-    });
-    if (services.damage === child) services.damage = null;
-    setServiceState('damage', 'stopped', '已停止');
-  } else if (isDemo) {
-    stopDemo();
-  }
-  await settle(700);
-
-  // 3) Xiaoya native helper (if any).
-  if (xiaoyaService) {
-    try {
-      await xiaoyaService.stop();
-    } catch {
-      // ignore
-    }
-    try {
-      xiaoyaService.dispose();
-    } catch {
-      // ignore
-    }
-  }
-  await settle(700);
-
-  // 4) Last-resort force for anything still alive (should be rare).
-  for (const name of ['translator', 'damage']) {
-    const child = services[name];
-    if (!child || child.killed || child.exitCode != null) continue;
-    addLog(name, 'warn', '退出兜底：仍在运行，强制结束后端');
-    await stopChildGracefully(name, child, {
-      waitMs: 2500,
-      forceKill: true,
-      settleMs: 400
-    });
-    if (services[name] === child) services[name] = null;
-  }
-
-  // 5) Let eco.exe resume packet IO after Frida detach.
-  addLog('app', 'info', '钩子已卸载，等待游戏网络恢复后再退出…');
-  await settle(1800);
-  return { ok: true };
-}
-
-function showQuitProgressOverlay(message) {
-  try {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    const safe = String(message || '')
-      .replace(/\\/g, '\\\\')
-      .replace(/`/g, '\\`')
-      .replace(/\$\{/g, '\\${');
-    mainWindow.webContents.executeJavaScript(`
-      (function () {
-        var el = document.getElementById('eco-shutdown-overlay');
-        if (!el) {
-          el = document.createElement('div');
-          el.id = 'eco-shutdown-overlay';
-          el.setAttribute('style',
-            'position:fixed;inset:0;z-index:2147483647;background:rgba(8,10,14,.92);' +
-            'color:#f5f5f5;display:flex;align-items:center;justify-content:center;' +
-            'flex-direction:column;gap:14px;font-family:system-ui,Segoe UI,sans-serif;' +
-            'padding:24px;text-align:center');
-          el.innerHTML =
-            '<div style="font-size:20px;font-weight:650">正在安全退出</div>' +
-            '<div id="eco-shutdown-msg" style="font-size:13px;line-height:1.55;max-width:420px;opacity:.9"></div>' +
-            '<div style="font-size:12px;opacity:.65;max-width:420px">会先关闭翻译/伤害采集并卸载游戏内钩子，大约几秒到十几秒。请勿在任务管理器强杀，否则游戏可能闪退。</div>';
-          document.body.appendChild(el);
-        }
-        var msg = document.getElementById('eco-shutdown-msg');
-        if (msg) msg.textContent = \`${safe}\`;
-      })();
-    `).catch(() => {});
-  } catch {
-    // ignore
-  }
+  translatorWanted = false;
+  return getAppShutdown().stopAllBackendsForQuit();
 }
 
 function resetDamage() {
   const child = services.damage;
-  if (child && child.stdin.writable) child.stdin.write(`${JSON.stringify({ action: 'reset' })}\n`);
+  if (child) writeCommand(child, { action: 'reset' });
   battleReport.reset();
   if (isDemo) {
     latestSnapshot = demoSnapshot(0);
@@ -1290,7 +1227,7 @@ function reidentifySelf() {
   const child = services.damage;
   if (child && child.stdin?.writable) {
     try {
-      child.stdin.write(`${JSON.stringify({ action: 'reidentify-self' })}\n`);
+      writeCommand(child, { action: 'reidentify-self' });
     } catch (error) {
       return { ok: false, error: error.message || '无法通知采集后端' };
     }
@@ -1485,8 +1422,8 @@ function createMainWindow() {
   // Default: minimize to tray (if enabled). Real quit always goes through delayed
   // graceful shutdown so Frida hooks leave eco.exe before the toolbox dies.
   mainWindow.on('close', (event) => {
-    if (gracefulQuitComplete) return;
-    if (gracefulQuitStarted) {
+    if (gracefulQuitComplete()) return;
+    if (gracefulQuitStarted()) {
       event.preventDefault();
       return;
     }
@@ -1516,12 +1453,12 @@ function startDemo() {
   setServiceState('damage', 'running', '演示数据正在运行', { pid: selectedGamePid });
   latestSnapshot = demoSnapshot(seed);
   rememberSkillsFromSnapshot(latestSnapshot);
-  broadcast('damage:snapshot', latestSnapshot);
+  stateBus.broadcastSnapshot(latestSnapshot);
   demoTimer = setInterval(() => {
     seed += 1;
     latestSnapshot = demoSnapshot(seed);
     rememberSkillsFromSnapshot(latestSnapshot);
-    broadcast('damage:snapshot', latestSnapshot);
+    stateBus.broadcastSnapshot(latestSnapshot);
   }, 1000);
 }
 
@@ -1636,6 +1573,9 @@ function startProcessWatch() {
         );
         await reconcileCaptureBackend({ forceRestart: true });
         return;
+      }
+      if (prevAlive === false && selectedProcessAlive && selectedGamePid) {
+        await maybePrestartOnGame();
       }
       if (prevAlive !== selectedProcessAlive) {
         broadcastState();
@@ -1810,793 +1750,99 @@ function buildDiagnosticsText() {
   return lines.join('\n');
 }
 
-ipcMain.handle('app:get-state', () => publicState());
-ipcMain.handle('app:get-diagnostics', () => ({
-  ok: true,
-  text: buildDiagnosticsText(),
-  health: currentConnectionHealth(),
-  diagnostics: getDiagnosticsPayload()
-}));
-ipcMain.handle('app:copy-diagnostics', () => {
-  const text = buildDiagnosticsText();
-  clipboard.writeText(text);
-  addLog('app', 'info', '诊断信息已复制到剪贴板');
-  return { ok: true, text };
-});
-ipcMain.handle('app:export-diagnostic-pack', async () => {
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const defaultName = `eco-toolbox-diag-${stamp}`;
-  const result = await dialog.showSaveDialog(mainWindow || undefined, {
-    title: '导出诊断包',
-    defaultPath: path.join(app.getPath('documents'), defaultName),
-    buttonLabel: '导出诊断包',
-    // No extension — we create a folder of files for remote support.
-    filters: [{ name: '诊断包文件夹', extensions: ['*'] }]
-  });
-  if (result.canceled || !result.filePath) {
-    return { ok: false, cancelled: true };
-  }
-
-  let outDir = result.filePath;
-  // If the user picked something ending in .json/.txt, strip and use as folder.
-  outDir = outDir.replace(/\.(json|txt|zip)$/i, '');
-  try {
-    fs.mkdirSync(outDir, { recursive: true });
-    const diag = getDiagnosticsPayload();
-    const text = buildDiagnosticsText();
-    const health = diag.connectionHealth || currentConnectionHealth();
-    const logDirs = defaultDiagnosticLogDirs({ localDataDir, backendDir });
-    const captureTails = collectCaptureLogTails(logDirs, {
-      prefix: 'damage_electron_',
-      maxBytes: 160_000,
-      maxFiles: 2
-    });
-    // Also try generic capture prefixes if electron logs are empty.
-    if (!captureTails.tails.length) {
-      const alt = collectCaptureLogTails(logDirs, {
-        prefix: 'damage_',
-        maxBytes: 120_000,
-        maxFiles: 2
-      });
-      if (alt.tails.length) {
-        captureTails.tails = alt.tails;
-        captureTails.files = alt.files;
-      }
-    }
-    // Python backend logs — essential for remote support.
-    const meterLogs = collectNamedLogTails(
-      logDirs,
-      ['eco_damage_meter.log', 'eco_damage_capture.log', 'eco_npc_mitm.log'],
-      { maxBytes: 100_000 }
-    );
-    const pack = writeDiagnosticPack(outDir, {
-      diag,
-      text,
-      snapshot: latestSnapshot || null,
-      captureTails,
-      meterLogs,
-      hints: health.hints || []
-    });
-
-    // Best-effort zip beside the folder for easier sharing.
-    let zipPath = null;
-    try {
-      zipPath = await zipDirectory(outDir);
-    } catch (zipErr) {
-      addLog('app', 'warn', `诊断包压缩失败（仍有文件夹）：${zipErr.message || zipErr}`);
-    }
-
-    addLog(
-      'app',
-      'success',
-      zipPath
-        ? `已导出诊断包（含 SUMMARY + meter 日志）→ ${zipPath}`
-        : `已导出诊断包（${pack.files.length} 个文件，含 SUMMARY）→ ${outDir}`
-    );
-    try {
-      // Prefer SUMMARY for remote helpers when browsing the folder.
-      shell.showItemInFolder(zipPath || path.join(outDir, 'SUMMARY.txt'));
-    } catch {
-      /* optional */
-    }
-    return {
-      ok: true,
-      path: zipPath || outDir,
-      dir: outDir,
-      zipPath,
-      files: pack.files.length
-    };
-  } catch (error) {
-    return { ok: false, error: error.message || '导出诊断包失败' };
-  }
-});
-ipcMain.handle('app:reconnect', async () => reconnectGameProcess({ reason: 'manual' }));
-ipcMain.handle('app:set-onboarding-seen', (_event, seen = true) => {
-  const current = appSettings();
-  current.onboarding = { ...(current.onboarding || {}), seenGuide: Boolean(seen) };
-  persistAppSettings(current);
-  broadcastState();
-  return { ok: true, settings: settingsPublic(current) };
-});
-ipcMain.handle('config:export', async (_event, options = {}) => {
-  const bundle = buildConfigBundle({
-    settings: appSettings(),
-    custom_durations: loadCustomBuffDurations(),
-    translation: translationSettings(),
-    includeSecrets: Boolean(options.includeSecrets),
-    appVersion: app.getVersion()
-  });
-  const result = await dialog.showSaveDialog(mainWindow || undefined, {
-    title: '导出工具箱配置',
-    defaultPath: path.join(app.getPath('documents'), `eco-toolbox-config-${Date.now()}.json`),
-    filters: [{ name: 'JSON', extensions: ['json'] }]
-  });
-  if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
-  fs.writeFileSync(result.filePath, `${JSON.stringify(bundle, null, 2)}\n`, 'utf8');
-  addLog('app', 'info', `配置已导出 → ${result.filePath}`);
-  return { ok: true, path: result.filePath };
-});
-ipcMain.handle('config:import', async () => {
-  const result = await dialog.showOpenDialog(mainWindow || undefined, {
-    title: '导入工具箱配置',
-    properties: ['openFile'],
-    filters: [{ name: 'JSON', extensions: ['json'] }]
-  });
-  if (result.canceled || !result.filePaths?.[0]) return { ok: false, cancelled: true };
-  try {
-    const parsed = parseConfigBundle(fs.readFileSync(result.filePaths[0], 'utf8'));
-    if (parsed.settings && Object.keys(parsed.settings).length) {
-      const next = mergeDeep(appSettings(), parsed.settings);
-      stripAppearanceRuntimeFields(next.appearance || {});
-      persistAppSettings(next);
-    }
-    if (parsed.custom_durations && Object.keys(parsed.custom_durations).length) {
-      saveCustomBuffDurations(parsed.custom_durations);
-      notifyDamageReloadCustomBuffs(parsed.custom_durations);
-    }
-    if (parsed.translation) {
-      const root = localDataDir();
-      writeJson(path.join(root, 'translate_config.json'), {
-        provider: parsed.translation.provider || 'deepseek',
-        model: parsed.translation.model || '',
-        base_url: parsed.translation.base_url || '',
-        api_key: parsed.translation.api_key || '',
-        first_wait: Number(parsed.translation.first_wait || 0),
-        target_lang: parsed.translation.target_lang || 'zh-CN',
-        player_names: Array.isArray(parsed.translation.player_names) ? parsed.translation.player_names : [],
-        toggle_hotkey: parsed.translation.toggle_hotkey || '',
-        skip_hotkey: parsed.translation.skip_hotkey || ''
-      });
-      if (parsed.translation.sync_url != null || parsed.translation.sync_enabled != null) {
-        writeJson(path.join(root, 'sync_config.json'), {
-          enabled: Boolean(parsed.translation.sync_enabled),
-          url: parsed.translation.sync_url || '',
-          token: parsed.translation.sync_token || ''
-        });
-      }
-    }
-    registerAppHotkeys();
-    createAppTray();
-    broadcastState({ immediate: true });
-    addLog('app', 'success', '配置已导入');
-    return { ok: true, settings: settingsPublic() };
-  } catch (error) {
-    return { ok: false, error: error.message || '导入失败' };
-  }
-});
-ipcMain.handle('presets:list', () => ({ ok: true, presets: characterPresets.loadAll() }));
-ipcMain.handle('presets:save', (_event, payload = {}) => {
-  const name = String(payload.name || '').trim() || '未命名预设';
-  // Bind to current main window title by default (multi-client auto-apply).
-  const windowTitle = String(
-    payload.windowTitle != null ? payload.windowTitle : (rememberedProcessTitle || '')
-  ).trim();
-  const result = characterPresets.upsert({
-    id: payload.id || `preset-${Date.now()}`,
-    name,
-    note: payload.note || '',
-    windowTitle,
-    capture: payload.capture || appSettings().capture || {},
-    custom_durations: payload.custom_durations || loadCustomBuffDurations(),
-    overlay: {
-      density: appSettings().overlay?.density || 'comfortable',
-      expiryWarningSeconds: appSettings().overlay?.expiryWarningSeconds,
-      ...(payload.overlay || {})
-    }
-  });
-  broadcastState();
-  addLog(
-    'app',
-    'info',
-    `角色预设已保存：${name}${windowTitle ? `（绑定窗口 ${windowTitle}）` : ''}`
-  );
-  return { ok: true, ...result };
-});
-ipcMain.handle('presets:apply', (_event, id) => {
-  const preset = characterPresets.loadAll().find((p) => p.id === id);
-  if (!preset) return { ok: false, error: '预设不存在' };
-  const current = appSettings();
-  if (preset.capture) current.capture = { ...(current.capture || {}), ...preset.capture };
-  if (preset.overlay) {
-    current.overlay = {
-      ...(current.overlay || {}),
-      density: preset.overlay.density || current.overlay?.density,
-      expiryWarningSeconds: preset.overlay.expiryWarningSeconds ?? current.overlay?.expiryWarningSeconds
-    };
-  }
-  persistAppSettings(current);
-  if (preset.custom_durations) {
-    saveCustomBuffDurations(preset.custom_durations);
-    notifyDamageReloadCustomBuffs(preset.custom_durations);
-  }
-  if (services.damage?.stdin?.writable && preset.capture) {
-    try {
-      services.damage.stdin.write(`${JSON.stringify({ action: 'set-categories', categories: current.capture })}\n`);
-    } catch { /* ignore */ }
-  }
-  broadcastState({ immediate: true });
-  addLog('app', 'info', `已应用角色预设：${preset.name}`);
-  return {
-    ok: true,
-    preset,
-    settings: settingsPublic(current),
-    custom_durations: loadCustomBuffDurations()
-  };
-});
-ipcMain.handle('presets:delete', (_event, id) => {
-  const result = characterPresets.remove(id);
-  broadcastState();
-  return { ok: true, ...result };
-});
-ipcMain.handle('game-processes:refresh', () => refreshGameProcesses());
-ipcMain.handle('game-processes:select', async (_event, pid, options = {}) => selectGameProcess(pid, options));
-ipcMain.handle('game-processes:select-xiaoya', (_event, pid) => selectXiaoyaProcess(pid));
-ipcMain.handle('service:start', (_event, name) => startService(name));
-ipcMain.handle('service:stop', (_event, name) => stopService(name));
-ipcMain.handle('damage:reset', () => resetDamage());
-ipcMain.handle('damage:reidentify-self', () => reidentifySelf());
-ipcMain.handle('battle:get-report', () => ({ ok: true, report: battleReport.snapshot() }));
-ipcMain.handle('battle:reset-report', () => {
-  battleReport.reset();
-  broadcastState();
-  return { ok: true, report: battleReport.snapshot() };
-});
-ipcMain.handle('battle:export-report', async (_event, options = {}) => {
-  const format = String(options.format || 'txt').toLowerCase() === 'json' ? 'json' : 'txt';
-  const report = battleReport.snapshot();
-  if (!report.samples && !report.last) {
-    return { ok: false, error: '暂无战斗数据可导出（请先开启伤害采集一段时间）' };
-  }
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const defaultName = `eco-battle-report-${stamp}.${format}`;
-  const result = await dialog.showSaveDialog(mainWindow || undefined, {
-    title: '导出战斗报告',
-    defaultPath: path.join(app.getPath('documents'), defaultName),
-    filters: format === 'json'
-      ? [{ name: 'JSON', extensions: ['json'] }]
-      : [{ name: '文本', extensions: ['txt', 'log'] }]
-  });
-  if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
-  let outPath = result.filePath;
-  if (format === 'json' && !outPath.toLowerCase().endsWith('.json')) outPath += '.json';
-  if (format === 'txt' && !/\.(txt|log)$/i.test(outPath)) outPath += '.txt';
-  const body = format === 'json'
-    ? `${JSON.stringify(report, null, 2)}\n`
-    : battleReport.formatText(report, { characterTitle: rememberedProcessTitle });
-  fs.writeFileSync(outPath, body, 'utf8');
-  addLog('damage', 'info', `战斗报告已导出 → ${outPath}`);
-  return { ok: true, path: outPath, report };
-});
-ipcMain.handle('battle:copy-report', () => {
-  const report = battleReport.snapshot();
-  if (!report.samples && !report.last) {
-    return { ok: false, error: '暂无战斗数据可复制' };
-  }
-  const text = battleReport.formatText(report, { characterTitle: rememberedProcessTitle });
-  clipboard.writeText(text);
-  addLog('damage', 'info', '战斗报告已复制到剪贴板');
-  return { ok: true, text };
-});
-ipcMain.handle('app:get-about', () => ({
-  ok: true,
-  about: {
-    version: app.getVersion(),
-    packaged: app.isPackaged,
-    electron: process.versions.electron,
-    chrome: process.versions.chrome,
-    node: process.versions.node,
-    platform: process.platform,
-    arch: process.arch,
-    elevated: elevatedCache,
-    hotkeys: appSettings().hotkeys || {},
-    rememberedTitles: {
-      main: rememberedProcessTitle || null,
-      xiaoya: rememberedXiaoyaTitle || null
-    },
-    errorCodes: require('./lib/error-codes').ERROR_CATALOG
-  }
-}));
-ipcMain.handle('update:check', () => updateService?.check() || { ok: false, error: '更新服务尚未就绪' });
-ipcMain.handle('update:download', () => updateService?.download() || { ok: false, error: '更新服务尚未就绪' });
-ipcMain.handle('update:install', async () => {
-  if (!updateService) return { ok: false, error: '更新服务尚未就绪' };
-  if (updateService.snapshot().phase !== 'downloaded') return { ok: false, error: '更新尚未下载完成' };
-  await prepareForUpdateInstall();
-  return updateService.install();
-});
-ipcMain.handle('overlay:set-visible', (_event, visible) => {
-  const current = appSettings();
-  current.overlay.visible = Boolean(visible);
-  persistAppSettings(current);
-  if (visible) overlayWindow?.showInactive(); else overlayWindow?.hide();
-  return { ok: true };
-});
-ipcMain.handle('overlay:set-editing', (_event, editing) => ({ ok: setOverlayEditing(editing) }));
-ipcMain.handle('overlay:resize-content', (_event, requestedHeight) => {
-  // Window size is user-controlled (drag resize in edit mode). Content scrolls inside.
-  if (!overlayWindow || overlayWindow.isDestroyed() || overlayEditing) return { ok: true };
-  const settings = appSettings().overlay;
-  const hasCustomSize = Number.isFinite(Number(settings.width)) && Number.isFinite(Number(settings.height));
-  if (hasCustomSize) return { ok: true, height: overlayWindow.getBounds().height };
-  const scale = Math.min(1.4, Math.max(0.8, Number(settings.scale) || 1));
-  const display = screen.getDisplayMatching(overlayWindow.getBounds()).workArea;
-  const height = Math.min(
-    display.height - 24,
-    Math.max(OVERLAY_MIN_HEIGHT, Math.round(OVERLAY_DEFAULT_HEIGHT * scale), Math.round(Number(requestedHeight || OVERLAY_DEFAULT_HEIGHT) * scale))
-  );
-  const bounds = overlayWindow.getBounds();
-  overlayWindow.setBounds({
-    x: bounds.x,
-    y: Math.min(bounds.y, display.y + display.height - height),
-    width: bounds.width,
-    height
-  });
-  return { ok: true, height };
-});
-ipcMain.handle('overlay:resize-delta', (_event, dx, dy) => {
-  if (!overlayWindow || overlayWindow.isDestroyed() || !overlayEditing) return { ok: false };
-  const bounds = overlayWindow.getBounds();
-  const display = screen.getDisplayMatching(bounds).workArea;
-  const width = Math.min(display.width, Math.max(OVERLAY_MIN_WIDTH, Math.round(bounds.width + Number(dx || 0))));
-  const height = Math.min(display.height, Math.max(OVERLAY_MIN_HEIGHT, Math.round(bounds.height + Number(dy || 0))));
-  if (width === bounds.width && height === bounds.height) return { ok: true, ...bounds };
-  overlayWindow.setBounds({ x: bounds.x, y: bounds.y, width, height });
-  return { ok: true, x: bounds.x, y: bounds.y, width, height };
-});
-ipcMain.handle('skill-icon:get', async (_event, skillId) => {
-  // Prefer the selected process path; fall back to any known eco.exe path.
-  // When eco is not running, SkillIconService still serves disk cache icons.
-  let gamePath = selectedGameProcess()?.path || '';
-  if (!gamePath) {
-    const fallback = gameProcesses.find((item) => item.path);
-    gamePath = fallback?.path || '';
-  }
-  const icon = await (skillIconService?.getIcon(skillId, gamePath)
-    || Promise.resolve({ ok: false, reason: 'unavailable' }));
-  const mode = appSettings().appearance?.skillNameMode || 'client';
-  const nameClient = displayNames.getZh(skillId) || String(icon?.name || '').trim();
-  const nameJa = displayNames.getJa(skillId) || '';
-  const name = displayNames.formatSkill(skillId, mode, icon?.name || nameClient);
-  return {
-    ...icon,
-    ok: Boolean(icon?.ok || nameClient || nameJa),
-    name,
-    nameClient,
-    nameJa,
-    wikiUrl: displayNames.wikiSearchUrl(nameJa || nameClient || name)
-  };
-});
-ipcMain.handle('names:skill', (_event, skillId, preferName = '') => {
-  const mode = appSettings().appearance?.skillNameMode || 'client';
-  const name = displayNames.formatSkill(skillId, mode, preferName);
-  return {
-    ok: true,
-    name,
-    nameClient: displayNames.getZh(skillId),
-    nameJa: displayNames.getJa(skillId),
-    wikiUrl: displayNames.wikiSearchUrl(name)
-  };
-});
-ipcMain.handle('presets:job-list', () => ({
-  ok: true,
-  presets: displayNames.loadJobPresets(),
-  wiki: 'https://eco.lycolia.info/wiki/?Skill'
-}));
-ipcMain.handle('presets:job-apply', (_event, id) => {
-  const preset = displayNames.loadJobPresets().find((p) => p.id === id);
-  if (!preset) return { ok: false, error: '职业模板不存在' };
-  const current = loadCustomBuffDurations();
-  const merged = { ...current, ...(preset.custom_durations || {}) };
-  const saved = saveCustomBuffDurations(merged);
-  notifyDamageReloadCustomBuffs(saved.durations);
-  broadcastState({ immediate: true });
-  addLog('buffs', 'success', `已导入职业倒计时模板：${preset.name}`);
-  return { ok: true, preset, custom_durations: saved.durations };
-});
-ipcMain.handle('settings:save-app', (_event, incoming) => {
-  const current = mergeDeep(appSettings(), incoming || {});
-  if (current.overlay) {
-    current.overlay.opacity = clampOverlayOpacity(current.overlay.opacity);
-    const scale = Math.min(1.4, Math.max(0.8, Number(current.overlay.scale) || 1));
-    current.overlay.scale = scale;
-    if (Number.isFinite(Number(current.overlay.width))) {
-      current.overlay.width = Math.max(OVERLAY_MIN_WIDTH, Math.round(Number(current.overlay.width)));
-    }
-    if (Number.isFinite(Number(current.overlay.height))) {
-      current.overlay.height = Math.max(OVERLAY_MIN_HEIGHT, Math.round(Number(current.overlay.height)));
-    }
-  }
-  if (current.appearance) {
-    current.appearance.backgroundDim = clampDim(current.appearance.backgroundDim, 0.52);
-    current.appearance.backgroundBlur = clampBlur(current.appearance.backgroundBlur, 6);
-    current.appearance.backgroundFit = clampFit(current.appearance.backgroundFit, 'cover');
-    current.appearance.overlayBgMode = normalizeOverlayBgMode(current.appearance);
-    current.appearance.applyToOverlay = current.appearance.overlayBgMode !== 'solid';
-    current.appearance.overlayBackgroundDim = clampDim(current.appearance.overlayBackgroundDim, 0.62);
-    current.appearance.overlayBackgroundBlur = clampBlur(current.appearance.overlayBackgroundBlur, 4);
-    current.appearance.overlayBackgroundFit = clampFit(current.appearance.overlayBackgroundFit, 'cover');
-    current.appearance.overlayBackgroundImage = safeBackgroundRel(current.appearance.overlayBackgroundImage);
-    if (current.appearance.overlayBgMode !== 'custom') {
-      // Keep custom image on disk/settings so switching back restores it.
-    }
-    const accent = String(current.appearance.accent || 'amber');
-    current.appearance.accent = ['amber', 'teal', 'violet', 'rose', 'cyan', 'slate'].includes(accent)
-      ? accent
-      : 'amber';
-    const nameMode = String(current.appearance.skillNameMode || 'client');
-    current.appearance.skillNameMode = ['client', 'ja', 'dual'].includes(nameMode) ? nameMode : 'client';
-    // Never persist runtime image payloads into settings.
-    stripAppearanceRuntimeFields(current.appearance);
-  }
-  persistAppSettings(current);
-  if (incoming?.capture && services.damage?.stdin?.writable) {
-    services.damage.stdin.write(`${JSON.stringify({
-      action: 'set-categories',
-      categories: current.capture
-    })}\n`);
-  }
-  if (incoming?.appearance?.skillNameMode && services.damage?.stdin?.writable) {
-    try {
-      services.damage.stdin.write(`${JSON.stringify({
-        action: 'set-skill-name-mode',
-        mode: current.appearance.skillNameMode
-      })}\n`);
-    } catch { /* ignore */ }
-  }
-  if (overlayWindow && !overlayWindow.isDestroyed()) {
-    const bounds = overlayWindow.getBounds();
-    const next = overlayBounds(current.overlay);
-    // Keep current position if user already placed the window; only apply size from settings.
-    overlayWindow.setBounds({
-      x: Number.isFinite(current.overlay.x) ? next.x : bounds.x,
-      y: Number.isFinite(current.overlay.y) ? next.y : bounds.y,
-      width: next.width,
-      height: next.height
-    });
-    overlayWindow.setOpacity(clampOverlayOpacity(current.overlay.opacity));
-    overlayWindow.webContents.send('app:state', buildLightState());
-  }
-  // Status monitoring can start/stop the shared capture backend independently of damage collection.
-  if (incoming?.overlay && Object.prototype.hasOwnProperty.call(incoming.overlay, 'monitoring')) {
-    reconcileCaptureBackend();
-  } else {
-    broadcastState();
-  }
-  if (incoming?.hotkeys || incoming?.startup) {
-    registerAppHotkeys();
-    createAppTray();
-  }
-  return {
-    ok: true,
-    settings: {
-      ...current,
-      appearance: resolveAppearanceBackground(current)
-    }
-  };
-});
-
-ipcMain.handle('appearance:pick-background', async (_event, target = 'main') => {
-  const kind = target === 'overlay' ? 'overlay' : 'main';
-  const result = await dialog.showOpenDialog(mainWindow || undefined, {
-    title: kind === 'overlay' ? '选择悬浮窗背景图片' : '选择背景图片',
-    properties: ['openFile'],
-    filters: [
-      { name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'] }
-    ]
-  });
-  if (result.canceled || !result.filePaths?.[0]) {
-    return { ok: false, cancelled: true };
-  }
-  let rel = '';
-  try {
-    rel = importWallpaperImage(result.filePaths[0], kind);
-  } catch (error) {
-    return { ok: false, error: error.message || '导入背景图失败' };
-  }
-  wallpaper.clearImageCache();
-  const current = appSettings();
-  if (kind === 'overlay') {
-    current.appearance = {
-      ...defaultAppSettings.appearance,
-      ...(current.appearance || {}),
-      overlayBgMode: 'custom',
-      overlayBackgroundImage: rel,
-      applyToOverlay: true
-    };
-  } else {
-    current.appearance = {
-      ...defaultAppSettings.appearance,
-      ...(current.appearance || {}),
-      backgroundImage: rel
-    };
-  }
-  stripAppearanceRuntimeFields(current.appearance);
-  persistAppSettings(current);
-  broadcastState();
-  return {
-    ok: true,
-    settings: {
-      ...current,
-      appearance: resolveAppearanceBackground(current)
-    }
-  };
-});
-
-ipcMain.handle('appearance:clear-background', (_event, target = 'main') => {
-  const kind = target === 'overlay' ? 'overlay' : 'main';
-  wallpaper.clearImageCache();
-  const current = appSettings();
-  if (kind === 'overlay') {
-    current.appearance = {
-      ...defaultAppSettings.appearance,
-      ...(current.appearance || {}),
-      overlayBackgroundImage: '',
-      // Stay on custom mode with empty image → solid until user picks again,
-      // or switch to solid for clarity.
-      overlayBgMode: 'solid',
-      applyToOverlay: false
-    };
-  } else {
-    current.appearance = {
-      ...defaultAppSettings.appearance,
-      ...(current.appearance || {}),
-      backgroundImage: ''
-    };
-  }
-  stripAppearanceRuntimeFields(current.appearance);
-  persistAppSettings(current);
-  wallpaper.cleanupWallpaperFiles(kind);
-  broadcastState();
-  return {
-    ok: true,
-    settings: {
-      ...current,
-      appearance: resolveAppearanceBackground(current)
-    }
-  };
-});
-ipcMain.handle('settings:save-translation', (_event, incoming) => {
-  // Must match ECO_DATA_DIR / localDataDir so the Python mitm backend reads the same file.
-  const root = localDataDir();
-  fs.mkdirSync(root, { recursive: true });
-  const translation = {
-    provider: incoming.provider,
-    model: incoming.model,
-    base_url: incoming.base_url || '',
-    api_key: incoming.api_key || '',
-    first_wait: Number(incoming.first_wait || 0),
-    target_lang: incoming.target_lang || 'zh-CN',
-    player_names: incoming.player_names || [],
-    toggle_hotkey: incoming.toggle_hotkey || '',
-    skip_hotkey: incoming.skip_hotkey || ''
-  };
-  // Shared dict is public for all users; empty URL falls back to the official node.
-  const defaults = cloneSyncDefaults();
-  const prev = readJson(path.join(root, 'sync_config.json'), defaults);
-  const sync = {
-    // Only an explicit false turns sync off; missing / true → on.
-    enabled: incoming.sync_enabled === false ? false : true,
-    url: String(incoming.sync_url || '').trim() || defaults.url,
-    token: String(incoming.sync_token || '').trim() || defaults.token,
-    pull_interval: Number(prev.pull_interval) > 0 ? Number(prev.pull_interval) : defaults.pull_interval,
-    flush_interval: Number(prev.flush_interval) > 0 ? Number(prev.flush_interval) : defaults.flush_interval,
-    pull_on_start: prev.pull_on_start !== false
-  };
-  writeJson(path.join(root, 'translate_config.json'), translation);
-  writeJson(path.join(root, 'sync_config.json'), sync);
-  addLog('translator', 'success', '翻译设置已保存，重新启动翻译后生效');
-  broadcastState();
-  return { ok: true };
-});
-ipcMain.handle('logs:open-folder', () => {
-  const folder = path.join(localDataDir(), 'logs');
-  fs.mkdirSync(folder, { recursive: true });
-  shell.openPath(folder);
-  return { ok: true };
-});
-
-ipcMain.handle('logs:export', async (_event, options = {}) => {
-  const filter = String(options.filter || 'all');
-  const format = String(options.format || 'txt').toLowerCase() === 'json' ? 'json' : 'txt';
-  const selected = filterLogs(filter);
-  if (!selected.length) {
-    return { ok: false, error: '当前筛选下没有可导出的日志' };
-  }
-
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const filterSlug = filter === 'all' ? 'all' : filter;
-  const defaultName = `eco-toolbox-logs-${filterSlug}-${stamp}.${format}`;
-  const result = await dialog.showSaveDialog(mainWindow || undefined, {
-    title: '导出运行日志',
-    defaultPath: path.join(app.getPath('documents'), defaultName),
-    filters: format === 'json'
-      ? [{ name: 'JSON', extensions: ['json'] }, { name: '文本', extensions: ['txt', 'log'] }]
-      : [{ name: '文本', extensions: ['txt', 'log'] }, { name: 'JSON', extensions: ['json'] }]
-  });
-  if (result.canceled || !result.filePath) {
-    return { ok: false, cancelled: true };
-  }
-
-  let outPath = result.filePath;
-  const lower = outPath.toLowerCase();
-  if (format === 'json' && !lower.endsWith('.json')) outPath += '.json';
-  if (format === 'txt' && !/\.(txt|log)$/i.test(outPath)) outPath += '.txt';
-
-  try {
-    const exportFormat = outPath.toLowerCase().endsWith('.json') ? 'json' : 'txt';
-    let body = formatLogsExportBody(selected, { filter, format: exportFormat });
-    // Append a compact combat/exp snapshot so sparse UI ring logs are still useful.
-    try {
-      const snap = latestSnapshot || null;
-      if (snap && exportFormat === 'txt') {
-        const grind = snap.grind || {};
-        const lines = [
-          '',
-          '# --- 采集快照（导出时） ---',
-          `# self_id=${snap.self_id ?? 'null'} ride_mode=${Boolean(snap.ride_mode)} ride_mount=${snap.ride_mount_id ?? 'null'} possession_host=${snap.possession_host_id ?? 'null'}`,
-          `# dealt=${snap.dealt || 0} self_skill=${snap.self_skill_dealt || 0} self_normal=${snap.self_normal_dealt || 0} ride_skill=${snap.ride_skill_dealt || 0} ride_normal=${snap.ride_normal_dealt || 0} pet=${snap.pet_dealt || 0}`,
-          `# packets=${snap.packet_count || 0} last_packet_age=${snap.last_packet_age ?? 'n/a'}`,
-          `# grind_ready=${Boolean(grind.ready)} level=${grind.level ?? 'n/a'} cexp%=${grind.cexp_pct ?? 'n/a'} jexp%=${grind.jexp_pct ?? 'n/a'} session_cexp%=${grind.session_cexp_pct ?? 0}`,
-        ];
-        const events = Array.isArray(snap.events) ? snap.events.slice(0, 12) : [];
-        for (const ev of events) {
-          if (Array.isArray(ev)) lines.push(`# event ${ev[0] || ''} ${ev[1] || ''}`);
-        }
-        body += `${lines.join('\n')}\n`;
-      }
-    } catch {
-      /* snapshot optional */
-    }
-    fs.writeFileSync(outPath, body, 'utf8');
-
-    // Also write a companion diagnostic sidecar for remote support.
-    try {
-      const diag = getDiagnosticsPayload();
-      // Prefer the filtered export log slice in the sidecar.
-      diag.recentLogs = selected.slice(-80);
-      if (latestSnapshot) {
-        diag.snapshotSummary = {
-          self_id: latestSnapshot.self_id,
-          ride_mode: latestSnapshot.ride_mode,
-          ride_mount_id: latestSnapshot.ride_mount_id,
-          possession_host_id: latestSnapshot.possession_host_id,
-          dealt: latestSnapshot.dealt,
-          self_skill_dealt: latestSnapshot.self_skill_dealt,
-          self_normal_dealt: latestSnapshot.self_normal_dealt,
-          ride_skill_dealt: latestSnapshot.ride_skill_dealt,
-          ride_normal_dealt: latestSnapshot.ride_normal_dealt,
-          pet_dealt: latestSnapshot.pet_dealt,
-          packet_count: latestSnapshot.packet_count,
-          grind: latestSnapshot.grind || null,
-          events: (latestSnapshot.events || []).slice(0, 20),
-        };
-      }
-      const diagPath = outPath.replace(/\.(txt|log|json)$/i, '') + '.diag.json';
-      fs.writeFileSync(diagPath, `${JSON.stringify(diag, null, 2)}\n`, 'utf8');
-      addLog('app', 'info', `已导出 ${selected.length} 条日志 → ${outPath}`);
-      return { ok: true, path: outPath, diagPath, count: selected.length };
-    } catch {
-      addLog('app', 'info', `已导出 ${selected.length} 条日志 → ${outPath}`);
-      return { ok: true, path: outPath, count: selected.length };
-    }
-  } catch (error) {
-    return { ok: false, error: error.message || '导出日志失败' };
-  }
-});
-ipcMain.handle('xiaoya:get-config', () => {
-  if (!xiaoyaService) return { ok: false, error: '小雅服务尚未就绪' };
-  try {
-    return { ok: true, skills: xiaoyaService.readConfig(), state: xiaoyaService.snapshot() };
-  } catch (error) {
-    return { ok: false, error: error.message, state: xiaoyaService.snapshot() };
-  }
-});
-ipcMain.handle('xiaoya:save-config', (_event, skills) => {
-  if (!xiaoyaService) return { ok: false, error: '小雅服务尚未就绪' };
-  try {
-    const normalized = xiaoyaService.writeConfig(skills);
-    addLog('xiaoya', 'success', '小雅技能配置已保存');
-    return { ok: true, skills: normalized, state: xiaoyaService.snapshot() };
-  } catch (error) {
-    addLog('xiaoya', 'error', `保存小雅配置失败：${error.message}`);
-    return { ok: false, error: error.message, state: xiaoyaService.snapshot() };
-  }
-});
-ipcMain.handle('xiaoya:start', async () => {
-  if (!xiaoyaService) return { ok: false, error: '小雅服务尚未就绪' };
-  const result = await xiaoyaService.start();
-  addLog('xiaoya', result.ok ? 'info' : 'error', result.ok ? '正在启动小雅' : result.error);
-  return result;
-});
-ipcMain.handle('xiaoya:stop', async () => {
-  if (!xiaoyaService) return { ok: false, error: '小雅服务尚未就绪' };
-  const result = await xiaoyaService.stop();
-  addLog('xiaoya', result.ok ? 'info' : 'error', result.ok ? '小雅停止请求已发送' : result.error);
-  return result;
-});
-ipcMain.handle('xiaoya:toggle-ss', async () => {
-  if (!xiaoyaService) return { ok: false, error: '小雅服务尚未就绪' };
-  const result = await xiaoyaService.toggleSs();
-  addLog('xiaoya', result.ok ? 'info' : 'error', result.ok ? 'SS 模式切换已发送' : result.error);
-  return result;
-});
-ipcMain.handle('xiaoya:toggle-visibility', async () => {
-  if (!xiaoyaService) return { ok: false, error: '小雅服务尚未就绪' };
-  const result = await xiaoyaService.toggleVisibility();
-  addLog(
-    'xiaoya',
-    result.ok ? 'info' : 'error',
-    result.ok ? (result.visible ? 'ECO 窗口已显示' : 'ECO 窗口已隐藏') : result.error
-  );
-  return result;
-});
-
-ipcMain.handle('buffs:save-custom-durations', (_event, durations) => {
-  try {
-    const saved = saveCustomBuffDurations(durations);
-    notifyDamageReloadCustomBuffs(saved.durations);
-    addLog(
-      'buffs',
-      'success',
-      `自定义倒计时已保存到本地（${Object.keys(saved.durations).length} 条）`
-    );
-    broadcastState();
-    return {
-      ok: true,
-      custom_durations: saved.durations,
-      path: saved.path
-    };
-  } catch (e) {
-    addLog('monitoring', 'error', `保存自定义倒计时失败：${e.message}`);
-    return { ok: false, error: String(e) };
-  }
-});
-
-ipcMain.handle('buffs:get-custom-durations', () => {
-  const custom_durations = loadCustomBuffDurations();
-  return {
-    ok: true,
-    custom_durations,
-    path: customBuffsPath()
-  };
-});
-
-ipcMain.handle('skills:get-library', async () => {
-  // Force English/original client names from skill-icon cache before returning chips.
-  const skill_library = await enrichSkillLibraryNames();
-  return { ok: true, skill_library };
-});
-
-ipcMain.handle('xiaoya:open-folder', () => {
-
-  if (!xiaoyaService) return { ok: false, error: '小雅服务尚未就绪' };
-  try {
-    xiaoyaService.ensureRuntime();
-    shell.openPath(xiaoyaService.runtimeDir);
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error: error.message };
-  }
+const { registerIpcHandlers } = require('./lib/ipc/register-handlers');
+registerIpcHandlers(ipcMain, {
+  dialog,
+  clipboard,
+  shell,
+  app,
+  path,
+  fs,
+  screen,
+  publicState,
+  settingsPublic,
+  buildDiagnosticsText,
+  currentConnectionHealth,
+  getDiagnosticsPayload,
+  addLog,
+  localDataDir,
+  backendDir,
+  defaultDiagnosticLogDirs,
+  collectCaptureLogTails,
+  collectNamedLogTails,
+  writeDiagnosticPack,
+  zipDirectory,
+  get latestSnapshot() { return latestSnapshot; },
+  set latestSnapshot(v) { latestSnapshot = v; },
+  reconnectGameProcess,
+  mergeDeep,
+  appSettings,
+  persistAppSettings,
+  characterPresets,
+  selectGameProcess,
+  selectXiaoyaProcess,
+  refreshGameProcesses,
+  startService,
+  stopService,
+  prestartServices,
+  resetDamage,
+  reidentifySelf,
+  battleReport,
+  get updateService() { return updateService; },
+  setOverlayEditing,
+  persistOverlayBounds,
+  get skillIconService() { return skillIconService; },
+  // skill-icon:get free names — without these, with(ctx) throws and icons never load
+  selectedGameProcess,
+  get gameProcesses() { return gameProcesses; },
+  displayNames,
+  loadSkillLibrary,
+  saveSkillLibrary,
+  enrichSkillLibraryNames,
+  importWallpaperImage,
+  resolveAppearanceBackground,
+  wallpaper,
+  loadBackgroundImagePayload,
+  stripAppearanceRuntimeFields,
+  buildConfigBundle,
+  parseConfigBundle,
+  translationSettings,
+  ensureSyncConfig,
+  cloneSyncDefaults,
+  readJson,
+  writeJson,
+  dataDir,
+  filterLogs,
+  formatLogsExportBody,
+  get xiaoyaService() { return xiaoyaService; },
+  saveCustomBuffDurations,
+  loadCustomBuffDurations,
+  customBuffsPath,
+  notifyDamageReloadCustomBuffs,
+  broadcastState,
+  prepareForUpdateInstall,
+  registerAppHotkeys,
+  createAppTray,
+  get rememberedProcessTitle() { return rememberedProcessTitle; },
+  get rememberedXiaoyaTitle() { return rememberedXiaoyaTitle; },
+  get elevatedCache() { return elevatedCache; },
+  get overlayEditing() { return overlayEditing; },
+  services,
+  OVERLAY_MIN_WIDTH,
+  OVERLAY_MIN_HEIGHT,
+  OVERLAY_DEFAULT_HEIGHT,
+  clampOverlayOpacity,
+  clampDim,
+  clampBlur,
+  clampFit,
+  normalizeOverlayBgMode,
+  safeBackgroundRel,
+  defaultAppSettings,
+  overlayBounds,
+  buildLightState,
+  reconcileCaptureBackend,
+  get mainWindow() { return mainWindow; },
+  get overlayWindow() { return overlayWindow; },
 });
 
 app.whenReady().then(async () => {
@@ -2671,84 +1917,15 @@ app.whenReady().then(async () => {
   });
 });
 
-/**
- * Single exit path used by window close / app.quit / tray.
- * Delayed quit: stop all Frida features first, settle, then destroy windows.
- */
+/** Single exit path — see electron/lib/app-shutdown.js */
 function beginGracefulShutdown(reason = 'quit') {
-  if (gracefulQuitComplete) {
-    app.quit();
-    return;
-  }
-  if (gracefulQuitStarted) return;
-  gracefulQuitStarted = true;
-
-  try {
-    getSettingsStore().flush();
-  } catch {
-    // ignore
-  }
-
-  // Keep main window visible with a progress overlay so the user knows we are
-  // deliberately delaying exit to protect eco.exe — not frozen.
-  try {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.setTitle('ECO 工具箱 - 正在安全退出（请稍候）…');
-      try { mainWindow.setClosable(false); } catch { /* ignore */ }
-      mainWindow.show();
-      mainWindow.focus();
-      showQuitProgressOverlay('正在关闭 NPC 翻译与伤害采集…');
-    }
-  } catch { /* ignore */ }
-  try {
-    if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.hide();
-  } catch { /* ignore */ }
-
-  stopDemo();
-  addLog('app', 'info', `安全退出（${reason}）：先关闭全部功能并卸载钩子，请稍候…`);
-
-  const quitWork = Promise.resolve()
-    .then(async () => {
-      showQuitProgressOverlay('正在卸载游戏内 Frida 钩子（翻译）…');
-      await stopAllBackendsForQuit();
-      showQuitProgressOverlay('全部功能已关闭，即将退出…');
-      await lifecycleSleep(500);
-    });
-
-  // Hard cap so a stuck dispose cannot freeze the toolbox forever.
-  const timeoutWork = lifecycleSleep(48000).then(() => {
-    try {
-      addLog('app', 'warn', '安全退出超时，仍将结束工具箱进程');
-      showQuitProgressOverlay('等待超时，即将强制退出工具箱…');
-    } catch { /* ignore */ }
-  });
-
-  Promise.race([quitWork, timeoutWork])
-    .catch((error) => {
-      try { addLog('app', 'warn', `安全退出过程异常：${error?.message || error}`); } catch { /* ignore */ }
-    })
-    .finally(() => {
-      gracefulQuitComplete = true;
-      try {
-        if (overlayWindow && !overlayWindow.isDestroyed()) {
-          overlayWindow.destroy();
-          overlayWindow = null;
-        }
-      } catch { /* ignore */ }
-      try {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          try { mainWindow.setClosable(true); } catch { /* ignore */ }
-          mainWindow.removeAllListeners('close');
-          mainWindow.destroy();
-          mainWindow = null;
-        }
-      } catch { /* ignore */ }
-      app.quit();
-    });
+  damageCollectionWanted = false;
+  translatorWanted = false;
+  return getAppShutdown().beginGracefulShutdown(reason);
 }
 
 app.on('before-quit', (event) => {
-  if (gracefulQuitComplete) return;
+  if (gracefulQuitComplete()) return;
   // Always take over quit while backends may still be attached.
   event.preventDefault();
   beginGracefulShutdown('before-quit');
@@ -2762,6 +1939,6 @@ app.on('will-quit', () => {
 
 app.on('window-all-closed', () => {
   // Main window close is already handled; do not quit twice.
-  if (gracefulQuitComplete) return;
+  if (gracefulQuitComplete()) return;
   if (process.platform !== 'darwin') beginGracefulShutdown('window-all-closed');
 });

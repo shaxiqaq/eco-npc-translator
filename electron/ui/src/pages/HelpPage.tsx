@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { BookOpen, ClipboardCopy, ExternalLink, Keyboard, Package, Shield } from 'lucide-react';
 import { useEco } from '@/context/EcoContext';
+import { CURRENT_RELEASE_NOTES } from '@/lib/changelog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { PageStack, SectionHeader } from '@/components/layout';
@@ -48,6 +49,11 @@ export function HelpPage() {
             <div className="text-xs text-[var(--muted-foreground)]">
               Electron {about.electron || '-'}
             </div>
+            <ul className="m-0 list-disc space-y-1 pl-4 text-xs text-[var(--muted-foreground)]">
+              {CURRENT_RELEASE_NOTES.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
             <div className="flex items-center gap-2 text-xs">
               <Shield className="h-3.5 w-3.5" />
               管理员权限：

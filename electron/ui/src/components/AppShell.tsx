@@ -15,11 +15,12 @@ import {
   Play,
   Square,
   CircleHelp,
+  Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { PAGE_META, serviceText } from '@/lib/damage';
 import { formatProcessLabel } from '@/lib/process-label';
-import { useEco } from '@/context/EcoContext';
+import { useCombatIdentity, useEco } from '@/context/EcoContext';
 import type { PageId } from '@/types/eco';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -62,12 +63,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     page,
     setPage,
     state,
-    snapshot,
     startAll,
     stopAll,
+    prestartServices,
     refreshProcesses,
     selectGameProcess,
   } = useEco();
+  const { selfId } = useCombatIdentity();
 
   const [title, subtitle] = PAGE_META[page] || PAGE_META.overview;
   const processes = state.gameProcesses || [];
@@ -198,7 +200,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     <CircleOff className="h-3.5 w-3.5" />
                   )}
                   {connected
-                    ? `已连接 ${connectedPid}${snapshot?.self_id ? ` · 角色 ${snapshot.self_id}` : ''}`
+                    ? `已连接 ${connectedPid}${selfId ? ` · 角色 ${selfId}` : ''}`
                     : selectedPid
                       ? `已选择 ${selectedPid}`
                       : '未找到游戏'}
@@ -217,6 +219,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Button type="button" variant="secondary" onClick={() => void stopAll()}>
               <Square />
               全部停止
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              title="挂钩 NPC 翻译并预热接口，进对话前点一次"
+              onClick={() => void prestartServices()}
+            >
+              <Zap />
+              预热翻译
             </Button>
             <Button type="button" onClick={() => void startAll()}>
               <Play />

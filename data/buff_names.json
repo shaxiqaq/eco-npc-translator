@@ -102,12 +102,18 @@
   "0:0x00100000": {
     "name": "坐下",
     "source_name": "Sit",
-    "category": "positive"
+    "category": "positive",
+    "skill_id": 715
   },
   "0:0x00200000": {
     "name": "灵魂状态",
     "source_name": "Spirit",
     "category": "positive"
+  },
+  "0:0x00800000": {
+    "name": "超重",
+    "source_name": "Overweight",
+    "category": "abnormal"
   },
   "10:0x00000020": {
     "name": "审判",
