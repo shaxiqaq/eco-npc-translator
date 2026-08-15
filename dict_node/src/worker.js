@@ -3,8 +3,9 @@
 //   GET  /pull?lang=zh-CN&since=<ts>&limit=5000   拉取 ts 之后的词条(增量)
 //   lang 对英文原文仍是目标语言(zh-CN)；日文/印尼文用 zh-CN-ja / zh-CN-id 隔离
 //   POST /contribute  {lang, token, items:[{k,v,model}]}   上报新词条(先到先得)
+//   POST /rewrite     {lang, token, ops:[{k,v,delete:[old_k...],upsert:bool}]}  管理改写(删旧键/写入新键)
 //   GET  /stats?lang=zh-CN                         统计
-// 鉴权: 若设置了 secret TOKEN, 则读写都要带对应 token(pull 用 ?token=, contribute 放 body)
+// 鉴权: 若设置了 secret TOKEN, 则读写都要带对应 token(pull 用 ?token=, contribute/rewrite 放 body)
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -30,6 +31,7 @@ export default {
     try {
       if (url.pathname === "/pull" && request.method === "GET") return await pull(url, env);
       if (url.pathname === "/contribute" && request.method === "POST") return await contribute(request, env);
+      if (url.pathname === "/rewrite" && request.method === "POST") return await rewrite(request, env);
       if (url.pathname === "/stats" && request.method === "GET") return await stats(url, env);
       if (url.pathname === "/") return json({ ok: true, service: "eco-npc-dict" });
       return json({ error: "not found" }, 404);
@@ -87,4 +89,70 @@ async function stats(url, env) {
     .prepare("SELECT COUNT(*) AS n, MAX(ts) AS last FROM entries WHERE lang=?1")
     .bind(lang).first());
   return json({ lang, total: (row && row.n) || 0, last: (row && row.last) || 0 });
+}
+
+/**
+ * Admin rewrite: delete dirty keys and/or upsert normalized keys.
+ * Body: {
+ *   token, lang,
+ *   ops: [{ k, v, model?, delete?: string[], upsert?: boolean }]
+ * }
+ * - delete: remove these exact keys for lang
+ * - upsert true: INSERT OR REPLACE (k,v) so clean {PC} form can land even if absent
+ */
+async function rewrite(request, env) {
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "bad json" }, 400); }
+  if (!checkToken(env, body.token)) return json({ error: "bad token" }, 401);
+  const lang = (body.lang || "zh-CN").slice(0, 16);
+  const ops = Array.isArray(body.ops) ? body.ops : [];
+  const maxOps = parseInt(env.MAX_REWRITE_OPS || "200", 10);
+  const maxLen = parseInt(env.MAX_LEN || "4000", 10);
+  if (ops.length === 0) return json({ deleted: 0, upserted: 0 });
+  if (ops.length > maxOps) return json({ error: `too many ops (>${maxOps})` }, 413);
+
+  const now = Date.now();
+  const delStmt = env.DB.prepare("DELETE FROM entries WHERE lang=?1 AND k=?2");
+  const upStmt = env.DB.prepare(
+    "INSERT OR REPLACE INTO entries (lang,k,v,model,ts) VALUES (?1,?2,?3,?4,?5)"
+  );
+
+  const delBatch = [];
+  const upBatch = [];
+  for (const op of ops) {
+    if (!op || typeof op !== "object") continue;
+    const delList = Array.isArray(op.delete) ? op.delete : [];
+    for (const oldK of delList) {
+      const dk = (oldK || "").toString();
+      if (!dk || dk.length > maxLen) continue;
+      delBatch.push(delStmt.bind(lang, dk));
+    }
+    if (op.upsert) {
+      const k = (op.k || "").toString();
+      const v = (op.v || "").toString();
+      if (!k || !v || k.length > maxLen || v.length > maxLen) continue;
+      const model = (op.model || "rewrite-pc").toString().slice(0, 64);
+      upBatch.push(upStmt.bind(lang, k, v, model, now));
+    }
+  }
+
+  let deleted = 0;
+  let upserted = 0;
+  const chunkSize = 80;
+  for (let i = 0; i < delBatch.length; i += chunkSize) {
+    const res = await env.DB.batch(delBatch.slice(i, i + chunkSize));
+    deleted += res.reduce((a, r) => a + ((r.meta && r.meta.changes) || 0), 0);
+  }
+  for (let i = 0; i < upBatch.length; i += chunkSize) {
+    const res = await env.DB.batch(upBatch.slice(i, i + chunkSize));
+    upserted += res.reduce((a, r) => a + ((r.meta && r.meta.changes) || 0), 0);
+  }
+
+  return json({
+    deleted,
+    upserted,
+    delete_stmts: delBatch.length,
+    upsert_stmts: upBatch.length,
+    received_ops: ops.length,
+  });
 }

@@ -54,6 +54,14 @@ curl "https://eco-npc-dict.<你的子域>.workers.dev/pull?lang=zh-CN&token=你�
 |---|---|---|
 | GET | `/pull?lang=zh-CN&since=<ts>&token=` | 拉取 ts 之后的词条；返回 `{entries, cursor, more}`，下次用返回的 `cursor` 当 `since` 做增量 |
 | POST | `/contribute` | body `{lang, token, items:[{k,v,model}]}`，先到先得（已存在不覆盖） |
+| POST | `/rewrite` | 管理改写：body `{lang, token, ops:[{k,v,delete:[old_k...],upsert:true}]}`，删旧键并写入归一化键 |
 | GET | `/stats?lang=zh-CN` | 词条总数、最后入库时间 |
+
+角色名归一（`{PC}`）云端迁移脚本：
+
+```bash
+python scripts/rewrite_cloud_pc.py --dry   # 只看计划
+python scripts/rewrite_cloud_pc.py         # 执行改写
+```
 
 数据模型：`(lang, k)` 唯一，`INSERT OR IGNORE` 先到先得；保留 `model`/`ts` 字段，方便以后做“好模型覆盖”。

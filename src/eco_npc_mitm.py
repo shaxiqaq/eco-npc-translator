@@ -73,11 +73,13 @@ PROVIDER = load_provider()
 CACHE_FILE = os.path.join(DATA_DIR, "npc_cache.json")
 MAP_PORT = 12002
 SEG_MAX = 240            # 每段中文 UTF-8 字节上限 (段长用1字节, <255)
-SYNC_FIRST = True        # True: 命中缓存的对话同帧改中文(纯查表, 不阻塞游戏)
-# 命中缓存即时出中文; 未命中时:
-#   FIRST_WAIT > 0  : 最多扣住游戏 FIRST_WAIT 秒等翻译, 抢"第一次就中文"(略停顿), 超时放行英文+后台回填
-#   FIRST_WAIT <= 0 : 不等待, 第一次直接放行英文, 后台翻译, 第二次才中文(完全不卡)
-# 默认 0(安全, 绝不扣线程不会被踢)。想抢第一次中文可在配置里调小值(<=1.0), 但有掉线风险。
+SYNC_FIRST = True        # 保留开关语义: 短对话会同步查表; 文本缓存命中同帧出中文
+# 短对话(≤2 段)会与 Python 同步一次:
+#   文本缓存命中 → 同帧改中文(纯查表, 几乎不卡)
+#   未命中时:
+#     FIRST_WAIT > 0  : 最多再等 FIRST_WAIT 秒现翻, 超时放行英文+后台回填
+#     FIRST_WAIT <= 0 : 立刻放行英文, 后台翻译, 第二次才中文
+# 默认 0(安全)。想未命中也抢首屏中文可调 0.5~1.0(有掉线风险)。
 FIRST_WAIT = 0
 try:
     _cfg0 = json.load(open(CONFIG_FILE, encoding="utf-8"))
@@ -103,6 +105,15 @@ try:
     from eco_event_cache import EventCache
 except Exception:
     EventCache = None
+from eco_pc_template import (
+    PC_TOKEN,
+    load_player_names,
+    normalize_shared_pair,
+    templatize as _templatize_names,
+    untemplatize as _untemplatize_name,
+)
+
+PLAYER_NAMES = load_player_names(config_file=CONFIG_FILE, data_dir=DATA_DIR)
 SEEN_FILE = os.path.join(DATA_DIR, "npc_seen.json")   # 见过的英文原文语料(供离线预翻 pretranslate.py 用)
 
 # 翻译缓存
@@ -186,7 +197,7 @@ def cache_get(text, source_lang=None):
         return None
 
 def rekey_loaded_cache():
-    """Rewrite dirty historical keys (\"text \\x00\") onto the lookup form rebuild() uses."""
+    """Rewrite dirty historical keys (\"text \\x00\") and raw player names onto {PC} form."""
     global CACHE_DIRTY
     with clock:
         rebuilt = {}
@@ -203,6 +214,16 @@ def rekey_loaded_cache():
             if not nk_raw or not nv:
                 changed += 1
                 continue
+            try:
+                from eco_pc_template import normalize_shared_pair
+
+                nk_raw2, nv2 = normalize_shared_pair(nk_raw, nv, PLAYER_NAMES)
+                if nk_raw2 and nv2:
+                    if nk_raw2 != nk_raw or nv2 != nv:
+                        changed += 1
+                    nk_raw, nv = nk_raw2, nv2
+            except Exception:
+                pass
             nk = cache_storage_key(nk_raw, src)
             if nk != k:
                 changed += 1
@@ -219,7 +240,10 @@ atexit.register(lambda: flush_cache(force=True))
 
 # 共享词库同步(可选): 自动上报本地新译文 + 自动拉取别人贡献
 def _merge_pulled(d, source_lang="en"):
-    """把拉到的 {原文:中文} 合并进本地缓存(本地已有的不覆盖, 先到先得), 落盘, 返回新增数。"""
+    """把拉到的 {原文:中文} 合并进本地缓存(本地已有的不覆盖, 先到先得), 落盘, 返回新增数。
+
+    拉取时会把别人未模板化的角色名(如 Hokuto0)归一成 {PC}, 否则本机 {PC}/自己名字永远对不上。
+    """
     global CACHE_DIRTY
     new = 0
     with clock:
@@ -229,6 +253,14 @@ def _merge_pulled(d, source_lang="en"):
             k = _norm_cache_key(k)
             if v and ("\x00" in v or any(ord(ch) < 32 and ch not in "\n\r\t" for ch in v)):
                 v = _norm_cache_key(v)
+            if not k or not v:
+                continue
+            try:
+                from eco_pc_template import normalize_shared_pair
+
+                k, v = normalize_shared_pair(k, v, PLAYER_NAMES)
+            except Exception:
+                pass
             if not k or not v:
                 continue
             sk = cache_storage_key(k, source_lang)
@@ -295,10 +327,22 @@ def translate(text, cache_only=False, kind="say"):
         logger.warning("[翻译失败] src=%s %s | %r", src, e, (text or "")[:60])
         return None
     if out:
-        cache_put(text, out, src)
-        if SYNC:
-            SYNC.enqueue(text, out, source_lang=src)
-        _remember_event(kind, src, text, out)
+        # Cache/upload under {PC}-normalized keys; return raw `out` for on-screen untemplatize.
+        store_k, store_v = text, out
+        try:
+            store_k, store_v = normalize_shared_pair(text, out, PLAYER_NAMES)
+        except Exception:
+            pass
+        if store_k and store_v:
+            cache_put(store_k, store_v, src)
+            if SYNC:
+                SYNC.enqueue(store_k, store_v, source_lang=src)
+            _remember_event(kind, src, store_k, store_v)
+        else:
+            cache_put(text, out, src)
+            if SYNC:
+                SYNC.enqueue(text, out, source_lang=src)
+            _remember_event(kind, src, text, out)
     else:
         logger.warning("[翻译空结果] src=%s %r", src, (text or "")[:60])
     return out
@@ -340,10 +384,17 @@ def translate_batch(texts, cache_only=False, kind="select"):
                 o = ((outs[j] if j < len(outs) else "") or "").strip()
                 res[i] = o
                 if o:
-                    cache_put(texts[i], o, src)
+                    store_k, store_v = texts[i], o
+                    try:
+                        store_k, store_v = normalize_shared_pair(texts[i], o, PLAYER_NAMES)
+                    except Exception:
+                        pass
+                    if not store_k or not store_v:
+                        store_k, store_v = texts[i], o
+                    cache_put(store_k, store_v, src)
                     if SYNC:
-                        SYNC.enqueue(texts[i], o, source_lang=src)
-                    _remember_event(kind, src, texts[i], o)
+                        SYNC.enqueue(store_k, store_v, source_lang=src)
+                    _remember_event(kind, src, store_k, store_v)
                 else:
                     logger.warning("[批量翻译空结果] src=%s %r", src, (texts[i] or "")[:60])
     return res
@@ -397,43 +448,24 @@ def _clean_text(t):
 # 对话里服务器会把你的角色名(pc.Name)替进去, 如 "Welcome back, sakiqaq."
 # 这种句子每个玩家都不同, 直接缓存/上报会污染词库且永不命中。
 # 做法: 把角色名换成占位符 {PC} 再翻译/缓存/共享, 显示时填回真名。
-# 译文里的 {PC} 跨玩家通用, 一次翻译人人可用。
-PC_TOKEN = "{PC}"
-def _load_player_names():
-    names = []
-    try:
-        cfg = json.load(open(CONFIG_FILE, encoding="utf-8"))
-        pn = cfg.get("player_names") or cfg.get("player_name")
-        if isinstance(pn, str): names = [pn]
-        elif isinstance(pn, list): names = list(pn)
-    except Exception: pass
-    try:                                  # 兼容独立文件 player_names.json (一个字符串数组)
-        extra = json.load(open(os.path.join(DATA_DIR, "player_names.json"), encoding="utf-8"))
-        if isinstance(extra, list): names += list(extra)
-        elif isinstance(extra, str): names.append(extra)
-    except Exception: pass
-    seen = []
-    for n in names:
-        n = str(n).strip()
-        if n and n not in seen: seen.append(n)
-    return seen
-PLAYER_NAMES = _load_player_names()
-_NAMEPAT = (re.compile("|".join(re.escape(n) for n in
-            sorted(PLAYER_NAMES, key=len, reverse=True))) if PLAYER_NAMES else None)
+# 拉取/上报时还会把别人未配置角色名而上传的真名(如 Hokuto0)归一成 {PC}。
 if PLAYER_NAMES:
-    logger.info(f"[玩家名] 已加载 {len(PLAYER_NAMES)} 个角色名, 对话中将模板化为 {PC_TOKEN}: {PLAYER_NAMES}")
+    logger.info(
+        "[玩家名] 已加载 %s 个角色名, 对话中将模板化为 %s: %s",
+        len(PLAYER_NAMES),
+        PC_TOKEN,
+        PLAYER_NAMES,
+    )
+
 
 def templatize(text):
     """把角色名替换成 {PC}; 返回 (模板文本, 命中的真实名 or None)。未配置名字则原样返回。"""
-    if not _NAMEPAT or not text: return text, None
-    hit = {"n": None}
-    def _sub(m): hit["n"] = m.group(0); return PC_TOKEN
-    return _NAMEPAT.sub(_sub, text), hit["n"]
+    return _templatize_names(text, PLAYER_NAMES)
+
 
 def untemplatize(text, name):
     """显示前把 {PC} 填回真实角色名。"""
-    if name and text and PC_TOKEN in text: return text.replace(PC_TOKEN, name)
-    return text
+    return _untemplatize_name(text, name)
 
 def _be16(buf, i):
     return (buf[i] << 8) | buf[i + 1]
@@ -508,10 +540,88 @@ def looks_like_dialogue_sub(sub, expect_op=None):
     return False
 
 
+# One Point / colored spans use single-letter wrappers (H…D, E…D, I…).
+# Do not treat a normal word like "Hello" as markup.
+_MARKUP_PREFIX = re.compile(r"^(HD|HT|H|I|E)(?=[A-Z\[\(])")
+_MARKUP_SUFFIX = re.compile(r"D\s*$")
+
+
+def split_eco_markup(text):
+    """Peel ECO H/D style codes so they are not translated as letters."""
+    if not text:
+        return "", text, ""
+    prefix = ""
+    suffix = ""
+    match = _MARKUP_PREFIX.match(text)
+    if match:
+        prefix = match.group(1)
+        text = text[match.end():]
+        end = _MARKUP_SUFFIX.search(text)
+        if end:
+            suffix = "D"
+            text = text[:end.start()].rstrip()
+    return prefix, text, suffix
+
+
+def _pack_1017_chunks(text, max_segs, max_each=250):
+    """Keep at most max_segs. Extra wrap lines stay inside a segment via $R."""
+    lines = wrap_cjk(text, 20) or ([text] if text else [])
+    if not lines:
+        return []
+    slots = max(1, min(int(max_segs or 1), 40))
+    if len(lines) <= slots:
+        groups = lines
+    else:
+        groups = []
+        per = (len(lines) + slots - 1) // slots
+        for i in range(0, len(lines), per):
+            groups.append("$R".join(lines[i:i + per]))
+            if len(groups) == slots:
+                if i + per < len(lines):
+                    groups[-1] = "$R".join(lines[i:])
+                break
+    chunks = []
+    for group in groups[:slots]:
+        raw = group.encode("utf-8")[:max_each]
+        if raw:
+            chunks.append(raw)
+    return chunks
+
+
+def _build_1017_bytes(op, npc, flag, chunks, tail):
+    out = bytearray(op + npc + flag)
+    out.append(len(chunks) & 0xff)
+    for chunk in chunks:
+        out.append(len(chunk) & 0xff)
+        out += chunk
+    out += tail
+    return bytes(out)
+
+
+def _fit_1017_to_original(op, npc, flag, chunks, tail, orig_len):
+    """Never emit a larger 1017 than the live English sub (One Point overflow)."""
+    built = _build_1017_bytes(op, npc, flag, chunks, tail)
+    if len(built) <= orig_len:
+        return built
+    if not chunks:
+        return None
+    overflow = len(built) - orig_len
+    last = chunks[-1]
+    if len(last) <= overflow:
+        return None
+    chunks = list(chunks)
+    chunks[-1] = last[:len(last) - overflow]
+    built = _build_1017_bytes(op, npc, flag, chunks, tail)
+    if len(built) > orig_len or not chunks[-1]:
+        return None
+    return built
+
+
 def rebuild_1017(sub, cache_only=False):
     """[op2][npc4][flag2][segN1]{[len1][seg]}*N [motion2][nameLen1][name..pad] -> 中文"""
     if not sub or len(sub) < 10:
         return None
+    orig_len = len(sub)
     op, npc, flag = sub[0:2], sub[2:6], sub[6:8]
     p = 8; segN = sub[p]; p += 1; segs = []
     if segN > 64:
@@ -527,32 +637,107 @@ def rebuild_1017(sub, cache_only=False):
     eng = _clean_text("".join(s.decode("utf-8", "replace") for s in segs))
     if not eng:
         return None
-    eng_key, pcname = templatize(eng)                # 角色名 -> {PC}, 模板化后翻译/缓存/共享
+    prefix, body, suffix = split_eco_markup(eng)
+    eng_key, pcname = templatize(body)               # 角色名 -> {PC}, 模板化后翻译/缓存/共享
     if resolve_source_lang(eng_key, SOURCE_LANG) == "zh":
         return None
     if not cache_only: record_seen([eng_key])
     zh = translate(eng_key, cache_only, kind="say")
     if not zh: return None
     zh = untemplatize(zh, pcname)                     # 显示前把真名填回
-    lines = wrap_cjk(zh, 20)                          # 每段一行, 防止框内折行重叠
-    chunks = [ln.encode("utf-8")[:250] for ln in lines[:40]]  # hard cap lines
+    if prefix:
+        zh = prefix + zh
+    if suffix:
+        zh = zh + suffix
+    # Same or fewer segments than the live packet. wrap_cjk used to explode
+    # One Point tips into 10+ segments and crash eco.exe on the next click.
+    chunks = _pack_1017_chunks(zh, max(1, len(segs)))
     if not chunks:
         return None
-    out = bytearray(op + npc + flag); out.append(len(chunks) & 0xff)
-    for c in chunks: out.append(len(c) & 0xff); out += c
-    out += tail
-    if len(out) > 4000:
+    built = _fit_1017_to_original(op, npc, flag, chunks, tail, orig_len)
+    if not built or len(built) > 4000:
         return None
-    built = bytes(out)
     if not looks_like_dialogue_sub(built, 1017):
         return None
     return built
+
+def _utf8_clip(text, max_bytes):
+    """Encode text and clip to max_bytes without splitting a UTF-8 codepoint."""
+    if max_bytes <= 0:
+        return b""
+    raw = (text or "").encode("utf-8")
+    if len(raw) <= max_bytes:
+        return raw
+    raw = raw[:max_bytes]
+    while raw and (raw[-1] & 0xC0) == 0x80:
+        raw = raw[:-1]
+    if raw and (raw[-1] & 0xC0) == 0xC0:
+        raw = raw[:-1]
+    return raw
+
+
+def _build_1526_bytes(op, q_zh, opt_zh, indices, opt_count, tail):
+    out = bytearray(op)
+    out.append((len(q_zh) + 1) & 0xff)
+    out += q_zh
+    out.append(0)
+    out.append(opt_count & 0xff)
+    out += indices
+    for oz in opt_zh:
+        out.append(len(oz) & 0xff)
+        out += oz
+    out += tail
+    return bytes(out)
+
+
+def _fit_1526_to_original(op, q_zh, opt_zh, indices, opt_count, tail, orig_len):
+    """Never emit a larger 1526 than the live English sub.
+
+    Short English options like \"Nothing\" sometimes cache a long Chinese phrase
+    from another context; hard-failing left the menu stuck in English forever.
+    Prefer shrinking the longest option text first, then the question.
+    """
+    built = _build_1526_bytes(op, q_zh, opt_zh, indices, opt_count, tail)
+    if len(built) <= orig_len:
+        return built
+    q_zh = bytes(q_zh)
+    opt_zh = [bytes(o) for o in opt_zh]
+    # Drop whole trailing bytes from the longest field until it fits (or nothing left).
+    for _ in range(512):
+        overflow = len(built) - orig_len
+        if overflow <= 0:
+            return built
+        # Pick longest field: options preferred over question (question is the prompt).
+        best_i = -1  # -1 = question
+        best_len = len(q_zh)
+        for i, oz in enumerate(opt_zh):
+            if len(oz) > best_len:
+                best_len = len(oz)
+                best_i = i
+        if best_len <= 0:
+            return None
+        cut = min(overflow, best_len)
+        if best_i < 0:
+            q_zh = _utf8_clip(q_zh.decode("utf-8", "replace"), len(q_zh) - cut)
+        else:
+            opt_zh[best_i] = _utf8_clip(
+                opt_zh[best_i].decode("utf-8", "replace"), len(opt_zh[best_i]) - cut
+            )
+        built = _build_1526_bytes(op, q_zh, opt_zh, indices, opt_count, tail)
+        if len(built) <= orig_len:
+            # Keep at least one printable option/question if possible.
+            if looks_like_dialogue_sub(built, 1526):
+                return built
+            return None
+    return None
+
 
 def rebuild_1526(sub, cache_only=False):
     """[op2][qlen1][question(含null)][optCount1][indices(optCount+1)]{[len1][opt]}*N [tail] -> 中文
        indices 是点击->动作映射, 原样保留; 只译问题与选项文字"""
     if not sub or len(sub) < 5:
         return None
+    orig_len = len(sub)
     op = sub[0:2]; p = 2
     qlen = sub[p]; p += 1
     if p + qlen > len(sub):
@@ -586,16 +771,11 @@ def rebuild_1526(sub, cache_only=False):
     zhs = translate_batch(keys, cache_only, kind="select")
     if cache_only and any(z is None for z in zhs): return None    # 任一未命中则整条不出, 交后台
     disp = [untemplatize(zhs[i] or texts[i], pcnames[i]) for i in range(len(texts))]   # 填回真名
-    q_zh = disp[0].encode("utf-8")[:250]
-    opt_zh = [disp[1+i].encode("utf-8")[:250] for i in range(len(opts))]
-    out = bytearray(op)
-    out.append((len(q_zh) + 1) & 0xff); out += q_zh; out.append(0)   # qlen 含 null
-    out.append(optCount); out += indices
-    for oz in opt_zh: out.append(len(oz) & 0xff); out += oz
-    out += tail
-    if len(out) > 4000:
+    q_zh = _utf8_clip(disp[0], 250)
+    opt_zh = [_utf8_clip(disp[1 + i], 250) for i in range(len(opts))]
+    built = _fit_1526_to_original(op, q_zh, opt_zh, indices, optCount, tail, orig_len)
+    if not built or len(built) > 4000:
         return None
-    built = bytes(out)
     if not looks_like_dialogue_sub(built, 1526):
         return None
     return built
@@ -760,11 +940,14 @@ def handler(msg, data):
     if p == "READY":
         if FIRST_WAIT > 0:
             logger.info(
-                "[*] hook 就位。首屏等待 %.2fs（短对话首次尽量出中文；多段同帧仍先英文）。改设置后需重启翻译。",
+                "[*] hook 就位。短对话缓存命中同帧中文；未命中最多等 %.2fs 现翻。"
+                "多段同帧仍先英文。改设置后需重启翻译。",
                 FIRST_WAIT,
             )
         else:
-            logger.info("[*] hook 就位。去和 NPC 对话：首次原文(后台缓存)，同一句再出现应变中文。")
+            logger.info(
+                "[*] hook 就位。短对话缓存/云端命中 → 首屏中文；未命中首次原文(后台缓存)，再出现变中文。"
+            )
         return
     t = p.get("t")
     if t in ("ctx", "harvest", "request"):   # 采集消息: 丢后台队列, 绝不阻塞翻译回包
@@ -813,7 +996,10 @@ def handler(msg, data):
                 traceback.print_exc()
                 return
             if not built or not looks_like_dialogue_sub(built, op):
-                logger.warning("[后台翻译未产出] op%s(%s) hash=%s (API空/解析失败/空包)", op, tag, h)
+                logger.warning(
+                    "[后台翻译未产出] op%s(%s) hash=%s len=%s (API空/解析失败/超长裁剪失败)",
+                    op, tag, h, len(sub),
+                )
                 return
             try:
                 sref["s"].post({"type": "cache", "h": h, "sub": built.hex()})
@@ -824,15 +1010,18 @@ def handler(msg, data):
             flush_cache(force=False)
             logger.info("[缓存+] op%s(%s) hash=%s (%sB)", op, tag, h, len(built))
 
-        # JS only sets sync=true for short frames when first_wait > 0.
-        # Always post t{h} in that path so recvfrom cannot wait forever.
-        if sync and FIRST_WAIT > 0:
+        # JS sets sync=true for short frames (≤2 dialogue subs). Always reply t{h}
+        # in that path so recvfrom cannot wait forever.
+        # Text-cache hits are same-frame Chinese even when FIRST_WAIT=0.
+        if sync:
             newsub = None
+            cache_hit = False
             try:
                 newsub = rebuild_1526(sub, cache_only=True) if op == 1526 else rebuild_1017(sub, cache_only=True)
+                cache_hit = newsub is not None
             except Exception as e:
                 logger.warning("[查表重建异常] op%s: %s", op, e)
-            if newsub is None:
+            if newsub is None and FIRST_WAIT > 0:
                 res = {}
                 def do():
                     try:
@@ -843,8 +1032,8 @@ def handler(msg, data):
                 th.start()
                 th.join(FIRST_WAIT)
                 newsub = res.get("s")
-                if newsub is None:
-                    threading.Thread(target=_bg_translate_and_cache, daemon=True).start()
+            if newsub is None:
+                threading.Thread(target=_bg_translate_and_cache, daemon=True).start()
             try:
                 sref["s"].post({"type": "t%d" % h, "sub": newsub.hex() if newsub else ""})
             except Exception as e:
@@ -854,13 +1043,30 @@ def handler(msg, data):
                     sref["s"].post({"type": "cache", "h": h, "sub": newsub.hex()})
                 except Exception:
                     pass
-                logger.info("[首屏中文] op%s(%s) hash=%s (%sB) wait=%.2fs", op, tag, h, len(newsub), FIRST_WAIT)
-            else:
-                logger.info("[首屏超时] op%s(%s) hash=%s wait=%.2fs，本句先英文", op, tag, h, FIRST_WAIT)
+                if cache_hit:
+                    logger.info("[首屏中文·缓存] op%s(%s) hash=%s (%sB)", op, tag, h, len(newsub))
+                else:
+                    logger.info(
+                        "[首屏中文] op%s(%s) hash=%s (%sB) wait=%.2fs",
+                        op, tag, h, len(newsub), FIRST_WAIT,
+                    )
+            elif FIRST_WAIT > 0:
+                logger.info(
+                    "[首屏超时] op%s(%s) hash=%s wait=%.2fs，本句先英文",
+                    op, tag, h, FIRST_WAIT,
+                )
         else:
             threading.Thread(target=_bg_translate_and_cache, daemon=True).start()
     elif p.get("t") == "hit":
         logger.info("[改包✓] 已替换为中文 hash=%s", p['h'])
+    elif p.get("t") == "cache_drop":
+        logger.warning(
+            "[JS丢缓存] hash=%s reason=%s n=%s cap=%s",
+            p.get("h"),
+            p.get("reason"),
+            p.get("n"),
+            p.get("cap"),
+        )
 
 def warmup():
     """开机预热: 提前建好 openai 客户端 + 完成首次 TLS 握手, 让第一句真实对话不吃冷启动"""

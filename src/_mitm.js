@@ -134,20 +134,30 @@ function waitUntilIdle(maxMs){
   return IN_HOOK===0;
 }
 function onCache(msg){
-  if(msg.sub&&msg.sub.length){
-    const h=msg.h>>>0;
-    const bytes=fromHex(msg.sub);
-    // Drop obviously bad rebuilds rather than feed them to eco.exe.
-    if(looksLikeSub(bytes,null)) CACHE[h]=bytes;
-    delete PENDING[h];
+  // Re-register FIRST. Frida recv is one-shot; doing work before recv()
+  // drops concurrent cache posts → JS CACHE stays empty → repeat English.
+  recv('cache',onCache);
+  try{
+    if(msg&&msg.sub&&msg.sub.length){
+      const h=msg.h>>>0;
+      const bytes=fromHex(msg.sub);
+      // Drop obviously bad rebuilds rather than feed them to eco.exe.
+      if(looksLikeSub(bytes,null)) CACHE[h]=bytes;
+      else send({t:'cache_drop',h:h,reason:'looksLike',n:bytes.length});
+      delete PENDING[h];
+    }
+  }catch(e){
+    try{ send({t:'cache_drop',h:msg&&msg.h,reason:String(e)}); }catch(_e){}
   }
-  recv('cache',onCache);    // 重新注册(recv 是一次性)
 }
 recv('cache',onCache);
 
 // 中文/英文 总开关 (F9 切换), false=放行英文原文
 let ENABLED=true;
-function onToggle(msg){ ENABLED=!!msg.on; recv('toggle',onToggle); }
+function onToggle(msg){
+  recv('toggle',onToggle);
+  ENABLED=!!msg.on;
+}
 recv('toggle',onToggle);
 
 function getPort(s){const gpn=getPort._f||(getPort._f=new NativeFunction(exp('ws2_32.dll','getpeername'),'int',['uint','pointer','pointer']));try{const sa=Memory.alloc(32),ln=Memory.alloc(4);ln.writeInt(32);if(gpn(s,sa,ln)===0){const b=new Uint8Array(sa.readByteArray(4));return (b[2]<<8)|b[3];}}catch(e){}return 0;}
@@ -198,24 +208,33 @@ function processFrame(buf, off){
       send({t:'harvest',op:op,sub:hexsub});
       const h=fnv1a(subs[i])>>>0;
       const cached=CACHE[h];
-      if(cached&&looksLikeSub(cached,op)){
+      if(cached&&looksLikeSub(cached,op)&&cached.length<=subs[i].length){
         subs[i]=cached; modified=true; send({t:'hit',h:h});
       } else {
-        // Default: never block recvfrom (multi-packet dialogue used to freeze eco.exe).
-        // Optional first-wait: only for short frames (≤2 dialogue subs) when configured.
+        if(cached&&cached.length>subs[i].length){
+          // Stale oversized entry: drop and re-request a fitted rebuild.
+          delete CACHE[h];
+          send({t:'cache_drop',h:h,reason:'tooLong',n:cached.length,cap:subs[i].length});
+        }
+        // Short frames (≤2 dialogue subs): always sync with Python for a pure
+        // text-cache rebuild (same-frame Chinese when cloud/local already has it).
+        // first_wait only controls how long Python may wait on API miss; the JS
+        // side always gets a t{h} reply so recvfrom cannot hang forever.
+        // Longer multi-packet frames stay async (background only) to avoid freezes.
         const firstWaitMs=__FIRST_WAIT_MS__;
         let dialogueCount=0;
         for(let j=0;j<subs.length;j++){
           const o=be16(subs[j],0);
           if(o===1017||o===1526) dialogueCount++;
         }
-        const allowSync=firstWaitMs>0&&dialogueCount>0&&dialogueCount<=2&&!processFrame._waiting&&!waitedThisFrame;
+        const allowSync=dialogueCount>0&&dialogueCount<=2&&!processFrame._waiting&&!waitedThisFrame;
         const now=Date.now();
-        if(!PENDING[h]||(now-PENDING[h])>15000){
-          PENDING[h]=now;
-          send({t:'need',h:h,op:op,sub:hexsub,sync:allowSync});
-        }
+        // IMPORTANT: sync path must ALWAYS send need before waiting on t{h}.
+        // Debouncing with PENDING used to skip send while still waiting → hang
+        // or English forever when a prior async need was still "in flight".
         if(allowSync){
+          PENDING[h]=now;
+          send({t:'need',h:h,op:op,sub:hexsub,sync:true});
           waitedThisFrame=true;
           processFrame._waiting=true;
           try{
@@ -225,13 +244,19 @@ function processFrame(buf, off){
             const hex=(reply&&(reply.sub||(reply.payload&&reply.payload.sub)))||'';
             if(hex){
               const bytes=fromHex(hex);
-              if(looksLikeSub(bytes,op)){
+              if(looksLikeSub(bytes,op)&&bytes.length<=subs[i].length){
                 subs[i]=bytes; modified=true; CACHE[h]=bytes; send({t:'hit',h:h});
+              }else if(bytes.length){
+                send({t:'cache_drop',h:h,reason:'syncReject',n:bytes.length,cap:subs[i].length});
               }
             }
           }catch(e){ /* timeout/empty → keep English this frame */ }
           processFrame._waiting=false;
           delete PENDING[h];
+        }else if(!PENDING[h]||(now-PENDING[h])>8000){
+          // Async only: debounce duplicate background requests (8s).
+          PENDING[h]=now;
+          send({t:'need',h:h,op:op,sub:hexsub,sync:false});
         }
       }
     }

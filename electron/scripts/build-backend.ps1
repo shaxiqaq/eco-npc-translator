@@ -38,6 +38,7 @@ $TranslatorHidden = @(
     "--hidden-import", "eco_source_lang",
     "--hidden-import", "eco_event_cache",
     "--hidden-import", "eco_translation_quality",
+    "--hidden-import", "eco_pc_template",
     "--hidden-import", "eco_log",
     "--hidden-import", "eco_paths",
     "--hidden-import", "eco_process"

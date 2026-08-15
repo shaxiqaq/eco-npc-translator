@@ -1,6 +1,6 @@
 /** In-app copy of the latest shipped notes. Keep in sync with CHANGELOG.md. */
 export const CURRENT_RELEASE_NOTES = [
-  '关翻译不再拆 Frida 会话，降低对话中闪退',
-  '禁止重复挂钩；空对话不再改包',
-  '卸钩前等待对话收发包空闲',
+  '修 One Point 第三次点击闪退',
+  '短对话缓存命中第一次就出中文',
+  '角色名按 {PC} 共享，别人的词条也能用',
 ];

@@ -177,6 +177,18 @@ class Sync:
             pass
         if not raw_key or not v:
             return
+        # Force {PC} templating so unconfigured clients don't upload raw character names.
+        try:
+            from eco_pc_template import load_player_names_from_data_dir, normalize_shared_pair
+
+            names = load_player_names_from_data_dir(self.data_dir)
+            nk, nv = normalize_shared_pair(raw_key, v, names)
+            if nk and nv:
+                raw_key, v = nk, nv
+        except Exception:
+            pass
+        if not raw_key or not v:
+            return
         if resolve_source_lang is not None:
             src = resolve_source_lang(raw_key, src or "auto")
         bucket = sync_bucket(self.lang, src) if sync_bucket else self.lang
