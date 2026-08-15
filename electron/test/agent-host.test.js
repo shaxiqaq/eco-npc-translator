@@ -5,7 +5,14 @@ const { createAgentHost } = require('../lib/agent-host');
 
 function fakeChild() {
   const child = new EventEmitter();
-  child.stdin = { writable: true, write() { return true; } };
+  child.writes = [];
+  child.stdin = {
+    writable: true,
+    write(s) {
+      child.writes.push(String(s));
+      return true;
+    }
+  };
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   return child;
@@ -76,15 +83,49 @@ test('agent host starts once with --damage', async () => {
   assert.equal(ctx.translatorChild, null);
 });
 
-test('enabling translation restarts with both flags', async () => {
+test('enabling translation keeps the same child and sends set-translate', async () => {
   const ctx = makeHost();
   await ctx.host.reconcile();
   ctx.setTranslate(true);
   await ctx.host.reconcile();
-  assert.equal(ctx.spawned.length, 2);
-  assert.ok(ctx.spawned[1].args.includes('--damage'));
-  assert.ok(ctx.spawned[1].args.includes('--translate'));
+  assert.equal(ctx.spawned.length, 1);
+  const writes = ctx.spawned[0].child.writes.join('');
+  assert.match(writes, /set-translate/);
+  assert.match(writes, /"enabled":true/);
   assert.ok(ctx.damageChild);
   assert.ok(ctx.translatorChild);
   assert.equal(ctx.damageChild, ctx.translatorChild);
+});
+
+test('disabling translation does not respawn the agent', async () => {
+  const ctx = makeHost();
+  await ctx.host.reconcile();
+  ctx.setTranslate(true);
+  await ctx.host.reconcile();
+  ctx.setTranslate(false);
+  await ctx.host.reconcile();
+  assert.equal(ctx.spawned.length, 1);
+  const writes = ctx.spawned[0].child.writes.join('');
+  assert.match(writes, /"enabled":false/);
+  assert.ok(ctx.damageChild);
+  assert.equal(ctx.translatorChild, null);
+});
+
+test('changing capture still restarts the child', async () => {
+  const ctx = makeHost();
+  await ctx.host.reconcile();
+  ctx.setCapture(false);
+  ctx.setTranslate(true);
+  await ctx.host.reconcile();
+  assert.equal(ctx.spawned.length, 2);
+  assert.ok(ctx.spawned[1].args.includes('--translate'));
+  assert.ok(!ctx.spawned[1].args.includes('--damage'));
+});
+
+test('start is a no-op when the agent is already running', async () => {
+  const ctx = makeHost();
+  await ctx.host.reconcile();
+  const again = ctx.host.start(ctx.host.liveFeatures());
+  assert.equal(again.ok, true);
+  assert.equal(ctx.spawned.length, 1);
 });

@@ -75,13 +75,63 @@ attachHook(m.base.add(0x18cc4),{
 const CACHE={};
 // In-flight need requests: avoid flooding Python (and RPC) for the same miss.
 const PENDING={};
+let LAST_DIALOGUE_AT=0;
+function markDialogue(){ LAST_DIALOGUE_AT=Date.now(); }
+function hasPrintable(sub, off, n){
+  const end=off+n;
+  for(let i=off;i<end;i++){ if((sub[i]&0xff)>0x20) return true; }
+  return false;
+}
+function looksLike1017(sub){
+  if(sub.length<10) return false;
+  const segN=sub[8];
+  if(segN<1||segN>40) return false;
+  let p=9, text=false;
+  for(let i=0;i<segN;i++){
+    if(p>=sub.length) return false;
+    const l=sub[p++];
+    if(p+l>sub.length) return false;
+    if(hasPrintable(sub,p,l)) text=true;
+    p+=l;
+  }
+  return text;
+}
+function looksLike1526(sub){
+  if(sub.length<5) return false;
+  let p=2;
+  const qlen=sub[p++];
+  if(p+qlen>sub.length) return false;
+  let text=hasPrintable(sub,p,qlen);
+  p+=qlen;
+  if(p>=sub.length) return false;
+  const optCount=sub[p++];
+  if(optCount>32||p+optCount+1>sub.length) return false;
+  p+=optCount+1;
+  for(let i=0;i<optCount;i++){
+    if(p>=sub.length) return false;
+    const l=sub[p++];
+    if(p+l>sub.length) return false;
+    if(hasPrintable(sub,p,l)) text=true;
+    p+=l;
+  }
+  return text;
+}
 function looksLikeSub(sub, expectOp){
-  // Minimal structural guard before injecting a rebuilt packet into the game.
+  // Structural guard before injecting a rebuilt packet into the game.
   if(!sub||sub.length<4||sub.length>4000) return false;
   const op=be16(sub,0);
   if(expectOp!=null&&op!==expectOp) return false;
-  if(op!==1017&&op!==1526) return false;
-  return true;
+  if(op===1017) return looksLike1017(sub);
+  if(op===1526) return looksLike1526(sub);
+  return false;
+}
+function waitUntilIdle(maxMs){
+  const deadline=Date.now()+maxMs;
+  while(Date.now()<deadline){
+    const quiet=LAST_DIALOGUE_AT===0||(Date.now()-LAST_DIALOGUE_AT>=1500);
+    if(IN_HOOK===0&&quiet) return true;
+  }
+  return IN_HOOK===0;
 }
 function onCache(msg){
   if(msg.sub&&msg.sub.length){
@@ -141,6 +191,7 @@ function processFrame(buf, off){
       continue;
     }
     if(op===1017||op===1526){
+      markDialogue();
       // 采集(只读): 先把英文原文上报(缓存命中也照采), 不受翻译改包影响
       // Encode once; reuse for harvest + need (was double map/join before).
       const hexsub=toHex(subs[i]);
@@ -283,14 +334,23 @@ if(pSendto) attachHook(pSendto,{
 // Prefer per-listener detach after IN_HOOK drains; avoid detachAll while busy
 // (common cause of eco.exe + frida-agent 0xc0000409).
 rpc.exports = {
+  pause() {
+    // Soft-disable rewrite without detaching. Toggle-off must not tear
+    // recvfrom while an NPC box is still on screen.
+    HOOKS_ARMED = false;
+    ENABLED = false;
+    const drained = waitUntilIdle(6000);
+    return { ok: true, drained: drained, inHook: IN_HOOK, paused: true };
+  },
+  resume() {
+    HOOKS_ARMED = true;
+    ENABLED = true;
+    return { ok: true, paused: false };
+  },
   dispose() {
     HOOKS_ARMED = false;
     ENABLED = false;
-    const deadline = Date.now() + 6000;
-    while (IN_HOOK > 0 && Date.now() < deadline) {
-      // Spin — other game threads finish onLeave and decrement IN_HOOK.
-    }
-    const drained = IN_HOOK === 0;
+    const drained = waitUntilIdle(6000);
     if (drained) {
       for (let i = 0; i < HOOK_LISTENERS.length; i++) {
         try { HOOK_LISTENERS[i].detach(); } catch (e) {}

@@ -88,7 +88,33 @@ function createAgentHost(deps) {
     if (parsed.kind === 'text' && parsed.text) log('info', parsed.text);
   }
 
+  function applyLiveFeatures(want) {
+    if (!child || !child.stdin?.writable) return null;
+    if (Boolean(want.capture) !== Boolean(live.capture)) return null;
+    if (Boolean(want.translate) === Boolean(live.translate)) return { ok: true };
+    const sent = writeCommand(child, {
+      action: 'set-translate',
+      enabled: Boolean(want.translate)
+    });
+    if (!sent) return null;
+    live.translate = Boolean(want.translate);
+    publishHandles();
+    if (live.translate) {
+      setTranslatorState('starting', '正在启用 NPC 翻译…', { pid: getSelectedPid() });
+      log('info', '已请求启用翻译（不重挂采集）');
+    } else {
+      setTranslatorState('stopped', '已停止');
+      log('info', '已请求关闭翻译（不拆采集会话）');
+    }
+    return { ok: true };
+  }
+
   function start(want) {
+    if (child && child.exitCode == null) {
+      log('warn', '统一代理已在运行，忽略重复启动');
+      const applied = applyLiveFeatures(want);
+      return applied || { ok: true };
+    }
     const pid = getSelectedPid();
     if (!pid) {
       const err = '没有可用的游戏进程，请启动游戏并刷新顶部进程列表';
@@ -195,12 +221,18 @@ function createAgentHost(deps) {
       broadcastIdle?.();
       return { ok: true };
     }
-    const featureChange = want.capture !== live.capture || want.translate !== live.translate;
-    if (child && (forceRestart || pidMismatch() || featureChange)) {
+    if (child && (forceRestart || pidMismatch())) {
       if (pidMismatch()) log('warn', '统一代理 PID 与当前游戏不一致，正在重新挂接…');
       await stop({ waitMs });
     }
     if (!child) return start(want);
+    const featureChange = want.capture !== live.capture || want.translate !== live.translate;
+    if (featureChange) {
+      const applied = applyLiveFeatures(want);
+      if (applied) return applied;
+      await stop({ waitMs });
+      return start(want);
+    }
     if (want.capture) {
       setDamageState('running', captureRoleMessage(), {
         pid: getAttachedPid?.() != null ? getAttachedPid() : getSelectedPid(),

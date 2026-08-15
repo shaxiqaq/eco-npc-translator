@@ -23,6 +23,15 @@ class MitmFirstWaitTests(unittest.TestCase):
         self.assertIn("recv('t'+h, function(value){ reply=value; }).wait()", src)
         self.assertIn("reply.sub", src)
 
+    def test_looks_like_sub_checks_structure(self):
+        src = open(MITM_JS, encoding="utf-8").read()
+        self.assertIn("function looksLike1017(sub)", src)
+        self.assertIn("function looksLike1526(sub)", src)
+        self.assertIn("function waitUntilIdle(maxMs)", src)
+        self.assertIn("pause()", src)
+        self.assertIn("resume()", src)
+        self.assertIn("markDialogue()", src)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -277,6 +277,8 @@ def _remember_event(kind, source_lang, key, value):
         pass
 
 def translate(text, cache_only=False, kind="say"):
+    if not (text or "").strip():
+        return None
     text = _norm_cache_key(text) if text else text
     src = resolve_source_lang(text, SOURCE_LANG)
     if src == "zh":
@@ -311,6 +313,8 @@ def translate_batch(texts, cache_only=False, kind="select"):
     for i, t in enumerate(texts):
         src = resolve_source_lang(t, SOURCE_LANG)
         srcs.append(src)
+        if not (t or "").strip():
+            continue
         if src == "zh":
             res[i] = t
             continue
@@ -431,6 +435,79 @@ def untemplatize(text, name):
     if name and text and PC_TOKEN in text: return text.replace(PC_TOKEN, name)
     return text
 
+def _be16(buf, i):
+    return (buf[i] << 8) | buf[i + 1]
+
+
+def _bytes_have_text(buf):
+    return any(b > 0x20 for b in buf)
+
+
+def _looks_like_1017(sub):
+    if not sub or len(sub) < 10:
+        return False
+    seg_n = sub[8]
+    if seg_n < 1 or seg_n > 40:
+        return False
+    p = 9
+    has_text = False
+    for _ in range(seg_n):
+        if p >= len(sub):
+            return False
+        ln = sub[p]
+        p += 1
+        if p + ln > len(sub):
+            return False
+        if _bytes_have_text(sub[p:p + ln]):
+            has_text = True
+        p += ln
+    return has_text
+
+
+def _looks_like_1526(sub):
+    if not sub or len(sub) < 5:
+        return False
+    p = 2
+    qlen = sub[p]
+    p += 1
+    if p + qlen > len(sub):
+        return False
+    has_text = _bytes_have_text(sub[p:p + qlen])
+    p += qlen
+    if p >= len(sub):
+        return False
+    opt_count = sub[p]
+    p += 1
+    if opt_count > 32 or p + opt_count + 1 > len(sub):
+        return False
+    p += opt_count + 1
+    for _ in range(opt_count):
+        if p >= len(sub):
+            return False
+        ln = sub[p]
+        p += 1
+        if p + ln > len(sub):
+            return False
+        if _bytes_have_text(sub[p:p + ln]):
+            has_text = True
+        p += ln
+    return has_text
+
+
+def looks_like_dialogue_sub(sub, expect_op=None):
+    """Match _mitm.js looksLikeSub: opcode + structure + printable text."""
+    if not sub or len(sub) < 4 or len(sub) > 4000:
+        return False
+    op = _be16(sub, 0)
+    if expect_op is not None and op != expect_op:
+        return False
+    if op == 1017:
+        return _looks_like_1017(sub)
+    if op == 1526:
+        return _looks_like_1526(sub)
+    return False
+
+
 def rebuild_1017(sub, cache_only=False):
     """[op2][npc4][flag2][segN1]{[len1][seg]}*N [motion2][nameLen1][name..pad] -> 中文"""
     if not sub or len(sub) < 10:
@@ -448,6 +525,8 @@ def rebuild_1017(sub, cache_only=False):
         segs.append(sub[p:p+l]); p += l
     tail = sub[p:]                      # motion2 + nameLen1 + name + padding
     eng = _clean_text("".join(s.decode("utf-8", "replace") for s in segs))
+    if not eng:
+        return None
     eng_key, pcname = templatize(eng)                # 角色名 -> {PC}, 模板化后翻译/缓存/共享
     if resolve_source_lang(eng_key, SOURCE_LANG) == "zh":
         return None
@@ -464,7 +543,10 @@ def rebuild_1017(sub, cache_only=False):
     out += tail
     if len(out) > 4000:
         return None
-    return bytes(out)
+    built = bytes(out)
+    if not looks_like_dialogue_sub(built, 1017):
+        return None
+    return built
 
 def rebuild_1526(sub, cache_only=False):
     """[op2][qlen1][question(含null)][optCount1][indices(optCount+1)]{[len1][opt]}*N [tail] -> 中文
@@ -493,6 +575,8 @@ def rebuild_1526(sub, cache_only=False):
     tail = sub[p:]                       # 01 + padding
     q_eng = question.split(b"\0")[0].decode("utf-8", "replace").strip()
     opt_eng = [o.decode("utf-8", "replace").strip() for o in opts]
+    if not q_eng and not any(opt_eng):
+        return None
     texts = [q_eng] + opt_eng
     keyed = [templatize(t) for t in texts]            # [(模板, 真名), ...]
     keys = [k for k, _ in keyed]; pcnames = [n for _, n in keyed]
@@ -511,7 +595,10 @@ def rebuild_1526(sub, cache_only=False):
     out += tail
     if len(out) > 4000:
         return None
-    return bytes(out)
+    built = bytes(out)
+    if not looks_like_dialogue_sub(built, 1526):
+        return None
+    return built
 
 # ===== 内置采集器(并入 MITM, 取代单独的 eco_harvester) =====
 # JS 会把客户端 op1510 合法请求、服务端上下文和 op1017/1526 英文原文额外上报;
@@ -725,8 +812,8 @@ def handler(msg, data):
                 import traceback
                 traceback.print_exc()
                 return
-            if not built:
-                logger.warning("[后台翻译未产出] op%s(%s) hash=%s (API空/解析失败)", op, tag, h)
+            if not built or not looks_like_dialogue_sub(built, op):
+                logger.warning("[后台翻译未产出] op%s(%s) hash=%s (API空/解析失败/空包)", op, tag, h)
                 return
             try:
                 sref["s"].post({"type": "cache", "h": h, "sub": built.hex()})
@@ -845,6 +932,20 @@ def main():
     logger.info("[*] 源语言=%s  目标=%s", SOURCE_LANG or "auto", TARGET_LANG)
     logger.info("[*] attach %s", pid)
     emit("status", state="starting", message=f"正在连接游戏进程 {pid}", pid=pid)
+    prev = sref.get("s")
+    if prev is not None:
+        logger.warning("[*] 检测到已有 mitm 脚本，先卸载再挂，避免双重挂钩")
+        try:
+            exports = getattr(prev, "exports_sync", None) or getattr(prev, "exports", None)
+            if exports is not None and hasattr(exports, "dispose"):
+                exports.dispose()
+        except Exception:
+            pass
+        try:
+            prev.unload()
+        except Exception:
+            pass
+        sref["s"] = None
     session = dev.attach(pid)
     script = session.create_script(JS)
     script.on("message", handler)

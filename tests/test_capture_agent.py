@@ -21,6 +21,11 @@ class CaptureAgentCliTests(unittest.TestCase):
         self.assertFalse(args.translate)
         self.assertTrue(callable(agent.emit))
 
+    def test_dispose_script_skips_none(self):
+        import eco_capture_agent as agent
+
+        self.assertTrue(agent.dispose_script(None))
+
     def test_emit_writes_json_line(self):
         import eco_capture_agent as agent
         import io

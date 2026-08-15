@@ -3,6 +3,7 @@
 
 Electron can still spawn the two legacy backends; this agent is the
 unified attach path: one device.attach(pid), then optional scripts.
+Turning translation off must pause mitm only — never detach the session.
 """
 from __future__ import annotations
 
@@ -36,21 +37,33 @@ def emit(kind, **payload):
     print(json.dumps({"type": kind, **payload}, ensure_ascii=False, separators=(",", ":")), flush=True)
 
 
-def dispose_script(script):
+def dispose_script(script, unload=True):
+    """Drain hooks, then unload only if idle. Never force-unload mid-recvfrom."""
     if script is None:
-        return
+        return True
+    drained = True
     try:
         exports = getattr(script, "exports_sync", None) or getattr(script, "exports", None)
         if exports is not None and hasattr(exports, "dispose"):
-            exports.dispose()
-            time.sleep(0.25)
+            info = exports.dispose()
+            if isinstance(info, dict):
+                drained = bool(info.get("drained", True))
+            time.sleep(0.35 if drained else 0.8)
     except Exception:
         pass
-    try:
-        script.unload()
-        time.sleep(0.3)
-    except Exception:
-        pass
+    if unload and drained:
+        try:
+            script.unload()
+            time.sleep(0.3)
+        except Exception:
+            pass
+    return drained
+
+
+def _script_exports(script):
+    if script is None:
+        return None
+    return getattr(script, "exports_sync", None) or getattr(script, "exports", None)
 
 
 def main(argv=None):
@@ -81,6 +94,7 @@ def main(argv=None):
     meter = None
     stop_event = threading.Event()
     cleaned = {"done": False}
+    tr = {"script": None, "helpers": False, "lock": threading.Lock()}
 
     def cleanup(reason="stop"):
         if cleaned["done"]:
@@ -88,9 +102,10 @@ def main(argv=None):
             return
         cleaned["done"] = True
         stop_event.set()
-        for script in scripts:
+        for script in list(scripts):
             dispose_script(script)
         scripts.clear()
+        tr["script"] = None
         if session is not None:
             try:
                 session.detach()
@@ -118,9 +133,119 @@ def main(argv=None):
     atexit.register(lambda: cleanup("atexit") if not cleaned["done"] else None)
 
     session = device.attach(pid)
+    history_limit = 80
+
+    def start_translate_helpers(mitm):
+        if tr["helpers"]:
+            return
+        tr["helpers"] = True
+        threading.Thread(target=mitm.warmup, daemon=True).start()
+        threading.Thread(target=mitm._harvest_worker, daemon=True).start()
+        if mitm.SYNC:
+            mitm.SYNC.start()
+            mitm.SYNC.push_all(mitm.CACHE)
+        try:
+            mitm.setup_hotkey()
+        except Exception:
+            pass
+
+    def resume_translate(mitm):
+        script = tr["script"]
+        exports = _script_exports(script)
+        if exports is not None and hasattr(exports, "resume"):
+            exports.resume()
+            emit(
+                "status",
+                service="translator",
+                state="running",
+                pid=pid,
+                message=f"NPC 翻译正在运行（进程 {pid}）",
+            )
+            return True
+        return False
+
+    def load_translate():
+        import eco_npc_mitm as mitm
+
+        if not mitm.PROVIDER:
+            emit(
+                "status",
+                service="translator",
+                state="error",
+                error_kind="translator-config",
+                message="请先完成翻译设置",
+            )
+            return False
+        with tr["lock"]:
+            if tr["script"] is not None:
+                if resume_translate(mitm):
+                    return True
+                old = tr["script"]
+                if old in scripts:
+                    scripts.remove(old)
+                dispose_script(old)
+                tr["script"] = None
+                mitm.sref["s"] = None
+            leftover = mitm.sref.get("s")
+            if leftover is not None:
+                emit("notice", level="warn", message="卸掉残留 mitm 脚本后再挂，避免双重挂钩")
+                dispose_script(leftover)
+                if leftover in scripts:
+                    scripts.remove(leftover)
+                mitm.sref["s"] = None
+            tr_script = session.create_script(mitm.JS)
+            tr_script.on("message", mitm.handler)
+            tr_script.load()
+            mitm.sref["s"] = tr_script
+            mitm.sref["session"] = session
+            tr["script"] = tr_script
+            scripts.append(tr_script)
+            start_translate_helpers(mitm)
+        emit(
+            "status",
+            service="translator",
+            state="running",
+            pid=pid,
+            message=f"NPC 翻译正在运行（进程 {pid}）",
+        )
+        return True
+
+    def pause_translate():
+        import eco_npc_mitm as mitm
+
+        with tr["lock"]:
+            script = tr["script"]
+            if script is None:
+                emit("status", service="translator", state="stopped", message="已停止")
+                return True
+            try:
+                exports = _script_exports(script)
+                if exports is not None and hasattr(exports, "pause"):
+                    exports.pause()
+                else:
+                    dispose_script(script, unload=False)
+            except Exception as exc:
+                emit("notice", service="translator", level="warn", message=f"暂停翻译失败：{exc}")
+            mitm.sref["s"] = script
+        emit("notice", level="info", message="已关闭 NPC 改包（采集会话保持）")
+        emit("status", service="translator", state="stopped", message="已停止")
+        return True
+
+    def apply_translate(enabled):
+        if enabled:
+            return load_translate()
+        return pause_translate()
+
+    def warmup_translate():
+        try:
+            import eco_npc_mitm as mitm
+            threading.Thread(target=mitm.warmup, daemon=True).start()
+            emit("notice", service="translator", level="info", message="已请求预热翻译引擎")
+        except Exception as exc:
+            emit("notice", service="translator", level="warn", message=f"预热失败：{exc}")
 
     if args.damage:
-        from eco_damage_bridge import command_loop, push_snapshot
+        from eco_damage_bridge import apply_command, push_snapshot
         from eco_damage_capture import MAP_PORT
         from eco_damage_meter import DamageMeter, WATCH_OPS
 
@@ -139,76 +264,40 @@ def main(argv=None):
         scripts.append(script)
         emit("status", service="damage", state="running", pid=pid, log=log_path, message=f"已连接游戏进程 {pid}")
         history_limit = max(20, min(200, int(os.environ.get("ECO_SNAPSHOT_HISTORY", "80"))))
-        threading.Thread(
-            target=command_loop, args=(meter, stop_event, history_limit), daemon=True
-        ).start()
     else:
-        history_limit = 80
-
-        def _control_loop():
-            while not stop_event.is_set():
-                line = sys.stdin.readline()
-                if not line:
-                    stop_event.set()
-                    return
-                try:
-                    command = json.loads(line)
-                except Exception:
-                    continue
-                if command.get("action") == "warmup":
-                    try:
-                        import eco_npc_mitm as mitm
-                        threading.Thread(target=mitm.warmup, daemon=True).start()
-                        emit("notice", service="translator", level="info", message="已请求预热翻译引擎")
-                    except Exception as exc:
-                        emit("notice", service="translator", level="warn", message=f"预热失败：{exc}")
-                elif command.get("action") == "stop":
-                    stop_event.set()
-
-        threading.Thread(target=_control_loop, daemon=True).start()
+        apply_command = None
+        push_snapshot = None
 
     if args.translate:
-        import eco_npc_mitm as mitm
+        load_translate()
 
-        if not mitm.PROVIDER:
-            emit(
-                "status",
-                service="translator",
-                state="error",
-                error_kind="translator-config",
-                message="请先完成翻译设置",
-            )
-        else:
-            tr_script = session.create_script(mitm.JS)
-            tr_script.on("message", mitm.handler)
-            tr_script.load()
-            mitm.sref["s"] = tr_script
-            mitm.sref["session"] = session
-            scripts.append(tr_script)
-            threading.Thread(target=mitm.warmup, daemon=True).start()
-            threading.Thread(target=mitm._harvest_worker, daemon=True).start()
-            if mitm.SYNC:
-                mitm.SYNC.start()
-                mitm.SYNC.push_all(mitm.CACHE)
+    def command_reader():
+        while not stop_event.is_set():
+            line = sys.stdin.readline()
+            if not line:
+                stop_event.set()
+                return
             try:
-                mitm.setup_hotkey()
+                command = json.loads(line)
             except Exception:
-                pass
-            emit(
-                "status",
-                service="translator",
-                state="running",
-                pid=pid,
-                message=f"NPC 翻译正在运行（进程 {pid}）",
-            )
+                continue
+            action = command.get("action")
+            if action == "stop":
+                stop_event.set()
+            elif action == "set-translate":
+                apply_translate(bool(command.get("enabled")))
+            elif action == "warmup":
+                warmup_translate()
+            elif meter is not None and apply_command is not None:
+                apply_command(meter, command, history_limit)
+
+    threading.Thread(target=command_reader, daemon=True).start()
 
     emit("status", service="agent", state="running", pid=pid, message="统一采集代理已运行")
 
     try:
         while not stop_event.wait(max(0.1, args.interval)):
-            if meter is not None:
-                from eco_damage_bridge import push_snapshot
-
+            if meter is not None and push_snapshot is not None:
                 push_snapshot(meter, history_limit)
     except KeyboardInterrupt:
         cleanup("keyboard-interrupt")

@@ -86,7 +86,64 @@ def push_snapshot(meter, history_limit=80):
         pass
 
 
-def command_loop(meter, stop_event, history_limit=80):
+def apply_command(meter, command, history_limit=80):
+    """Handle one damage-bridge command. Returns True if consumed."""
+    action = command.get("action")
+    if action == "reset":
+        meter.reset()
+        emit("notice", level="success", message="伤害统计已清空（角色识别保持不变）")
+        push_snapshot(meter, history_limit)
+        return True
+    if action == "reidentify-self":
+        with meter.lock:
+            # Soft reidentify: keep last self_id on screen until next local combat.
+            meter.reset_identity(reason="user_reidentify", hard=False)
+        cur = meter.self_id
+        if cur is not None:
+            emit(
+                "notice",
+                level="info",
+                message=f"请攻击或放技能一次以确认角色（当前仍显示 #{cur}）",
+            )
+        else:
+            emit("notice", level="info", message="请攻击或放技能一次以识别当前登录角色")
+        push_snapshot(meter, history_limit)
+        return True
+    if action == "set-skill-name-mode":
+        mode = meter.set_skill_name_mode(command.get("mode"))
+        emit("notice", level="info", message=f"技能名称显示模式：{mode}")
+        return True
+    if action == "set-categories":
+        meter.set_capture_categories(command.get("categories"))
+        emit(
+            "notice",
+            level="success",
+            message="战斗采集项目已更新",
+            categories=dict(meter.capture_categories),
+        )
+        return True
+    if action == "reload-custom-buffs":
+        durations = command.get("durations")
+        loaded = meter.reload_custom_durations(durations)
+        emit(
+            "notice",
+            level="success",
+            message=f"已重载自定义 buff 持续时间（{len(loaded)} 条）",
+            custom_durations=loaded,
+        )
+        return True
+    if action == "warmup":
+        try:
+            import eco_npc_mitm as mitm
+            threading.Thread(target=mitm.warmup, daemon=True).start()
+            emit("notice", level="info", message="已请求预热翻译引擎")
+        except Exception as exc:
+            emit("notice", level="warn", message=f"预热失败：{exc}")
+        return True
+    return False
+
+
+def command_loop(meter, stop_event, history_limit=80, extra_handlers=None):
     while not stop_event.is_set():
         line = sys.stdin.readline()
         if not line:
@@ -98,53 +155,13 @@ def command_loop(meter, stop_event, history_limit=80):
         except Exception:
             continue
         action = command.get("action")
-        if action == "reset":
-            meter.reset()
-            emit("notice", level="success", message="伤害统计已清空（角色识别保持不变）")
-            push_snapshot(meter, history_limit)
-        elif action == "reidentify-self":
-            with meter.lock:
-                # Soft reidentify: keep last self_id on screen until next local combat.
-                meter.reset_identity(reason="user_reidentify", hard=False)
-            cur = meter.self_id
-            if cur is not None:
-                emit(
-                    "notice",
-                    level="info",
-                    message=f"请攻击或放技能一次以确认角色（当前仍显示 #{cur}）",
-                )
-            else:
-                emit("notice", level="info", message="请攻击或放技能一次以识别当前登录角色")
-            push_snapshot(meter, history_limit)
-        elif action == "set-skill-name-mode":
-            mode = meter.set_skill_name_mode(command.get("mode"))
-            emit("notice", level="info", message=f"技能名称显示模式：{mode}")
-        elif action == "set-categories":
-            meter.set_capture_categories(command.get("categories"))
-            emit(
-                "notice",
-                level="success",
-                message="战斗采集项目已更新",
-                categories=dict(meter.capture_categories),
-            )
-        elif action == "reload-custom-buffs":
-            durations = command.get("durations")
-            loaded = meter.reload_custom_durations(durations)
-            emit(
-                "notice",
-                level="success",
-                message=f"已重载自定义 buff 持续时间（{len(loaded)} 条）",
-                custom_durations=loaded,
-            )
-        elif action == "warmup":
-            try:
-                import eco_npc_mitm as mitm
-                threading.Thread(target=mitm.warmup, daemon=True).start()
-                emit("notice", level="info", message="已请求预热翻译引擎")
-            except Exception as exc:
-                emit("notice", level="warn", message=f"预热失败：{exc}")
-        elif action == "stop":
+        if extra_handlers and action in extra_handlers:
+            extra_handlers[action](command)
+            continue
+        if action == "stop":
             stop_event.set()
+            continue
+        apply_command(meter, command, history_limit)
 
 
 def main():
