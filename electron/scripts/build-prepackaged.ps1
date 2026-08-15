@@ -141,6 +141,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $Electron "dist-native\icon-helper\E
     & (Join-Path $PSScriptRoot "build-icon-helper.ps1")
 }
 Copy-Item -LiteralPath (Join-Path $Electron "dist-native\icon-helper") -Destination $Resources -Recurse
+$AppIcon = Join-Path $Electron "build\icon.ico"
+if (Test-Path -LiteralPath $AppIcon) {
+    Copy-Item -LiteralPath $AppIcon -Destination (Join-Path $Resources "icon.ico") -Force
+}
 
 $XiaoyaCoreProject = Join-Path $Electron "native\XiaoyaCore\XiaoyaCore.csproj"
 $XiaoyaCoreSource = Join-Path $Electron "native\XiaoyaCore\Program.cs"

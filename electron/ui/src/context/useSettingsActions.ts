@@ -33,9 +33,14 @@ export function useSettingsActions(options: {
   } = options;
 
   const setOverlayVisible = useCallback(async (visible: boolean) => {
+    setState((prev) => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        overlay: { ...prev.settings?.overlay, visible },
+      },
+    }));
     await window.eco.setOverlayVisible(visible);
-    const result = await window.eco.saveAppSettings({ overlay: { visible } });
-    setState((prev) => ({ ...prev, settings: result.settings }));
   }, [setState]);
 
   const toggleOverlayEditing = useCallback(async () => {

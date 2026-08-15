@@ -1,13 +1,17 @@
 'use strict';
 
+const { applyOverlayVisibility } = require('../overlay-window');
+
 /** IPC domain: overlay — live values stay on ctx (getters). */
 function register(ipcMain, ctx) {
   ipcMain.handle('overlay:set-visible', (_event, visible) => {
     const current = ctx.appSettings();
-    current.overlay.visible = Boolean(visible);
+    const next = Boolean(visible);
+    current.overlay = { ...(current.overlay || {}), visible: next };
     ctx.persistAppSettings(current);
-    if (visible) ctx.overlayWindow?.showInactive(); else ctx.overlayWindow?.hide();
-    return { ok: true };
+    applyOverlayVisibility(ctx.overlayWindow, next);
+    ctx.broadcastState({ immediate: true });
+    return { ok: true, visible: next };
   });
   
   ipcMain.handle('overlay:set-editing', (_event, editing) => ({ ok: ctx.setOverlayEditing(editing) }));

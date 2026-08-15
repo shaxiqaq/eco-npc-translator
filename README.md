@@ -1,6 +1,6 @@
 # ECO 工具箱
 
-面向《Emil Chronicle Online》(ECO) 的 **本地 Windows 工具箱**（当前版本 **v0.2.19**）。
+面向《Emil Chronicle Online》(ECO) 的 **本地 Windows 工具箱**（当前版本 **v0.2.20**）。
 
 | 功能 | 说明 |
 |---|---|
@@ -135,12 +135,12 @@ npm.cmd run dist
 2. 打同名标签并推送：
 
 ```powershell
-git tag v0.2.19
+git tag v0.2.20
 git push origin main
-git push origin v0.2.19
+git push origin v0.2.20
 ```
 
-`.github/workflows/release.yml` 会在 Windows Runner 上测试、构建，并创建 Release（标签必须与 `package.json` 版本一致，例如 `v0.2.19`）。Release 正文请粘贴 `CHANGELOG.md` 对应版本的中文说明。
+`.github/workflows/release.yml` 会在 Windows Runner 上测试、构建，并创建 Release（标签必须与 `package.json` 版本一致，例如 `v0.2.20`）。Release 正文请粘贴 `CHANGELOG.md` 对应版本的中文说明。
 
 ---
 

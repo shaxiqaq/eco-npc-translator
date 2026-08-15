@@ -1,5 +1,7 @@
 'use strict';
 
+const { applyOverlayVisibility } = require('../overlay-window');
+
 /** IPC domain: settings — live values stay on ctx (getters). */
 function register(ipcMain, ctx) {
   ipcMain.handle('settings:save-app', (_event, incoming) => {
@@ -35,7 +37,7 @@ function register(ipcMain, ctx) {
       const nameMode = String(current.appearance.skillNameMode || 'client');
       current.appearance.skillNameMode = ['client', 'ja', 'dual'].includes(nameMode) ? nameMode : 'client';
       // Never persist runtime image payloads into settings.
-      stripAppearanceRuntimeFields(current.appearance);
+      ctx.stripAppearanceRuntimeFields(current.appearance);
     }
     ctx.persistAppSettings(current);
     if (incoming?.capture && ctx.services.damage?.stdin?.writable) {
@@ -56,13 +58,16 @@ function register(ipcMain, ctx) {
       const bounds = ctx.overlayWindow.getBounds();
       const next = ctx.overlayBounds(current.overlay);
       // Keep current position if user already placed the window; only apply size from settings.
-      overlayWindow.setBounds({
+      ctx.overlayWindow.setBounds({
         x: Number.isFinite(current.overlay.x) ? next.x : bounds.x,
         y: Number.isFinite(current.overlay.y) ? next.y : bounds.y,
         width: next.width,
         height: next.height
       });
       ctx.overlayWindow.setOpacity(ctx.clampOverlayOpacity(current.overlay.opacity));
+      if (incoming?.overlay && Object.prototype.hasOwnProperty.call(incoming.overlay, 'visible')) {
+        applyOverlayVisibility(ctx.overlayWindow, current.overlay.visible !== false);
+      }
       ctx.overlayWindow.webContents.send('app:state', ctx.buildLightState());
     }
     // Status monitoring can start/stop the shared capture backend independently of damage collection.
@@ -106,7 +111,7 @@ function register(ipcMain, ctx) {
     const current = ctx.appSettings();
     if (kind === 'overlay') {
       current.appearance = {
-        ...defaultAppSettings.appearance,
+        ...ctx.defaultAppSettings.appearance,
         ...(current.appearance || {}),
         overlayBgMode: 'custom',
         overlayBackgroundImage: rel,
@@ -114,7 +119,7 @@ function register(ipcMain, ctx) {
       };
     } else {
       current.appearance = {
-        ...defaultAppSettings.appearance,
+        ...ctx.defaultAppSettings.appearance,
         ...(current.appearance || {}),
         backgroundImage: rel
       };
@@ -137,7 +142,7 @@ function register(ipcMain, ctx) {
     const current = ctx.appSettings();
     if (kind === 'overlay') {
       current.appearance = {
-        ...defaultAppSettings.appearance,
+        ...ctx.defaultAppSettings.appearance,
         ...(current.appearance || {}),
         overlayBackgroundImage: '',
         // Stay on custom mode with empty image → solid until user picks again,
@@ -147,7 +152,7 @@ function register(ipcMain, ctx) {
       };
     } else {
       current.appearance = {
-        ...defaultAppSettings.appearance,
+        ...ctx.defaultAppSettings.appearance,
         ...(current.appearance || {}),
         backgroundImage: ''
       };

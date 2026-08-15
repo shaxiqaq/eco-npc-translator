@@ -47,6 +47,7 @@ const {
   sleep: lifecycleSleep
 } = require('./lib/child-lifecycle');
 const { createAppShutdown } = require('./lib/app-shutdown');
+const { applyOverlayVisibility } = require('./lib/overlay-window');
 const { resolveBackendRuntime, launchLabel, agentAvailable } = require('./lib/backend-runtime');
 const { planPrestartOnGame } = require('./lib/prestart');
 const { resolveSelectedPids } = require('./lib/process-selection');
@@ -67,6 +68,12 @@ const { createAgentHost } = require('./lib/agent-host');
 const { writeCommand } = require('./lib/backend-protocol');
 
 const log = createLogger('main');
+
+if (process.platform === 'win32') {
+  // Must match package.json build.appId so the installed shortcut owns this process
+  // and Windows shows a normal taskbar button.
+  app.setAppUserModelId('com.eco.toolbox');
+}
 
 // Local crash dumps under userData/logs/crash (path resolved after app ready).
 installCrashHandlers({
@@ -1356,7 +1363,8 @@ function setOverlayEditing(editing) {
     overlayWindow.focus();
   } else {
     persistOverlayBounds();
-    overlayWindow.showInactive();
+    const visible = appSettings().overlay?.visible !== false;
+    applyOverlayVisibility(overlayWindow, visible);
   }
   broadcastState();
   return true;
@@ -1366,9 +1374,28 @@ function appIconPath() {
   const candidates = [
     path.join(__dirname, 'build', 'icon.ico'),
     path.join(__dirname, 'build', 'icon.png'),
-    path.join(__dirname, 'assets', 'icon.ico')
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) || undefined;
+    path.join(__dirname, 'assets', 'icon.ico'),
+    app.isPackaged ? path.join(process.resourcesPath, 'icon.ico') : '',
+    app.isPackaged ? path.join(process.resourcesPath, 'build', 'icon.ico') : ''
+  ].filter(Boolean);
+  return candidates.find((candidate) => {
+    try { return fs.existsSync(candidate); } catch { return false; }
+  }) || undefined;
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createMainWindow();
+    return;
+  }
+  if (typeof mainWindow.setSkipTaskbar === 'function') {
+    mainWindow.setSkipTaskbar(false);
+  }
+  if (typeof mainWindow.isMinimized === 'function' && mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
 }
 
 function createMainWindow() {
@@ -1594,8 +1621,7 @@ function toggleMainWindowVisible() {
   if (mainWindow.isVisible() && !mainWindow.isMinimized()) {
     mainWindow.hide();
   } else {
-    mainWindow.show();
-    mainWindow.focus();
+    showMainWindow();
   }
 }
 
@@ -1604,8 +1630,7 @@ function toggleOverlayVisibleHotkey() {
   const next = !(current.overlay?.visible !== false);
   current.overlay = { ...(current.overlay || {}), visible: next };
   persistAppSettings(current);
-  if (next) overlayWindow?.showInactive();
-  else overlayWindow?.hide();
+  applyOverlayVisibility(overlayWindow, next);
   broadcastState({ immediate: true });
 }
 
@@ -1649,13 +1674,7 @@ function createAppTray() {
     appTray.setContextMenu(Menu.buildFromTemplate([
       {
         label: '显示主窗口',
-        click: () => {
-          if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-          else {
-            mainWindow.show();
-            mainWindow.focus();
-          }
-        }
+        click: () => showMainWindow()
       },
       { label: '显示/隐藏悬浮窗', click: () => toggleOverlayVisibleHotkey() },
       { label: '刷新游戏进程', click: () => { void refreshGameProcesses(); } },
@@ -1663,13 +1682,7 @@ function createAppTray() {
       { type: 'separator' },
       { label: '安全退出（先关功能）', click: () => beginGracefulShutdown('tray-quit') }
     ]));
-    appTray.on('double-click', () => {
-      if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-      else {
-        mainWindow.show();
-        mainWindow.focus();
-      }
-    });
+    appTray.on('double-click', () => showMainWindow());
   } catch (error) {
     log.warn('tray create failed', error?.message || error);
   }
